@@ -1,0 +1,156 @@
+@import url('https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@300;400;500;700;900&family=Noto+Serif+JP:wght@400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Sake Scan Design System - Japanese-inspired elegant theme */
+
+@layer base {
+  :root {
+    /* Warm cream/rice paper background with deep sake red accents */
+    --background: 40 30% 97%;
+    --foreground: 0 0% 12%;
+
+    --card: 40 25% 99%;
+    --card-foreground: 0 0% 12%;
+
+    --popover: 40 25% 99%;
+    --popover-foreground: 0 0% 12%;
+
+    /* Deep sake red - Aka (赤) */
+    --primary: 0 72% 45%;
+    --primary-foreground: 40 30% 97%;
+
+    /* Warm stone gray */
+    --secondary: 30 8% 92%;
+    --secondary-foreground: 0 0% 12%;
+
+    /* Muted warm tones */
+    --muted: 35 15% 93%;
+    --muted-foreground: 30 5% 45%;
+
+    /* Gold accent - Kin (金) */
+    --accent: 45 90% 48%;
+    --accent-foreground: 0 0% 12%;
+
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border: 30 15% 88%;
+    --input: 30 15% 88%;
+    --ring: 0 72% 45%;
+
+    --radius: 0.5rem;
+
+    /* Sidebar - deep charcoal */
+    --sidebar-background: 220 15% 12%;
+    --sidebar-foreground: 40 20% 92%;
+    --sidebar-primary: 0 72% 55%;
+    --sidebar-primary-foreground: 40 30% 97%;
+    --sidebar-accent: 220 15% 18%;
+    --sidebar-accent-foreground: 40 20% 92%;
+    --sidebar-border: 220 15% 20%;
+    --sidebar-ring: 0 72% 55%;
+  }
+
+  .dark {
+    /* Dark theme - elegant dark charcoal with warm accents */
+    --background: 220 15% 8%;
+    --foreground: 40 20% 92%;
+
+    --card: 220 15% 10%;
+    --card-foreground: 40 20% 92%;
+
+    --popover: 220 15% 10%;
+    --popover-foreground: 40 20% 92%;
+
+    --primary: 0 72% 55%;
+    --primary-foreground: 40 30% 97%;
+
+    --secondary: 220 15% 15%;
+    --secondary-foreground: 40 20% 92%;
+
+    --muted: 220 15% 15%;
+    --muted-foreground: 220 10% 55%;
+
+    --accent: 45 90% 55%;
+    --accent-foreground: 0 0% 12%;
+
+    --destructive: 0 62.8% 40%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border: 220 15% 18%;
+    --input: 220 15% 18%;
+    --ring: 0 72% 55%;
+
+    --sidebar-background: 220 15% 6%;
+    --sidebar-foreground: 40 20% 92%;
+    --sidebar-primary: 0 72% 55%;
+    --sidebar-primary-foreground: 40 30% 97%;
+    --sidebar-accent: 220 15% 12%;
+    --sidebar-accent-foreground: 40 20% 92%;
+    --sidebar-border: 220 15% 15%;
+    --sidebar-ring: 0 72% 55%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'Zen Kaku Gothic New', sans-serif;
+  }
+}
+
+/* Custom animations */
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes float {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
+}
+
+@keyframes pulse-soft {
+  0%, 100% {
+    opacity: 0.6;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.animate-fade-in-up {
+  animation: fade-in-up 0.6s ease-out forwards;
+}
+
+.animate-float {
+  animation: float 3s ease-in-out infinite;
+}
+
+.animate-pulse-soft {
+  animation: pulse-soft 2s ease-in-out infinite;
+}
+
+/* Staggered animation delays */
+.delay-100 { animation-delay: 100ms; }
+.delay-200 { animation-delay: 200ms; }
+.delay-300 { animation-delay: 300ms; }
+.delay-400 { animation-delay: 400ms; }
+.delay-500 { animation-delay: 500ms; }
