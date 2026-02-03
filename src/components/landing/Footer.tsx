@@ -8,8 +8,8 @@ export function Footer() {
           {/* Brand */}
           <div className="md:col-span-1">
             <Link to="/" className="flex items-center gap-3 mb-4">
-              <div className="w-10 h-10 rounded-lg bg-primary flex items-center justify-center">
-                <span className="text-primary-foreground font-serif text-xl font-bold">酒</span>
+              <div className="w-10 h-10 rounded-lg bg-red-600 flex items-center justify-center">
+                <span className="text-white font-serif text-xl font-bold">酒</span>
               </div>
               <span className="font-serif text-xl font-semibold tracking-tight">
                 Sake Scan
