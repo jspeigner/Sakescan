@@ -5,7 +5,7 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
-import { Loader2, Search, ExternalLink, Check, ImageIcon, Database } from "lucide-react";
+import { Loader2, Search, ExternalLink, Check, ImageIcon, Database, Download } from "lucide-react";
 
 interface SearchImage {
   url: string;
@@ -54,6 +54,7 @@ export function ImageSearchModal({
   onImportData,
 }: ImageSearchModalProps) {
   const [loading, setLoading] = useState(false);
+  const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<SearchResult | null>(null);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
@@ -105,10 +106,39 @@ export function ImageSearchModal({
     window.open(`https://www.google.com/search?q=${encodeURIComponent(query)}&tbm=isch`, '_blank');
   };
 
-  const handleConfirmImage = () => {
-    if (selectedImage) {
-      onSelectImage(selectedImage, imageField);
+  const handleConfirmImage = async () => {
+    if (!selectedImage) return;
+    
+    setDownloading(true);
+    setError(null);
+
+    try {
+      // Download and save image to Supabase storage
+      const response = await fetch('/api/download-image', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          imageUrl: selectedImage,
+          sakeName: sakeName,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to download image');
+      }
+
+      const data = await response.json();
+      
+      // Pass the Supabase storage URL to the parent
+      onSelectImage(data.url, imageField);
       setSelectedImage(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save image');
+    } finally {
+      setDownloading(false);
     }
   };
 
@@ -256,6 +286,7 @@ export function ImageSearchModal({
                             size="sm"
                             variant={imageField === 'label_image_url' ? 'default' : 'outline'}
                             onClick={() => setImageField('label_image_url')}
+                            disabled={downloading}
                           >
                             Label Image
                           </Button>
@@ -263,13 +294,23 @@ export function ImageSearchModal({
                             size="sm"
                             variant={imageField === 'bottle_image_url' ? 'default' : 'outline'}
                             onClick={() => setImageField('bottle_image_url')}
+                            disabled={downloading}
                           >
                             Bottle Image
                           </Button>
                         </div>
-                        <Button size="sm" onClick={handleConfirmImage}>
-                          <Check className="w-4 h-4 mr-1" />
-                          Confirm
+                        <Button size="sm" onClick={handleConfirmImage} disabled={downloading}>
+                          {downloading ? (
+                            <>
+                              <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+                              Saving...
+                            </>
+                          ) : (
+                            <>
+                              <Download className="w-4 h-4 mr-1" />
+                              Download & Save
+                            </>
+                          )}
                         </Button>
                       </div>
                     ) : null}
