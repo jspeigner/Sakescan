@@ -9,6 +9,7 @@ import {
   LogOut,
   ChevronLeft,
   Menu,
+  Download,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
@@ -21,6 +22,7 @@ const navItems = [
   { icon: Building2, label: "Breweries", href: "/admin/breweries" },
   { icon: Users, label: "Users", href: "/admin/users" },
   { icon: MessageSquare, label: "Reviews", href: "/admin/reviews" },
+  { icon: Download, label: "Import", href: "/admin/import" },
   { icon: Settings, label: "Settings", href: "/admin/settings" },
 ];
 
