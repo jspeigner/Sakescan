@@ -171,6 +171,41 @@ export function SakeModal({ open, onOpenChange, sake, onSaved }: SakeModalProps)
     }));
   };
 
+  // Helper to check if URL is from our Supabase storage
+  const isSupabaseUrl = (url: string) => {
+    return url.includes('supabase.co') || url.includes('supabase.in');
+  };
+
+  // Download external image and save to Supabase storage
+  const downloadExternalImage = async (imageUrl: string): Promise<string> => {
+    if (!imageUrl || isSupabaseUrl(imageUrl)) {
+      return imageUrl; // Already in our storage or empty
+    }
+
+    try {
+      const response = await fetch('/api/download-image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          imageUrl,
+          sakeName: form.name,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to download image');
+      }
+
+      const data = await response.json();
+      return data.url;
+    } catch (error) {
+      console.error('Failed to download image:', error);
+      // Return original URL if download fails, user can retry
+      throw error;
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!form.name || !form.brewery) {
@@ -180,8 +215,36 @@ export function SakeModal({ open, onOpenChange, sake, onSaved }: SakeModalProps)
 
     setLoading(true);
     try {
+      // Download any external images before saving
+      let labelImageUrl = form.label_image_url;
+      let bottleImageUrl = form.bottle_image_url;
+
+      if (labelImageUrl && !isSupabaseUrl(labelImageUrl)) {
+        try {
+          labelImageUrl = await downloadExternalImage(labelImageUrl);
+        } catch {
+          if (!confirm('Failed to download label image. Save with external URL anyway?')) {
+            setLoading(false);
+            return;
+          }
+        }
+      }
+
+      if (bottleImageUrl && !isSupabaseUrl(bottleImageUrl)) {
+        try {
+          bottleImageUrl = await downloadExternalImage(bottleImageUrl);
+        } catch {
+          if (!confirm('Failed to download bottle image. Save with external URL anyway?')) {
+            setLoading(false);
+            return;
+          }
+        }
+      }
+
       const payload = {
         ...form,
+        label_image_url: labelImageUrl,
+        bottle_image_url: bottleImageUrl,
         polishing_ratio: form.polishing_ratio ? Number(form.polishing_ratio) : null,
         alcohol_percentage: form.alcohol_percentage ? Number(form.alcohol_percentage) : null,
         smv: form.smv ? Number(form.smv) : null,
@@ -462,6 +525,9 @@ export function SakeModal({ open, onOpenChange, sake, onSaved }: SakeModalProps)
               />
             </div>
           </div>
+          <p className="text-xs text-muted-foreground">
+            External image URLs will be automatically downloaded and saved to our storage when you save.
+          </p>
 
           {/* Actions */}
           <div className="flex justify-end gap-3 pt-4 border-t border-border">
