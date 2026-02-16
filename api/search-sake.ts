@@ -50,69 +50,71 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     
     const searchQuery = searchTerms.join(' ');
 
-    // Search Tippsy Sake for high-quality product images
-    const tippsyUrl = `https://www.tippsysake.com/search?q=${encodeURIComponent(name)}`;
+    // Search Sakura Sake Shop for high-quality product images
+    const sakuraSakeUrl = `https://export.sakurasaketen.com/sake?Keyword=${encodeURIComponent(name)}`;
     
     try {
-      const tippsyResponse = await fetch('https://api.firecrawl.dev/v1/scrape', {
+      const sakuraResponse = await fetch('https://api.firecrawl.dev/v1/scrape', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${firecrawlApiKey}`,
         },
         body: JSON.stringify({
-          url: tippsyUrl,
+          url: sakuraSakeUrl,
           formats: ['markdown', 'html'],
           onlyMainContent: true,
         }),
       });
 
-      if (tippsyResponse.ok) {
-        const tippsyData = await tippsyResponse.json();
+      if (sakuraResponse.ok) {
+        const sakuraData = await sakuraResponse.json();
         
-        // Extract image URLs from Tippsy results
-        const imgRegex = /https:\/\/[^"'\s]+\.(?:jpg|jpeg|png|webp)/gi;
-        const htmlContent = tippsyData.data?.html || '';
+        // Extract image URLs from Sakura Sake results
+        const imgRegex = /https:\/\/[^"'\s]+\.(?:jpg|jpeg|png|webp)(?:\?[^"'\s]*)?/gi;
+        const htmlContent = sakuraData.data?.html || '';
         const imageMatches = htmlContent.match(imgRegex) || [];
         
-        // Filter for product images (usually contain 'products' or 'cdn' in path)
+        // Filter for product images (usually from Webflow or CDN)
         const productImages = imageMatches
           .filter((url: string) => 
-            (url.includes('product') || url.includes('cdn')) && 
             !url.includes('logo') && 
             !url.includes('icon') &&
-            !url.includes('badge')
+            !url.includes('badge') &&
+            !url.includes('arrow') &&
+            !url.includes('close') &&
+            (url.includes('uploads') || url.includes('cdn') || url.includes('sake'))
           )
-          .slice(0, 4);
+          .slice(0, 5);
 
         productImages.forEach((url: string) => {
           results.images.push({
             url,
-            source: 'Tippsy Sake',
+            source: 'Sakura Sake Shop',
             title: name,
           });
         });
 
         // Try to extract product data from markdown
-        const markdown = tippsyData.data?.markdown || '';
+        const markdown = sakuraData.data?.markdown || '';
         
         // Look for sake type patterns
-        const typeMatch = markdown.match(/(?:Type|Category)[:\s]*(Junmai|Daiginjo|Ginjo|Honjozo|Nigori|Sparkling|Nama|Futsushu)[^\n]*/i);
-        const prefectureMatch = markdown.match(/(?:Prefecture|Region)[:\s]*([A-Za-z]+)/i);
-        const polishMatch = markdown.match(/(?:Polish|Polishing|Rice Polishing)[:\s]*(\d+)%?/i);
-        const abvMatch = markdown.match(/(?:ABV|Alcohol)[:\s]*(\d+(?:\.\d+)?)\s*%/i);
+        const typeMatch = markdown.match(/(?:Junmai Daiginjo|Junmai Ginjo|Junmai|Daiginjo|Ginjo|Honjozo|Tokubetsu Junmai|Tokubetsu Honjozo|Nigori|Sparkling|Nama|Futsushu)/i);
+        const prefectureMatch = markdown.match(/(?:Miyagi|Yamagata|Niigata|Fukuoka|Saga|Hiroshima|Yamaguchi|Nagasaki|Kochi|Shiga|Mie|Gifu|Saitama|Gunma|Akita|Aomori|Osaka)/i);
+        const polishMatch = markdown.match(/(\d+)%?\s*(?:精米|polishing|seimaibuai)/i);
+        const abvMatch = markdown.match(/(?:ABV|Alcohol|ALC)[:\s]*(\d+(?:\.\d+)?)\s*%/i);
         
         if (typeMatch || prefectureMatch || polishMatch || abvMatch) {
           results.sakeData = {
-            type: typeMatch?.[1],
-            prefecture: prefectureMatch?.[1],
+            type: typeMatch?.[0],
+            prefecture: prefectureMatch?.[0],
             polishingRatio: polishMatch ? parseInt(polishMatch[1]) : undefined,
             alcoholPercentage: abvMatch ? parseFloat(abvMatch[1]) : undefined,
           };
         }
       }
-    } catch (tippsyError) {
-      console.error('Tippsy scrape error:', tippsyError);
+    } catch (sakuraError) {
+      console.error('Sakura Sake scrape error:', sakuraError);
     }
 
     // Search Umami Mart for sake images
