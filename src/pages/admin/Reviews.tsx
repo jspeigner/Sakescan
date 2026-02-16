@@ -5,13 +5,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Search, MoreHorizontal, Star, Loader2, Trash2, Eye, Pencil, Wine, User } from "lucide-react";
+import { Search, MoreHorizontal, Star, Loader2, Trash2, Eye, Pencil, Wine, User, X } from "lucide-react";
 import { supabase } from "@/lib/supabase";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 
 interface ReviewWithDetails {
   id: string;
@@ -36,12 +37,21 @@ const PAGE_SIZE = 20;
 
 export default function AdminReviews() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const userFilter = searchParams.get('user') || '';
+  const [userFilterName, setUserFilterName] = useState<string>('');
+  
   const [reviews, setReviews] = useState<ReviewWithDetails[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [page, setPage] = useState(0);
   const [totalCount, setTotalCount] = useState(0);
   const [ratingFilter, setRatingFilter] = useState<'all' | '1' | '2' | '3' | '4' | '5'>('all');
+
+  const clearUserFilter = () => {
+    setSearchParams({});
+    setPage(0);
+  };
   
   // View/Edit modal state
   const [modalOpen, setModalOpen] = useState(false);
@@ -59,6 +69,11 @@ export default function AdminReviews() {
         .from('ratings')
         .select('*', { count: 'exact' })
         .order('created_at', { ascending: false });
+
+      // Apply user filter from URL
+      if (userFilter) {
+        query = query.eq('user_id', userFilter);
+      }
 
       // Apply rating filter
       if (ratingFilter !== 'all') {
@@ -113,12 +128,27 @@ export default function AdminReviews() {
       );
 
       setReviews(paginatedReviews);
+
+      // Get user name if filtering by user
+      if (userFilter && enrichedReviews.length > 0 && enrichedReviews[0].user) {
+        setUserFilterName(enrichedReviews[0].user.display_name || enrichedReviews[0].user.email || 'Unknown User');
+      } else if (userFilter) {
+        // Fetch user name separately if no reviews found
+        const { data: userData } = await supabase
+          .from('users')
+          .select('display_name, email')
+          .eq('id', userFilter)
+          .single();
+        if (userData) {
+          setUserFilterName(userData.display_name || userData.email || 'Unknown User');
+        }
+      }
     } catch (error) {
       console.error('Error fetching reviews:', error);
     } finally {
       setLoading(false);
     }
-  }, [page, searchQuery, ratingFilter]);
+  }, [page, searchQuery, ratingFilter, userFilter]);
 
   useEffect(() => {
     fetchReviews();
@@ -257,6 +287,20 @@ export default function AdminReviews() {
             <p className="text-muted-foreground">View and moderate user reviews ({totalCount} total)</p>
           </div>
         </div>
+
+        {/* User Filter Badge */}
+        {userFilter ? (
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-muted-foreground">Filtered by user:</span>
+            <Badge variant="secondary" className="gap-1">
+              <User className="w-3 h-3" />
+              {userFilterName || 'Loading...'}
+              <button onClick={clearUserFilter} className="ml-1 hover:text-foreground">
+                <X className="w-3 h-3" />
+              </button>
+            </Badge>
+          </div>
+        ) : null}
 
         {/* Rating Filter Tabs */}
         <Tabs value={ratingFilter} onValueChange={(v) => { setRatingFilter(v as typeof ratingFilter); setPage(0); }}>
