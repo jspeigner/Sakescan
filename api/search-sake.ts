@@ -115,6 +115,78 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       console.error('Tippsy scrape error:', tippsyError);
     }
 
+    // Search Umami Mart for sake images
+    const umamiMartUrl = `https://umamimart.com/search?q=${encodeURIComponent(name + ' sake')}&type=product`;
+    
+    try {
+      const umamiResponse = await fetch('https://api.firecrawl.dev/v1/scrape', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${firecrawlApiKey}`,
+        },
+        body: JSON.stringify({
+          url: umamiMartUrl,
+          formats: ['markdown', 'html'],
+          onlyMainContent: true,
+        }),
+      });
+
+      if (umamiResponse.ok) {
+        const umamiData = await umamiResponse.json();
+        
+        // Extract image URLs from Umami Mart results (Shopify CDN)
+        const imgRegex = /https:\/\/[^"'\s]+cdn\.shopify\.com[^"'\s]+\.(?:jpg|jpeg|png|webp)(?:\?[^"'\s]*)?/gi;
+        const htmlContent = umamiData.data?.html || '';
+        const imageMatches = htmlContent.match(imgRegex) || [];
+        
+        // Filter for product images
+        const productImages = imageMatches
+          .filter((url: string) => 
+            url.includes('products') && 
+            !url.includes('logo') && 
+            !url.includes('icon') &&
+            !url.includes('badge') &&
+            !url.includes('collection')
+          )
+          .map((url: string) => {
+            // Get higher resolution version by removing size parameters
+            return url.replace(/_\d+x\d*\./, '_800x.');
+          })
+          .slice(0, 4);
+
+        productImages.forEach((url: string) => {
+          results.images.push({
+            url,
+            source: 'Umami Mart',
+            title: name,
+          });
+        });
+
+        // Try to extract product data from markdown
+        const markdown = umamiData.data?.markdown || '';
+        
+        // Look for sake type patterns if we don't have data yet
+        if (!results.sakeData) {
+          const typeMatch = markdown.match(/(?:Type|Category|Style)[:\s]*(Junmai|Daiginjo|Ginjo|Honjozo|Nigori|Sparkling|Nama|Futsushu)[^\n]*/i);
+          const prefectureMatch = markdown.match(/(?:Prefecture|Region|Origin)[:\s]*([A-Za-z]+)/i);
+          const polishMatch = markdown.match(/(?:Polish|Polishing|Rice Polishing|SMV)[:\s]*(\d+)%?/i);
+          const abvMatch = markdown.match(/(?:ABV|Alcohol|ALC)[:\s]*(\d+(?:\.\d+)?)\s*%/i);
+          
+          if (typeMatch || prefectureMatch || polishMatch || abvMatch) {
+            results.sakeData = {
+              type: typeMatch?.[1],
+              prefecture: prefectureMatch?.[1],
+              polishingRatio: polishMatch ? parseInt(polishMatch[1]) : undefined,
+              alcoholPercentage: abvMatch ? parseFloat(abvMatch[1]) : undefined,
+            };
+          }
+        }
+      }
+    } catch (umamiError) {
+      console.error('Umami Mart scrape error:', umamiError);
+    }
+
     // Search Sake Times (Japanese sake database)
     if (nameJapanese) {
       const sakeTimesUrl = `https://en.sake-times.com/?s=${encodeURIComponent(nameJapanese)}`;
