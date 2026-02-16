@@ -6,7 +6,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { Search, Plus, MoreHorizontal, Loader2, Pencil, Trash2, Star } from "lucide-react";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Search, Plus, MoreHorizontal, Loader2, Pencil, Trash2, Star, ImageOff } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import type { Sake } from "@/lib/supabase-types";
 
@@ -20,6 +21,8 @@ export default function AdminSakes() {
   const [totalCount, setTotalCount] = useState(0);
   const [modalOpen, setModalOpen] = useState(false);
   const [editingSake, setEditingSake] = useState<Sake | null>(null);
+  const [filter, setFilter] = useState<'all' | 'missing_images'>('all');
+  const [missingImagesCount, setMissingImagesCount] = useState(0);
 
   const fetchSakes = useCallback(async () => {
     setLoading(true);
@@ -34,17 +37,30 @@ export default function AdminSakes() {
         query = query.or(`name.ilike.%${searchQuery}%,name_japanese.ilike.%${searchQuery}%,brewery.ilike.%${searchQuery}%`);
       }
 
+      // Apply filter for missing images
+      if (filter === 'missing_images') {
+        query = query.or('label_image_url.is.null,label_image_url.eq.');
+      }
+
       const { data, error, count } = await query;
 
       if (error) throw error;
       setSakes(data || []);
       setTotalCount(count || 0);
+
+      // Fetch count of sakes with missing images (for the tab badge)
+      const { count: missingCount } = await supabase
+        .from('sake')
+        .select('*', { count: 'exact', head: true })
+        .or('label_image_url.is.null,label_image_url.eq.');
+      
+      setMissingImagesCount(missingCount || 0);
     } catch (error) {
       console.error('Error fetching sakes:', error);
     } finally {
       setLoading(false);
     }
-  }, [page, searchQuery]);
+  }, [page, searchQuery, filter]);
 
   useEffect(() => {
     fetchSakes();
@@ -100,6 +116,22 @@ export default function AdminSakes() {
           </Button>
         </div>
 
+        {/* Filters */}
+        <Tabs value={filter} onValueChange={(v) => { setFilter(v as 'all' | 'missing_images'); setPage(0); }}>
+          <TabsList>
+            <TabsTrigger value="all">All Sakes</TabsTrigger>
+            <TabsTrigger value="missing_images" className="gap-2">
+              <ImageOff className="w-4 h-4" />
+              Missing Images
+              {missingImagesCount > 0 ? (
+                <span className="ml-1 px-1.5 py-0.5 text-xs rounded-full bg-destructive text-destructive-foreground">
+                  {missingImagesCount}
+                </span>
+              ) : null}
+            </TabsTrigger>
+          </TabsList>
+        </Tabs>
+
         {/* Search */}
         <Card className="p-4">
           <form onSubmit={handleSearch} className="flex flex-col sm:flex-row gap-4">
@@ -153,8 +185,8 @@ export default function AdminSakes() {
                           className="w-10 h-10 rounded object-cover"
                         />
                       ) : (
-                        <div className="w-10 h-10 rounded bg-muted flex items-center justify-center">
-                          <span className="text-xs text-muted-foreground">No img</span>
+                        <div className="w-10 h-10 rounded bg-destructive/10 border border-destructive/20 flex items-center justify-center">
+                          <ImageOff className="w-4 h-4 text-destructive/60" />
                         </div>
                       )}
                     </TableCell>

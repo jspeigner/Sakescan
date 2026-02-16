@@ -7,7 +7,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { supabase } from "@/lib/supabase";
 import type { Sake } from "@/lib/supabase-types";
-import { Loader2, Upload, X } from "lucide-react";
+import { Loader2, Upload, X, Search } from "lucide-react";
+import { ImageSearchModal } from "./ImageSearchModal";
 
 interface SakeFormData {
   name: string;
@@ -63,6 +64,7 @@ const PREFECTURES = [
 export function SakeModal({ open, onOpenChange, sake, onSaved }: SakeModalProps) {
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [imageSearchOpen, setImageSearchOpen] = useState(false);
   const [form, setForm] = useState<SakeFormData>({
     name: "",
     name_japanese: "",
@@ -151,6 +153,22 @@ export function SakeModal({ open, onOpenChange, sake, onSaved }: SakeModalProps)
     } finally {
       setUploading(false);
     }
+  };
+
+  const handleSelectImage = (url: string, field: 'label_image_url' | 'bottle_image_url') => {
+    setForm(prev => ({ ...prev, [field]: url }));
+  };
+
+  const handleImportData = (data: Record<string, unknown>) => {
+    setForm(prev => ({
+      ...prev,
+      type: (data.type as string) || prev.type,
+      prefecture: (data.prefecture as string) || prev.prefecture,
+      region: (data.prefecture as string) || prev.region,
+      polishing_ratio: (data.polishingRatio as number) || prev.polishing_ratio,
+      alcohol_percentage: (data.alcoholPercentage as number) || prev.alcohol_percentage,
+      description: (data.description as string) || prev.description,
+    }));
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -341,9 +359,24 @@ export function SakeModal({ open, onOpenChange, sake, onSaved }: SakeModalProps)
           </div>
 
           {/* Images */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <Label>Images</Label>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setImageSearchOpen(true)}
+                disabled={!form.name}
+              >
+                <Search className="w-4 h-4 mr-2" />
+                Find Images
+              </Button>
+            </div>
+            
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="space-y-2">
-              <Label>Label Image</Label>
+              <Label className="text-sm text-muted-foreground">Label Image</Label>
               {form.label_image_url ? (
                 <div className="relative w-full h-40 rounded-lg border border-border overflow-hidden">
                   <img
@@ -375,7 +408,7 @@ export function SakeModal({ open, onOpenChange, sake, onSaved }: SakeModalProps)
             </div>
 
             <div className="space-y-2">
-              <Label>Bottle Image</Label>
+              <Label className="text-sm text-muted-foreground">Bottle Image</Label>
               {form.bottle_image_url ? (
                 <div className="relative w-full h-40 rounded-lg border border-border overflow-hidden">
                   <img
@@ -404,6 +437,7 @@ export function SakeModal({ open, onOpenChange, sake, onSaved }: SakeModalProps)
                   />
                 </label>
               )}
+            </div>
             </div>
           </div>
 
@@ -441,6 +475,19 @@ export function SakeModal({ open, onOpenChange, sake, onSaved }: SakeModalProps)
           </div>
         </form>
       </DialogContent>
+
+      {/* Image Search Modal */}
+      <ImageSearchModal
+        open={imageSearchOpen}
+        onOpenChange={setImageSearchOpen}
+        sakeName={form.name}
+        sakeNameJapanese={form.name_japanese}
+        brewery={form.brewery}
+        currentType={form.type}
+        currentPrefecture={form.prefecture}
+        onSelectImage={handleSelectImage}
+        onImportData={handleImportData}
+      />
     </Dialog>
   );
 }
