@@ -1,19 +1,24 @@
 import { useState, useEffect, useCallback } from "react";
+import { useSearchParams } from "react-router-dom";
 import { AdminLayout } from "@/components/admin";
 import { SakeModal } from "@/components/admin/SakeModal";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Search, Plus, MoreHorizontal, Loader2, Pencil, Trash2, Star, ImageOff } from "lucide-react";
+import { Search, Plus, MoreHorizontal, Loader2, Pencil, Trash2, Star, ImageOff, X } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import type { Sake } from "@/lib/supabase-types";
 
 const PAGE_SIZE = 20;
 
 export default function AdminSakes() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const breweryFilter = searchParams.get('brewery') || '';
+  
   const [sakes, setSakes] = useState<Sake[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
@@ -23,6 +28,11 @@ export default function AdminSakes() {
   const [editingSake, setEditingSake] = useState<Sake | null>(null);
   const [filter, setFilter] = useState<'all' | 'missing_images'>('all');
   const [missingImagesCount, setMissingImagesCount] = useState(0);
+
+  const clearBreweryFilter = () => {
+    setSearchParams({});
+    setPage(0);
+  };
 
   const fetchSakes = useCallback(async () => {
     setLoading(true);
@@ -37,6 +47,11 @@ export default function AdminSakes() {
         query = query.or(`name.ilike.%${searchQuery}%,name_japanese.ilike.%${searchQuery}%,brewery.ilike.%${searchQuery}%`);
       }
 
+      // Apply brewery filter from URL
+      if (breweryFilter) {
+        query = query.eq('brewery', breweryFilter);
+      }
+
       // Apply filter for missing images
       if (filter === 'missing_images') {
         query = query.or('label_image_url.is.null,label_image_url.eq.');
@@ -49,18 +64,23 @@ export default function AdminSakes() {
       setTotalCount(count || 0);
 
       // Fetch count of sakes with missing images (for the tab badge)
-      const { count: missingCount } = await supabase
+      let missingQuery = supabase
         .from('sake')
         .select('*', { count: 'exact', head: true })
         .or('label_image_url.is.null,label_image_url.eq.');
       
+      if (breweryFilter) {
+        missingQuery = missingQuery.eq('brewery', breweryFilter);
+      }
+      
+      const { count: missingCount } = await missingQuery;
       setMissingImagesCount(missingCount || 0);
     } catch (error) {
       console.error('Error fetching sakes:', error);
     } finally {
       setLoading(false);
     }
-  }, [page, searchQuery, filter]);
+  }, [page, searchQuery, filter, breweryFilter]);
 
   useEffect(() => {
     fetchSakes();
@@ -115,6 +135,19 @@ export default function AdminSakes() {
             Add Sake
           </Button>
         </div>
+
+        {/* Brewery Filter Badge */}
+        {breweryFilter ? (
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-muted-foreground">Filtered by brewery:</span>
+            <Badge variant="secondary" className="gap-1">
+              {breweryFilter}
+              <button onClick={clearBreweryFilter} className="ml-1 hover:text-foreground">
+                <X className="w-3 h-3" />
+              </button>
+            </Badge>
+          </div>
+        ) : null}
 
         {/* Filters */}
         <Tabs value={filter} onValueChange={(v) => { setFilter(v as 'all' | 'missing_images'); setPage(0); }}>
