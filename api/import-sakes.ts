@@ -12,6 +12,60 @@ interface SakeToImport {
   existingId?: string;
 }
 
+async function downloadAndStoreImage(
+  supabase: ReturnType<typeof createClient>,
+  imageUrl: string,
+  sakeName: string
+): Promise<string> {
+  const imageResponse = await fetch(imageUrl, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (compatible; SakeScan/1.0)',
+      'Accept': 'image/*',
+    },
+  });
+
+  if (!imageResponse.ok) {
+    throw new Error(`Failed to download image: ${imageResponse.status}`);
+  }
+
+  const contentType = imageResponse.headers.get('content-type') || 'image/jpeg';
+  const imageBuffer = await imageResponse.arrayBuffer();
+
+  let extension = 'jpg';
+  if (contentType.includes('png')) extension = 'png';
+  else if (contentType.includes('webp')) extension = 'webp';
+  else if (contentType.includes('gif')) extension = 'gif';
+  else if (contentType.includes('avif')) extension = 'avif';
+
+  const timestamp = Date.now();
+  const randomStr = Math.random().toString(36).substring(2, 8);
+  const safeName = (sakeName || 'sake')
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .substring(0, 40);
+
+  const filePath = `sake-images/${safeName}-${timestamp}-${randomStr}.${extension}`;
+
+  const { error: uploadError } = await supabase.storage
+    .from('sake-images')
+    .upload(filePath, imageBuffer, {
+      contentType,
+      upsert: false,
+    });
+
+  if (uploadError) {
+    throw new Error(`Failed to upload: ${uploadError.message}`);
+  }
+
+  const { data: urlData } = supabase.storage
+    .from('sake-images')
+    .getPublicUrl(filePath);
+
+  return urlData.publicUrl;
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Only allow POST
   if (req.method !== 'POST') {
@@ -63,8 +117,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         });
 
         if (match) {
-          // Check if existing sake is missing an image
-          const needsImage = !match.label_image_url && !match.bottle_image_url;
+          // Check if existing sake is missing at least one image
+          const needsImage = !match.label_image_url || !match.bottle_image_url;
           
           results.push({
             ...scraped,
@@ -106,10 +160,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // Process updates (add images to existing sakes)
       for (const sake of updates || []) {
         if (sake.existingId && sake.imageUrl) {
+          let finalImageUrl = sake.imageUrl;
+          try {
+            finalImageUrl = await downloadAndStoreImage(supabase, sake.imageUrl, sake.name);
+          } catch (downloadError) {
+            // Keep external URL as fallback so update is not blocked.
+            console.error(`Image storage failed for ${sake.name}:`, downloadError);
+          }
+
           const { error } = await supabase
             .from('sake')
             .update({
-              label_image_url: sake.imageUrl,
+              label_image_url: finalImageUrl,
               updated_at: new Date().toISOString(),
             })
             .eq('id', sake.existingId);
@@ -124,6 +186,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       // Process new sakes
       for (const sake of newSakes || []) {
+        let finalImageUrl: string | null = null;
+        if (sake.imageUrl) {
+          try {
+            finalImageUrl = await downloadAndStoreImage(supabase, sake.imageUrl, sake.name);
+          } catch (downloadError) {
+            console.error(`Image storage failed for ${sake.name}:`, downloadError);
+            finalImageUrl = sake.imageUrl;
+          }
+        }
+
         const { error } = await supabase
           .from('sake')
           .insert({
@@ -132,7 +204,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             brewery: sake.brewery || 'Unknown',
             type: sake.type || null,
             prefecture: sake.prefecture || null,
-            label_image_url: sake.imageUrl || null,
+            label_image_url: finalImageUrl,
             total_ratings: 0,
           });
 

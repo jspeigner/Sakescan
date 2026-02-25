@@ -55,15 +55,13 @@ export default function AdminImport() {
   const [error, setError] = useState<string | null>(null);
   const [importResult, setImportResult] = useState<{ updatedCount: number; insertedCount: number; errors?: string[] } | null>(null);
 
-  const baseUrl = import.meta.env.VITE_BACKEND_URL || '';
-
   const handleScrape = async () => {
     setStep('scraping');
     setError(null);
     setProgress(10);
 
     try {
-      const response = await fetch(`${baseUrl}/api/scrape-sakura-sake`, {
+      const response = await fetch(`/api/scrape-sakura-sake`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ page: 1 }),
@@ -81,7 +79,7 @@ export default function AdminImport() {
       // Now match with database
       setStep('matching');
       
-      const matchResponse = await fetch(`${baseUrl}/api/import-sakes`, {
+      const matchResponse = await fetch(`/api/import-sakes`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
@@ -121,7 +119,7 @@ export default function AdminImport() {
       const updatesToImport = matchResult.updates.filter(s => selectedUpdates.has(s.existingId!));
       const newToImport = matchResult.newSakes.filter(s => selectedNew.has(s.name));
 
-      const response = await fetch(`${baseUrl}/api/import-sakes`, {
+      const response = await fetch(`/api/import-sakes`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

@@ -18,6 +18,35 @@ interface ScrapeResult {
   hasMore: boolean;
 }
 
+function decodeEscapedUrl(url: string): string {
+  return url
+    .replace(/\\u002F/g, '/')
+    .replace(/\\\//g, '/')
+    .replace(/&amp;/g, '&')
+    .trim();
+}
+
+function isLikelyProductImage(url: string): boolean {
+  const lower = url.toLowerCase();
+  const looksLikeImage =
+    /\.(jpg|jpeg|png|webp|avif)(\?|$)/i.test(lower) ||
+    lower.includes('/images/') ||
+    lower.includes('/uploads/') ||
+    lower.includes('cdn') ||
+    lower.includes('cloudfront');
+
+  const excluded =
+    lower.includes('logo') ||
+    lower.includes('icon') ||
+    lower.includes('arrow') ||
+    lower.includes('close') ||
+    lower.includes('favicon') ||
+    lower.includes('sprite') ||
+    lower.endsWith('.svg');
+
+  return looksLikeImage && !excluded;
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Only allow POST
   if (req.method !== 'POST') {
@@ -164,21 +193,55 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
 
-    // Extract images separately from HTML
-    const imgRegex = /https:\/\/[^"'\s]+(?:uploads|cdn)[^"'\s]+\.(?:jpg|jpeg|png|webp)(?:\?[^"'\s]*)?/gi;
-    const imageMatches = html.match(imgRegex) || [];
-    const productImages = imageMatches.filter((url: string) => 
-      !url.includes('logo') && 
-      !url.includes('icon') &&
-      !url.includes('arrow') &&
-      !url.includes('close')
+    // Extract image URLs from multiple patterns.
+    const candidateUrls = new Set<string>();
+
+    const directUrlRegex = /https?:\/\/[^"'\\s)]+/gi;
+    const srcAttrRegex = /(?:src|data-src|data-image|data-original|poster)=["']([^"']+)["']/gi;
+    const srcSetRegex = /srcset=["']([^"']+)["']/gi;
+    const jsonUrlRegex = /"url"\s*:\s*"([^"]+)"/gi;
+
+    const directMatches = html.match(directUrlRegex) || [];
+    directMatches.forEach((raw) => candidateUrls.add(decodeEscapedUrl(raw)));
+
+    for (const match of html.matchAll(srcAttrRegex)) {
+      if (match[1]) {
+        candidateUrls.add(decodeEscapedUrl(match[1]));
+      }
+    }
+
+    for (const match of html.matchAll(srcSetRegex)) {
+      if (!match[1]) continue;
+      const srcSetParts = match[1].split(',').map((part) => part.trim().split(' ')[0]);
+      srcSetParts.forEach((part) => candidateUrls.add(decodeEscapedUrl(part)));
+    }
+
+    for (const match of html.matchAll(jsonUrlRegex)) {
+      if (match[1]) {
+        candidateUrls.add(decodeEscapedUrl(match[1]));
+      }
+    }
+
+    const productImages = Array.from(candidateUrls)
+      .map((url) => {
+        if (url.startsWith('//')) return `https:${url}`;
+        if (url.startsWith('/')) return `https://export.sakurasaketen.com${url}`;
+        return url;
+      })
+      .filter((url) => url.startsWith('http'))
+      .filter((url) => isLikelyProductImage(url))
+      .filter((url) => !url.includes('google') && !url.includes('gstatic'));
+
+    // Deduplicate while preserving order
+    const uniqueProductImages = productImages.filter(
+      (url, index, self) => index === self.findIndex((u) => u === url)
     );
 
-    // Try to match images to sakes (rough matching by order)
-    // In reality, images would need to be matched more carefully
+    // Assign images in order (best effort).
     sakes.forEach((sake, index) => {
-      if (productImages[index]) {
-        sake.imageUrl = productImages[index];
+      const candidate = uniqueProductImages[index] || uniqueProductImages[index % Math.max(uniqueProductImages.length, 1)];
+      if (candidate) {
+        sake.imageUrl = candidate;
       }
     });
 
