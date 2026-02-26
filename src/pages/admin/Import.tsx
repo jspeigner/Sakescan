@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { AdminLayout } from "@/components/admin";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -19,7 +19,10 @@ import {
   Building2,
   Wine,
   Copy,
-  CheckCheck
+  CheckCheck,
+  ImageIcon,
+  Play,
+  Clock
 } from "lucide-react";
 
 // ---- Shared types ----
@@ -74,7 +77,7 @@ type BreweryImportStep = 'idle' | 'checking' | 'needs-table' | 'loading' | 'prev
 const BATCH_SIZE = 20;
 
 export default function AdminImport() {
-  const [activeTab, setActiveTab] = useState<'sakes' | 'breweries'>('breweries');
+  const [activeTab, setActiveTab] = useState<'sakes' | 'breweries' | 'images'>('breweries');
 
   return (
     <AdminLayout>
@@ -98,6 +101,10 @@ export default function AdminImport() {
               <Wine className="w-4 h-4" />
               Sakes (Sakura Sake)
             </TabsTrigger>
+            <TabsTrigger value="images" className="gap-2">
+              <ImageIcon className="w-4 h-4" />
+              Image Processor
+            </TabsTrigger>
           </TabsList>
 
           <TabsContent value="breweries" className="space-y-6">
@@ -106,6 +113,10 @@ export default function AdminImport() {
 
           <TabsContent value="sakes" className="space-y-6">
             <SakeImportPanel />
+          </TabsContent>
+
+          <TabsContent value="images" className="space-y-6">
+            <ImageProcessorPanel />
           </TabsContent>
         </Tabs>
       </div>
@@ -841,4 +852,227 @@ function SakeImportPanel() {
   }
 
   return null;
+}
+
+// ================= IMAGE PROCESSOR =================
+
+interface ProcessingStatus {
+  success: boolean;
+  processed: number;
+  galleryProcessed: number;
+  failed: number;
+  remaining: {
+    breweryMainImages: number;
+    breweryGalleryImages: number;
+  };
+  errors?: string[];
+  timestamp: string;
+}
+
+function ImageProcessorPanel() {
+  const [status, setStatus] = useState<ProcessingStatus | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [runHistory, setRunHistory] = useState<ProcessingStatus[]>([]);
+
+  const fetchStatus = async () => {
+    setLoading(true);
+    try {
+      const response = await fetch('/api/cron/process-images', { method: 'POST' });
+      if (!response.ok) throw new Error('Failed to run');
+      const data: ProcessingStatus = await response.json();
+      setStatus(data);
+      setRunHistory(prev => [data, ...prev].slice(0, 10));
+    } catch (err) {
+      console.error('Status check failed:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRunBatch = async () => {
+    setRunning(true);
+    try {
+      const response = await fetch('/api/cron/process-images', { method: 'POST' });
+      if (!response.ok) throw new Error('Failed to process');
+      const data: ProcessingStatus = await response.json();
+      setStatus(data);
+      setRunHistory(prev => [data, ...prev].slice(0, 10));
+    } catch (err) {
+      console.error('Processing failed:', err);
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  const handleRunMultiple = async (batches: number) => {
+    setRunning(true);
+    for (let i = 0; i < batches; i++) {
+      try {
+        const response = await fetch('/api/cron/process-images', { method: 'POST' });
+        if (!response.ok) break;
+        const data: ProcessingStatus = await response.json();
+        setStatus(data);
+        setRunHistory(prev => [data, ...prev].slice(0, 10));
+
+        if (data.remaining.breweryMainImages === 0 && data.remaining.breweryGalleryImages === 0) {
+          break;
+        }
+      } catch {
+        break;
+      }
+    }
+    setRunning(false);
+  };
+
+  const totalRemaining = status
+    ? status.remaining.breweryMainImages + status.remaining.breweryGalleryImages
+    : null;
+
+  return (
+    <div className="space-y-6">
+      <Card className="p-6">
+        <div className="flex items-start gap-4">
+          <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
+            <ImageIcon className="w-6 h-6 text-primary" />
+          </div>
+          <div className="space-y-2 flex-1">
+            <h2 className="text-lg font-semibold">Background Image Processor</h2>
+            <p className="text-sm text-muted-foreground">
+              Automatically downloads external images and stores them in Supabase storage. 
+              Runs as a scheduled cron job every 6 hours, processing 15 images per run. 
+              You can also trigger it manually below.
+            </p>
+            <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+              <Clock className="w-4 h-4" />
+              <span>Cron schedule: every 6 hours (4 times/day)</span>
+            </div>
+          </div>
+        </div>
+      </Card>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <Card className="p-4">
+          <div className="text-center space-y-1">
+            <p className="text-3xl font-bold">
+              {status ? status.remaining.breweryMainImages : '?'}
+            </p>
+            <p className="text-sm text-muted-foreground">Brewery Images Remaining</p>
+          </div>
+        </Card>
+        <Card className="p-4">
+          <div className="text-center space-y-1">
+            <p className="text-3xl font-bold">
+              {status ? status.remaining.breweryGalleryImages : '?'}
+            </p>
+            <p className="text-sm text-muted-foreground">Gallery Images Remaining</p>
+          </div>
+        </Card>
+        <Card className="p-4">
+          <div className="text-center space-y-1">
+            <p className="text-3xl font-bold">
+              {totalRemaining !== null ? (
+                totalRemaining === 0 ? (
+                  <span className="text-green-500">Done</span>
+                ) : totalRemaining
+              ) : '?'}
+            </p>
+            <p className="text-sm text-muted-foreground">Total Remaining</p>
+          </div>
+        </Card>
+      </div>
+
+      {status && totalRemaining !== null && totalRemaining > 0 && (
+        <Card className="p-4 space-y-2">
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-muted-foreground">Estimated completion</span>
+            <span className="font-medium">
+              ~{Math.ceil(totalRemaining / (15 * 4))} days at current rate
+            </span>
+          </div>
+        </Card>
+      )}
+
+      <div className="flex flex-wrap gap-3">
+        <Button onClick={handleRunBatch} disabled={running || loading} className="gap-2">
+          {running ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+          Run 1 Batch (15 images)
+        </Button>
+        <Button variant="outline" onClick={() => handleRunMultiple(5)} disabled={running || loading} className="gap-2">
+          {running ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+          Run 5 Batches (75 images)
+        </Button>
+        <Button variant="outline" onClick={() => handleRunMultiple(20)} disabled={running || loading} className="gap-2">
+          {running ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+          Run 20 Batches (300 images)
+        </Button>
+        <Button variant="ghost" onClick={fetchStatus} disabled={loading || running} className="gap-2">
+          {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+          Check Status
+        </Button>
+      </div>
+
+      {status && (
+        <Card className="p-4 space-y-3">
+          <h3 className="font-medium">Last Run Result</h3>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
+            <div>
+              <p className="text-muted-foreground">Main Processed</p>
+              <p className="font-medium text-green-600">{status.processed}</p>
+            </div>
+            <div>
+              <p className="text-muted-foreground">Gallery Processed</p>
+              <p className="font-medium text-green-600">{status.galleryProcessed}</p>
+            </div>
+            <div>
+              <p className="text-muted-foreground">Failed</p>
+              <p className="font-medium text-destructive">{status.failed}</p>
+            </div>
+            <div>
+              <p className="text-muted-foreground">Timestamp</p>
+              <p className="font-medium">{new Date(status.timestamp).toLocaleTimeString()}</p>
+            </div>
+          </div>
+          {status.errors && status.errors.length > 0 && (
+            <div className="p-3 bg-destructive/10 rounded-lg">
+              <p className="text-sm font-medium text-destructive mb-1">Errors:</p>
+              <ul className="text-xs text-destructive/80 list-disc list-inside">
+                {status.errors.map((err, i) => <li key={i}>{err}</li>)}
+              </ul>
+            </div>
+          )}
+        </Card>
+      )}
+
+      {runHistory.length > 1 && (
+        <Card className="p-4">
+          <h3 className="font-medium mb-3">Run History (this session)</h3>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Time</TableHead>
+                <TableHead>Processed</TableHead>
+                <TableHead>Gallery</TableHead>
+                <TableHead>Failed</TableHead>
+                <TableHead className="hidden sm:table-cell">Remaining</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {runHistory.map((run, i) => (
+                <TableRow key={i}>
+                  <TableCell className="text-sm">{new Date(run.timestamp).toLocaleTimeString()}</TableCell>
+                  <TableCell className="text-green-600">{run.processed}</TableCell>
+                  <TableCell className="text-green-600">{run.galleryProcessed}</TableCell>
+                  <TableCell className="text-destructive">{run.failed}</TableCell>
+                  <TableCell className="hidden sm:table-cell">
+                    {run.remaining.breweryMainImages + run.remaining.breweryGalleryImages}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </Card>
+      )}
+    </div>
+  );
 }
