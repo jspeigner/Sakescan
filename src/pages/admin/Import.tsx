@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { AdminLayout } from "@/components/admin";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -15,8 +15,14 @@ import {
   ImagePlus, 
   Plus,
   AlertCircle,
-  ExternalLink
+  ExternalLink,
+  Building2,
+  Wine,
+  Copy,
+  CheckCheck
 } from "lucide-react";
+
+// ---- Shared types ----
 
 interface ScrapedSake {
   name: string;
@@ -35,7 +41,7 @@ interface SakeToImport extends ScrapedSake {
   selected?: boolean;
 }
 
-interface MatchResult {
+interface SakeMatchResult {
   updates: SakeToImport[];
   newSakes: SakeToImport[];
   totalMatched: number;
@@ -43,12 +49,508 @@ interface MatchResult {
   totalUpdates: number;
 }
 
-type ImportStep = 'idle' | 'scraping' | 'matching' | 'preview' | 'importing' | 'complete';
+interface BreweryInput {
+  name: string;
+  prefecture?: string;
+  region?: string;
+  address?: string;
+  phone?: string;
+  website?: string;
+  email?: string;
+  founded_year?: number;
+  representative?: string;
+  brands?: string[];
+  description?: string;
+  visiting_info?: string;
+  tour_available?: boolean;
+  image_url?: string;
+  gallery_images?: string[];
+  source_url?: string;
+}
+
+type SakeImportStep = 'idle' | 'scraping' | 'matching' | 'preview' | 'importing' | 'complete';
+type BreweryImportStep = 'idle' | 'checking' | 'needs-table' | 'loading' | 'preview' | 'importing' | 'complete';
+
+const BATCH_SIZE = 20;
 
 export default function AdminImport() {
-  const [step, setStep] = useState<ImportStep>('idle');
+  const [activeTab, setActiveTab] = useState<'sakes' | 'breweries'>('breweries');
+
+  return (
+    <AdminLayout>
+      <div className="space-y-6">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-serif font-bold">Import Data</h1>
+            <p className="text-muted-foreground">
+              Import sakes and breweries from external sources
+            </p>
+          </div>
+        </div>
+
+        <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as typeof activeTab)}>
+          <TabsList>
+            <TabsTrigger value="breweries" className="gap-2">
+              <Building2 className="w-4 h-4" />
+              Breweries
+            </TabsTrigger>
+            <TabsTrigger value="sakes" className="gap-2">
+              <Wine className="w-4 h-4" />
+              Sakes (Sakura Sake)
+            </TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="breweries" className="space-y-6">
+            <BreweryImportPanel />
+          </TabsContent>
+
+          <TabsContent value="sakes" className="space-y-6">
+            <SakeImportPanel />
+          </TabsContent>
+        </Tabs>
+      </div>
+    </AdminLayout>
+  );
+}
+
+// ================= BREWERY IMPORT =================
+
+function BreweryImportPanel() {
+  const [step, setStep] = useState<BreweryImportStep>('idle');
+  const [breweries, setBreweries] = useState<BreweryInput[]>([]);
+  const [existingCount, setExistingCount] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+  const [setupSql, setSetupSql] = useState<string | null>(null);
+  const [copiedSql, setCopiedSql] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [batchInfo, setBatchInfo] = useState({ current: 0, total: 0 });
+  const [importResult, setImportResult] = useState<{
+    insertedCount: number;
+    skippedCount: number;
+    imageCount: number;
+    errors?: string[];
+  } | null>(null);
+  const abortRef = useRef(false);
+
+  const checkTable = async () => {
+    setStep('checking');
+    setError(null);
+
+    try {
+      const response = await fetch('/api/setup-breweries', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      const data = await response.json();
+
+      if (data.exists) {
+        setExistingCount(data.rowCount || 0);
+        loadJsonData();
+      } else {
+        setSetupSql(data.sql || null);
+        setStep('needs-table');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to check table');
+      setStep('idle');
+    }
+  };
+
+  const loadJsonData = async () => {
+    setStep('loading');
+    setError(null);
+
+    try {
+      const response = await fetch('/data/sake_breweries_database.json');
+      if (!response.ok) throw new Error('Failed to load brewery data file');
+
+      const data = await response.json();
+      const breweryList: BreweryInput[] = data.breweries || [];
+
+      setBreweries(breweryList);
+      setStep('preview');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load data');
+      setStep('idle');
+    }
+  };
+
+  const handleCopySql = async () => {
+    if (setupSql) {
+      await navigator.clipboard.writeText(setupSql);
+      setCopiedSql(true);
+      setTimeout(() => setCopiedSql(false), 2000);
+    }
+  };
+
+  const handleImport = async () => {
+    setStep('importing');
+    setProgress(0);
+    setError(null);
+    abortRef.current = false;
+
+    const totalBatches = Math.ceil(breweries.length / BATCH_SIZE);
+    setBatchInfo({ current: 0, total: totalBatches });
+
+    let totalInserted = 0;
+    let totalSkipped = 0;
+    let totalImages = 0;
+    const allErrors: string[] = [];
+
+    for (let i = 0; i < breweries.length; i += BATCH_SIZE) {
+      if (abortRef.current) break;
+
+      const batch = breweries.slice(i, i + BATCH_SIZE);
+      const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+      setBatchInfo({ current: batchNum, total: totalBatches });
+      setProgress(Math.round((i / breweries.length) * 100));
+
+      try {
+        const response = await fetch('/api/import-breweries', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ breweries: batch }),
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json();
+          allErrors.push(`Batch ${batchNum}: ${errorData.error || 'Failed'}`);
+          continue;
+        }
+
+        const result = await response.json();
+        totalInserted += result.insertedCount || 0;
+        totalSkipped += result.skippedCount || 0;
+        totalImages += result.imageCount || 0;
+        if (result.errors) {
+          allErrors.push(...result.errors);
+        }
+      } catch (err) {
+        allErrors.push(`Batch ${batchNum}: ${err instanceof Error ? err.message : 'Failed'}`);
+      }
+    }
+
+    setProgress(100);
+    setImportResult({
+      insertedCount: totalInserted,
+      skippedCount: totalSkipped,
+      imageCount: totalImages,
+      errors: allErrors.length > 0 ? allErrors : undefined,
+    });
+    setStep('complete');
+  };
+
+  const resetImport = () => {
+    setStep('idle');
+    setBreweries([]);
+    setError(null);
+    setSetupSql(null);
+    setProgress(0);
+    setImportResult(null);
+    abortRef.current = false;
+  };
+
+  // --- IDLE ---
+  if (step === 'idle') {
+    return (
+      <Card className="p-8 text-center">
+        <div className="max-w-md mx-auto space-y-4">
+          <div className="w-16 h-16 mx-auto rounded-full bg-primary/10 flex items-center justify-center">
+            <Building2 className="w-8 h-8 text-primary" />
+          </div>
+          <h2 className="text-xl font-semibold">Import Breweries</h2>
+          <p className="text-muted-foreground">
+            Import 1,614 Japanese sake breweries from the Japan Sake and Shochu Makers Association database, 
+            including images, contact info, and descriptions.
+          </p>
+          {error && (
+            <div className="flex items-center gap-2 text-destructive text-sm">
+              <AlertCircle className="w-4 h-4" />
+              <span>{error}</span>
+            </div>
+          )}
+          <Button onClick={checkTable} size="lg" className="gap-2">
+            <Search className="w-5 h-5" />
+            Start Import
+          </Button>
+        </div>
+      </Card>
+    );
+  }
+
+  // --- CHECKING / LOADING ---
+  if (step === 'checking' || step === 'loading') {
+    return (
+      <Card className="p-8 text-center">
+        <div className="max-w-md mx-auto space-y-4">
+          <Loader2 className="w-12 h-12 mx-auto animate-spin text-primary" />
+          <h2 className="text-xl font-semibold">
+            {step === 'checking' ? 'Checking Database...' : 'Loading Brewery Data...'}
+          </h2>
+          <p className="text-muted-foreground">
+            {step === 'checking'
+              ? 'Verifying the breweries table exists...'
+              : 'Reading brewery data from JSON file...'}
+          </p>
+        </div>
+      </Card>
+    );
+  }
+
+  // --- NEEDS TABLE ---
+  if (step === 'needs-table') {
+    return (
+      <Card className="p-6 space-y-4">
+        <div className="flex items-center gap-3">
+          <AlertCircle className="w-6 h-6 text-amber-500" />
+          <h2 className="text-lg font-semibold">Breweries Table Needed</h2>
+        </div>
+        <p className="text-muted-foreground">
+          The breweries table doesn't exist yet in your database. Copy the SQL below and run it in your 
+          Supabase SQL Editor, then come back and click "Check Again".
+        </p>
+        {setupSql && (
+          <div className="relative">
+            <pre className="p-4 bg-muted rounded-lg text-sm overflow-x-auto max-h-[300px]">
+              {setupSql}
+            </pre>
+            <Button
+              variant="outline"
+              size="sm"
+              className="absolute top-2 right-2 gap-1"
+              onClick={handleCopySql}
+            >
+              {copiedSql ? <CheckCheck className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+              {copiedSql ? 'Copied!' : 'Copy'}
+            </Button>
+          </div>
+        )}
+        <div className="flex gap-3">
+          <a
+            href="https://supabase.com/dashboard/project/qpsdebikkmcdzddhphlk/sql/new"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            <Button variant="outline" className="gap-2">
+              <ExternalLink className="w-4 h-4" />
+              Open Supabase SQL Editor
+            </Button>
+          </a>
+          <Button onClick={checkTable} className="gap-2">
+            <Search className="w-4 h-4" />
+            Check Again
+          </Button>
+        </div>
+      </Card>
+    );
+  }
+
+  // --- PREVIEW ---
+  if (step === 'preview') {
+    const newCount = breweries.length - existingCount;
+    const withImage = breweries.filter(b => b.image_url).length;
+
+    return (
+      <>
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <Card className="p-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-blue-500/10 flex items-center justify-center">
+                <Building2 className="w-5 h-5 text-blue-500" />
+              </div>
+              <div>
+                <p className="text-2xl font-bold">{breweries.length}</p>
+                <p className="text-sm text-muted-foreground">In JSON File</p>
+              </div>
+            </div>
+          </Card>
+          <Card className="p-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-green-500/10 flex items-center justify-center">
+                <Plus className="w-5 h-5 text-green-500" />
+              </div>
+              <div>
+                <p className="text-2xl font-bold">{newCount > 0 ? `~${newCount}` : breweries.length}</p>
+                <p className="text-sm text-muted-foreground">New to Import</p>
+              </div>
+            </div>
+          </Card>
+          <Card className="p-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-amber-500/10 flex items-center justify-center">
+                <ImagePlus className="w-5 h-5 text-amber-500" />
+              </div>
+              <div>
+                <p className="text-2xl font-bold">{withImage}</p>
+                <p className="text-sm text-muted-foreground">With Images</p>
+              </div>
+            </div>
+          </Card>
+          <Card className="p-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-purple-500/10 flex items-center justify-center">
+                <Download className="w-5 h-5 text-purple-500" />
+              </div>
+              <div>
+                <p className="text-2xl font-bold">{Math.ceil(breweries.length / BATCH_SIZE)}</p>
+                <p className="text-sm text-muted-foreground">Batches</p>
+              </div>
+            </div>
+          </Card>
+        </div>
+
+        {existingCount > 0 && (
+          <Card className="p-4 bg-muted/50">
+            <p className="text-sm text-muted-foreground">
+              Your database already has <span className="font-medium text-foreground">{existingCount}</span> breweries. 
+              Duplicates will be automatically skipped during import.
+            </p>
+          </Card>
+        )}
+
+        {/* Preview Table */}
+        <Card>
+          <div className="p-4 border-b">
+            <p className="text-sm text-muted-foreground">
+              Preview of first 20 breweries (of {breweries.length} total)
+            </p>
+          </div>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Name</TableHead>
+                <TableHead className="hidden sm:table-cell">Prefecture</TableHead>
+                <TableHead className="hidden md:table-cell">Founded</TableHead>
+                <TableHead className="hidden lg:table-cell">Brands</TableHead>
+                <TableHead className="hidden xl:table-cell">Image</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {breweries.slice(0, 20).map((brewery, i) => (
+                <TableRow key={i}>
+                  <TableCell className="font-medium">{brewery.name}</TableCell>
+                  <TableCell className="hidden sm:table-cell">{brewery.prefecture || '-'}</TableCell>
+                  <TableCell className="hidden md:table-cell">{brewery.founded_year || '-'}</TableCell>
+                  <TableCell className="hidden lg:table-cell">
+                    {brewery.brands && brewery.brands.length > 0 ? (
+                      <div className="flex flex-wrap gap-1">
+                        {brewery.brands.slice(0, 2).map((brand, j) => (
+                          <Badge key={j} variant="secondary" className="text-xs">{brand}</Badge>
+                        ))}
+                        {brewery.brands.length > 2 && (
+                          <Badge variant="outline" className="text-xs">+{brewery.brands.length - 2}</Badge>
+                        )}
+                      </div>
+                    ) : '-'}
+                  </TableCell>
+                  <TableCell className="hidden xl:table-cell">
+                    {brewery.image_url ? (
+                      <img src={brewery.image_url} alt={brewery.name} className="w-10 h-10 object-cover rounded" />
+                    ) : (
+                      <span className="text-muted-foreground text-sm">None</span>
+                    )}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </Card>
+
+        <div className="flex items-center justify-between">
+          <Button variant="outline" onClick={resetImport}>Cancel</Button>
+          <Button onClick={handleImport} size="lg" className="gap-2">
+            <Download className="w-5 h-5" />
+            Import All {breweries.length} Breweries
+          </Button>
+        </div>
+      </>
+    );
+  }
+
+  // --- IMPORTING ---
+  if (step === 'importing') {
+    return (
+      <Card className="p-8 text-center">
+        <div className="max-w-md mx-auto space-y-4">
+          <Loader2 className="w-12 h-12 mx-auto animate-spin text-primary" />
+          <h2 className="text-xl font-semibold">Importing Breweries...</h2>
+          <p className="text-muted-foreground">
+            Batch {batchInfo.current} of {batchInfo.total} — downloading images and inserting records
+          </p>
+          <Progress value={progress} className="w-full" />
+          <p className="text-sm text-muted-foreground">
+            {Math.round(progress)}% complete — ~{Math.round((batchInfo.total - batchInfo.current) * 3)} seconds remaining
+          </p>
+          <Button variant="outline" size="sm" onClick={() => { abortRef.current = true; }}>
+            Stop Import
+          </Button>
+        </div>
+      </Card>
+    );
+  }
+
+  // --- COMPLETE ---
+  if (step === 'complete' && importResult) {
+    return (
+      <Card className="p-8 text-center">
+        <div className="max-w-md mx-auto space-y-4">
+          <div className="w-16 h-16 mx-auto rounded-full bg-green-500/10 flex items-center justify-center">
+            <CheckCircle className="w-8 h-8 text-green-500" />
+          </div>
+          <h2 className="text-xl font-semibold">Import Complete!</h2>
+          <div className="space-y-2">
+            <p className="text-muted-foreground">
+              <span className="font-medium text-foreground">{importResult.insertedCount}</span> breweries imported
+            </p>
+            <p className="text-muted-foreground">
+              <span className="font-medium text-foreground">{importResult.skippedCount}</span> duplicates skipped
+            </p>
+            <p className="text-muted-foreground">
+              <span className="font-medium text-foreground">{importResult.imageCount}</span> images downloaded
+            </p>
+          </div>
+          {importResult.errors && importResult.errors.length > 0 && (
+            <div className="text-left p-3 bg-destructive/10 rounded-lg max-h-[200px] overflow-y-auto">
+              <p className="text-sm font-medium text-destructive mb-1">
+                {importResult.errors.length} errors:
+              </p>
+              <ul className="text-sm text-destructive/80 list-disc list-inside">
+                {importResult.errors.slice(0, 10).map((err, i) => (
+                  <li key={i}>{err}</li>
+                ))}
+                {importResult.errors.length > 10 && (
+                  <li>...and {importResult.errors.length - 10} more</li>
+                )}
+              </ul>
+            </div>
+          )}
+          <div className="flex gap-3 justify-center">
+            <Button onClick={resetImport} variant="outline" className="gap-2">
+              <Search className="w-4 h-4" />
+              Import Again
+            </Button>
+            <a href="/admin/breweries">
+              <Button className="gap-2">
+                <Building2 className="w-4 h-4" />
+                View Breweries
+              </Button>
+            </a>
+          </div>
+        </div>
+      </Card>
+    );
+  }
+
+  return null;
+}
+
+// ================= SAKE IMPORT (existing logic) =================
+
+function SakeImportPanel() {
+  const [step, setStep] = useState<SakeImportStep>('idle');
   const [scrapedSakes, setScrapedSakes] = useState<ScrapedSake[]>([]);
-  const [matchResult, setMatchResult] = useState<MatchResult | null>(null);
+  const [matchResult, setMatchResult] = useState<SakeMatchResult | null>(null);
   const [selectedUpdates, setSelectedUpdates] = useState<Set<string>>(new Set());
   const [selectedNew, setSelectedNew] = useState<Set<string>>(new Set());
   const [progress, setProgress] = useState(0);
@@ -61,7 +563,7 @@ export default function AdminImport() {
     setProgress(10);
 
     try {
-      const response = await fetch(`/api/scrape-sakura-sake`, {
+      const response = await fetch('/api/scrape-sakura-sake', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ page: 1 }),
@@ -76,16 +578,12 @@ export default function AdminImport() {
       setScrapedSakes(data.sakes);
       setProgress(50);
 
-      // Now match with database
       setStep('matching');
-      
-      const matchResponse = await fetch(`/api/import-sakes`, {
+
+      const matchResponse = await fetch('/api/import-sakes', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          action: 'match',
-          sakes: data.sakes 
-        }),
+        body: JSON.stringify({ action: 'match', sakes: data.sakes }),
       });
 
       if (!matchResponse.ok) {
@@ -93,13 +591,10 @@ export default function AdminImport() {
         throw new Error(errorData.error || 'Failed to match');
       }
 
-      const matchData: MatchResult = await matchResponse.json();
+      const matchData: SakeMatchResult = await matchResponse.json();
       setMatchResult(matchData);
-      
-      // Pre-select all updates (missing images) and new sakes
       setSelectedUpdates(new Set(matchData.updates.map(s => s.existingId!)));
       setSelectedNew(new Set(matchData.newSakes.map(s => s.name)));
-      
       setProgress(100);
       setStep('preview');
     } catch (err) {
@@ -119,14 +614,10 @@ export default function AdminImport() {
       const updatesToImport = matchResult.updates.filter(s => selectedUpdates.has(s.existingId!));
       const newToImport = matchResult.newSakes.filter(s => selectedNew.has(s.name));
 
-      const response = await fetch(`/api/import-sakes`, {
+      const response = await fetch('/api/import-sakes', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'import',
-          updates: updatesToImport,
-          newSakes: newToImport,
-        }),
+        body: JSON.stringify({ action: 'import', updates: updatesToImport, newSakes: newToImport }),
       });
 
       if (!response.ok) {
@@ -145,39 +636,16 @@ export default function AdminImport() {
   };
 
   const toggleUpdateSelection = (id: string) => {
-    const newSelected = new Set(selectedUpdates);
-    if (newSelected.has(id)) {
-      newSelected.delete(id);
-    } else {
-      newSelected.add(id);
-    }
-    setSelectedUpdates(newSelected);
+    const s = new Set(selectedUpdates);
+    if (s.has(id)) s.delete(id); else s.add(id);
+    setSelectedUpdates(s);
   };
 
   const toggleNewSelection = (name: string) => {
-    const newSelected = new Set(selectedNew);
-    if (newSelected.has(name)) {
-      newSelected.delete(name);
-    } else {
-      newSelected.add(name);
-    }
-    setSelectedNew(newSelected);
+    const s = new Set(selectedNew);
+    if (s.has(name)) s.delete(name); else s.add(name);
+    setSelectedNew(s);
   };
-
-  const selectAllUpdates = () => {
-    if (matchResult) {
-      setSelectedUpdates(new Set(matchResult.updates.map(s => s.existingId!)));
-    }
-  };
-
-  const selectAllNew = () => {
-    if (matchResult) {
-      setSelectedNew(new Set(matchResult.newSakes.map(s => s.name)));
-    }
-  };
-
-  const deselectAllUpdates = () => setSelectedUpdates(new Set());
-  const deselectAllNew = () => setSelectedNew(new Set());
 
   const resetImport = () => {
     setStep('idle');
@@ -190,351 +658,187 @@ export default function AdminImport() {
     setImportResult(null);
   };
 
-  return (
-    <AdminLayout>
-      <div className="space-y-6">
-        {/* Header */}
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-          <div>
-            <h1 className="text-2xl font-serif font-bold">Import Sakes</h1>
-            <p className="text-muted-foreground">
-              Import sake data from Sakura Sake Shop's catalog of 1000+ bottles
-            </p>
+  // --- IDLE ---
+  if (step === 'idle') {
+    return (
+      <Card className="p-8 text-center">
+        <div className="max-w-md mx-auto space-y-4">
+          <div className="w-16 h-16 mx-auto rounded-full bg-primary/10 flex items-center justify-center">
+            <Download className="w-8 h-8 text-primary" />
           </div>
-          <a 
-            href="https://export.sakurasaketen.com/sake" 
-            target="_blank" 
-            rel="noopener noreferrer"
-            className="text-sm text-muted-foreground hover:text-foreground flex items-center gap-1"
-          >
-            <ExternalLink className="w-4 h-4" />
-            View Source
-          </a>
+          <h2 className="text-xl font-semibold">Scan Sakura Sake Shop</h2>
+          <p className="text-muted-foreground">
+            Scan the Sakura Sake Shop catalog to find new sakes and images for your database.
+          </p>
+          {error && (
+            <div className="flex items-center gap-2 text-destructive text-sm">
+              <AlertCircle className="w-4 h-4" />
+              <span>{error}</span>
+            </div>
+          )}
+          <div className="flex items-center justify-center gap-2">
+            <Button onClick={handleScrape} size="lg" className="gap-2">
+              <Search className="w-5 h-5" />
+              Start Scanning
+            </Button>
+            <a href="https://export.sakurasaketen.com/sake" target="_blank" rel="noopener noreferrer">
+              <Button variant="ghost" size="icon"><ExternalLink className="w-4 h-4" /></Button>
+            </a>
+          </div>
+        </div>
+      </Card>
+    );
+  }
+
+  // --- SCRAPING / MATCHING ---
+  if (step === 'scraping' || step === 'matching') {
+    return (
+      <Card className="p-8 text-center">
+        <div className="max-w-md mx-auto space-y-4">
+          <Loader2 className="w-12 h-12 mx-auto animate-spin text-primary" />
+          <h2 className="text-xl font-semibold">
+            {step === 'scraping' ? 'Scanning Catalog...' : 'Matching with Database...'}
+          </h2>
+          <Progress value={progress} className="w-full" />
+        </div>
+      </Card>
+    );
+  }
+
+  // --- PREVIEW ---
+  if (step === 'preview' && matchResult) {
+    return (
+      <>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <Card className="p-4">
+            <p className="text-2xl font-bold">{scrapedSakes.length}</p>
+            <p className="text-sm text-muted-foreground">Sakes Found</p>
+          </Card>
+          <Card className="p-4">
+            <p className="text-2xl font-bold">{matchResult.totalUpdates}</p>
+            <p className="text-sm text-muted-foreground">Image Updates</p>
+          </Card>
+          <Card className="p-4">
+            <p className="text-2xl font-bold">{matchResult.totalNew}</p>
+            <p className="text-sm text-muted-foreground">New Sakes</p>
+          </Card>
         </div>
 
-        {/* Error Display */}
-        {error && (
-          <Card className="p-4 bg-destructive/10 border-destructive">
-            <div className="flex items-center gap-2 text-destructive">
-              <AlertCircle className="w-5 h-5" />
-              <p>{error}</p>
-            </div>
-          </Card>
-        )}
+        <Tabs defaultValue="updates" className="space-y-4">
+          <TabsList>
+            <TabsTrigger value="updates">Updates ({selectedUpdates.size}/{matchResult.updates.length})</TabsTrigger>
+            <TabsTrigger value="new">New ({selectedNew.size}/{matchResult.newSakes.length})</TabsTrigger>
+          </TabsList>
 
-        {/* Step: Idle - Start scraping */}
-        {step === 'idle' && (
-          <Card className="p-8 text-center">
-            <div className="max-w-md mx-auto space-y-4">
-              <div className="w-16 h-16 mx-auto rounded-full bg-primary/10 flex items-center justify-center">
-                <Download className="w-8 h-8 text-primary" />
-              </div>
-              <h2 className="text-xl font-semibold">Scan Sakura Sake Shop</h2>
-              <p className="text-muted-foreground">
-                Scan the Sakura Sake Shop catalog to find new sakes and images for your database.
-                This will match against your existing sakes and identify what can be updated.
-              </p>
-              <Button onClick={handleScrape} size="lg" className="gap-2">
-                <Search className="w-5 h-5" />
-                Start Scanning
-              </Button>
-            </div>
-          </Card>
-        )}
-
-        {/* Step: Scraping/Matching - Loading */}
-        {(step === 'scraping' || step === 'matching') && (
-          <Card className="p-8 text-center">
-            <div className="max-w-md mx-auto space-y-4">
-              <Loader2 className="w-12 h-12 mx-auto animate-spin text-primary" />
-              <h2 className="text-xl font-semibold">
-                {step === 'scraping' ? 'Scanning Catalog...' : 'Matching with Database...'}
-              </h2>
-              <p className="text-muted-foreground">
-                {step === 'scraping' 
-                  ? 'Extracting sake data from Sakura Sake Shop...'
-                  : 'Comparing scraped data with your existing database...'}
-              </p>
-              <Progress value={progress} className="w-full" />
-            </div>
-          </Card>
-        )}
-
-        {/* Step: Preview - Show results */}
-        {step === 'preview' && matchResult && (
-          <>
-            {/* Summary Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <Card className="p-4">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-full bg-blue-500/10 flex items-center justify-center">
-                    <Search className="w-5 h-5 text-blue-500" />
-                  </div>
-                  <div>
-                    <p className="text-2xl font-bold">{scrapedSakes.length}</p>
-                    <p className="text-sm text-muted-foreground">Sakes Found</p>
-                  </div>
+          <TabsContent value="updates">
+            <Card>
+              <div className="p-4 border-b flex items-center justify-between">
+                <p className="text-sm text-muted-foreground">Existing sakes missing images</p>
+                <div className="flex gap-2">
+                  <Button variant="outline" size="sm" onClick={() => setSelectedUpdates(new Set(matchResult.updates.map(s => s.existingId!)))}>Select All</Button>
+                  <Button variant="outline" size="sm" onClick={() => setSelectedUpdates(new Set())}>Deselect All</Button>
                 </div>
-              </Card>
-              <Card className="p-4">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-full bg-amber-500/10 flex items-center justify-center">
-                    <ImagePlus className="w-5 h-5 text-amber-500" />
-                  </div>
-                  <div>
-                    <p className="text-2xl font-bold">{matchResult.totalUpdates}</p>
-                    <p className="text-sm text-muted-foreground">Missing Images</p>
-                  </div>
-                </div>
-              </Card>
-              <Card className="p-4">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-full bg-green-500/10 flex items-center justify-center">
-                    <Plus className="w-5 h-5 text-green-500" />
-                  </div>
-                  <div>
-                    <p className="text-2xl font-bold">{matchResult.totalNew}</p>
-                    <p className="text-sm text-muted-foreground">New Sakes</p>
-                  </div>
-                </div>
-              </Card>
-            </div>
-
-            {/* Tabs for Updates and New */}
-            <Tabs defaultValue="updates" className="space-y-4">
-              <TabsList>
-                <TabsTrigger value="updates" className="gap-2">
-                  <ImagePlus className="w-4 h-4" />
-                  Image Updates ({selectedUpdates.size}/{matchResult.updates.length})
-                </TabsTrigger>
-                <TabsTrigger value="new" className="gap-2">
-                  <Plus className="w-4 h-4" />
-                  New Sakes ({selectedNew.size}/{matchResult.newSakes.length})
-                </TabsTrigger>
-              </TabsList>
-
-              {/* Updates Tab */}
-              <TabsContent value="updates">
-                <Card>
-                  <div className="p-4 border-b flex items-center justify-between">
-                    <p className="text-sm text-muted-foreground">
-                      These existing sakes are missing images and can be updated
-                    </p>
-                    <div className="flex gap-2">
-                      <Button variant="outline" size="sm" onClick={selectAllUpdates}>
-                        Select All
-                      </Button>
-                      <Button variant="outline" size="sm" onClick={deselectAllUpdates}>
-                        Deselect All
-                      </Button>
-                    </div>
-                  </div>
-                  {matchResult.updates.length === 0 ? (
-                    <div className="p-8 text-center text-muted-foreground">
-                      No existing sakes need image updates
-                    </div>
-                  ) : (
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead className="w-12"></TableHead>
-                          <TableHead>Sake Name</TableHead>
-                          <TableHead className="hidden md:table-cell">Brewery</TableHead>
-                          <TableHead className="hidden lg:table-cell">Image</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {matchResult.updates.map((sake) => (
-                          <TableRow key={sake.existingId}>
-                            <TableCell>
-                              <Checkbox
-                                checked={selectedUpdates.has(sake.existingId!)}
-                                onCheckedChange={() => toggleUpdateSelection(sake.existingId!)}
-                              />
-                            </TableCell>
-                            <TableCell>
-                              <div>
-                                <p className="font-medium">{sake.name}</p>
-                                {sake.nameJapanese && (
-                                  <p className="text-sm text-muted-foreground">{sake.nameJapanese}</p>
-                                )}
-                              </div>
-                            </TableCell>
-                            <TableCell className="hidden md:table-cell">
-                              {sake.brewery || '-'}
-                            </TableCell>
-                            <TableCell className="hidden lg:table-cell">
-                              {sake.imageUrl ? (
-                                <img 
-                                  src={sake.imageUrl} 
-                                  alt={sake.name}
-                                  className="w-12 h-12 object-contain rounded"
-                                />
-                              ) : (
-                                <span className="text-muted-foreground">No image</span>
-                              )}
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  )}
-                </Card>
-              </TabsContent>
-
-              {/* New Sakes Tab */}
-              <TabsContent value="new">
-                <Card>
-                  <div className="p-4 border-b flex items-center justify-between">
-                    <p className="text-sm text-muted-foreground">
-                      These sakes are not in your database and can be added
-                    </p>
-                    <div className="flex gap-2">
-                      <Button variant="outline" size="sm" onClick={selectAllNew}>
-                        Select All
-                      </Button>
-                      <Button variant="outline" size="sm" onClick={deselectAllNew}>
-                        Deselect All
-                      </Button>
-                    </div>
-                  </div>
-                  {matchResult.newSakes.length === 0 ? (
-                    <div className="p-8 text-center text-muted-foreground">
-                      No new sakes found to add
-                    </div>
-                  ) : (
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead className="w-12"></TableHead>
-                          <TableHead>Sake Name</TableHead>
-                          <TableHead className="hidden md:table-cell">Brewery</TableHead>
-                          <TableHead className="hidden sm:table-cell">Type</TableHead>
-                          <TableHead className="hidden lg:table-cell">Prefecture</TableHead>
-                          <TableHead className="hidden xl:table-cell">Image</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {matchResult.newSakes.map((sake) => (
-                          <TableRow key={sake.name}>
-                            <TableCell>
-                              <Checkbox
-                                checked={selectedNew.has(sake.name)}
-                                onCheckedChange={() => toggleNewSelection(sake.name)}
-                              />
-                            </TableCell>
-                            <TableCell>
-                              <div>
-                                <p className="font-medium">{sake.name}</p>
-                                {sake.nameJapanese && (
-                                  <p className="text-sm text-muted-foreground">{sake.nameJapanese}</p>
-                                )}
-                              </div>
-                            </TableCell>
-                            <TableCell className="hidden md:table-cell">
-                              {sake.brewery || '-'}
-                            </TableCell>
-                            <TableCell className="hidden sm:table-cell">
-                              {sake.type ? (
-                                <Badge variant="secondary">{sake.type}</Badge>
-                              ) : '-'}
-                            </TableCell>
-                            <TableCell className="hidden lg:table-cell">
-                              {sake.prefecture || '-'}
-                            </TableCell>
-                            <TableCell className="hidden xl:table-cell">
-                              {sake.imageUrl ? (
-                                <img 
-                                  src={sake.imageUrl} 
-                                  alt={sake.name}
-                                  className="w-12 h-12 object-contain rounded"
-                                />
-                              ) : (
-                                <span className="text-muted-foreground">No image</span>
-                              )}
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  )}
-                </Card>
-              </TabsContent>
-            </Tabs>
-
-            {/* Import Actions */}
-            <div className="flex items-center justify-between">
-              <Button variant="outline" onClick={resetImport}>
-                Cancel
-              </Button>
-              <div className="flex items-center gap-4">
-                <p className="text-sm text-muted-foreground">
-                  {selectedUpdates.size + selectedNew.size} items selected
-                </p>
-                <Button 
-                  onClick={handleImport}
-                  disabled={selectedUpdates.size + selectedNew.size === 0}
-                  className="gap-2"
-                >
-                  <Download className="w-4 h-4" />
-                  Import Selected
-                </Button>
               </div>
-            </div>
-          </>
-        )}
-
-        {/* Step: Importing */}
-        {step === 'importing' && (
-          <Card className="p-8 text-center">
-            <div className="max-w-md mx-auto space-y-4">
-              <Loader2 className="w-12 h-12 mx-auto animate-spin text-primary" />
-              <h2 className="text-xl font-semibold">Importing...</h2>
-              <p className="text-muted-foreground">
-                Adding sakes and updating images in your database...
-              </p>
-              <Progress value={progress} className="w-full" />
-            </div>
-          </Card>
-        )}
-
-        {/* Step: Complete */}
-        {step === 'complete' && importResult && (
-          <Card className="p-8 text-center">
-            <div className="max-w-md mx-auto space-y-4">
-              <div className="w-16 h-16 mx-auto rounded-full bg-green-500/10 flex items-center justify-center">
-                <CheckCircle className="w-8 h-8 text-green-500" />
-              </div>
-              <h2 className="text-xl font-semibold">Import Complete!</h2>
-              <div className="space-y-2">
-                <p className="text-muted-foreground">
-                  <span className="font-medium text-foreground">{importResult.updatedCount}</span> sakes updated with images
-                </p>
-                <p className="text-muted-foreground">
-                  <span className="font-medium text-foreground">{importResult.insertedCount}</span> new sakes added
-                </p>
-              </div>
-              {importResult.errors && importResult.errors.length > 0 && (
-                <div className="text-left p-3 bg-destructive/10 rounded-lg">
-                  <p className="text-sm font-medium text-destructive mb-1">Some errors occurred:</p>
-                  <ul className="text-sm text-destructive/80 list-disc list-inside">
-                    {importResult.errors.slice(0, 5).map((err, i) => (
-                      <li key={i}>{err}</li>
+              {matchResult.updates.length === 0 ? (
+                <div className="p-8 text-center text-muted-foreground">No updates needed</div>
+              ) : (
+                <Table>
+                  <TableHeader><TableRow><TableHead className="w-12"></TableHead><TableHead>Name</TableHead><TableHead className="hidden md:table-cell">Brewery</TableHead></TableRow></TableHeader>
+                  <TableBody>
+                    {matchResult.updates.map((sake) => (
+                      <TableRow key={sake.existingId}>
+                        <TableCell><Checkbox checked={selectedUpdates.has(sake.existingId!)} onCheckedChange={() => toggleUpdateSelection(sake.existingId!)} /></TableCell>
+                        <TableCell className="font-medium">{sake.name}</TableCell>
+                        <TableCell className="hidden md:table-cell">{sake.brewery || '-'}</TableCell>
+                      </TableRow>
                     ))}
-                    {importResult.errors.length > 5 && (
-                      <li>...and {importResult.errors.length - 5} more</li>
-                    )}
-                  </ul>
-                </div>
+                  </TableBody>
+                </Table>
               )}
-              <Button onClick={resetImport} className="gap-2">
-                <Search className="w-4 h-4" />
-                Scan Again
-              </Button>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="new">
+            <Card>
+              <div className="p-4 border-b flex items-center justify-between">
+                <p className="text-sm text-muted-foreground">New sakes to add</p>
+                <div className="flex gap-2">
+                  <Button variant="outline" size="sm" onClick={() => setSelectedNew(new Set(matchResult.newSakes.map(s => s.name)))}>Select All</Button>
+                  <Button variant="outline" size="sm" onClick={() => setSelectedNew(new Set())}>Deselect All</Button>
+                </div>
+              </div>
+              {matchResult.newSakes.length === 0 ? (
+                <div className="p-8 text-center text-muted-foreground">No new sakes found</div>
+              ) : (
+                <Table>
+                  <TableHeader><TableRow><TableHead className="w-12"></TableHead><TableHead>Name</TableHead><TableHead className="hidden md:table-cell">Brewery</TableHead><TableHead className="hidden sm:table-cell">Type</TableHead></TableRow></TableHeader>
+                  <TableBody>
+                    {matchResult.newSakes.map((sake) => (
+                      <TableRow key={sake.name}>
+                        <TableCell><Checkbox checked={selectedNew.has(sake.name)} onCheckedChange={() => toggleNewSelection(sake.name)} /></TableCell>
+                        <TableCell className="font-medium">{sake.name}</TableCell>
+                        <TableCell className="hidden md:table-cell">{sake.brewery || '-'}</TableCell>
+                        <TableCell className="hidden sm:table-cell">{sake.type ? <Badge variant="secondary">{sake.type}</Badge> : '-'}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+            </Card>
+          </TabsContent>
+        </Tabs>
+
+        <div className="flex items-center justify-between">
+          <Button variant="outline" onClick={resetImport}>Cancel</Button>
+          <Button onClick={handleImport} disabled={selectedUpdates.size + selectedNew.size === 0} className="gap-2">
+            <Download className="w-4 h-4" />
+            Import Selected ({selectedUpdates.size + selectedNew.size})
+          </Button>
+        </div>
+      </>
+    );
+  }
+
+  // --- IMPORTING ---
+  if (step === 'importing') {
+    return (
+      <Card className="p-8 text-center">
+        <div className="max-w-md mx-auto space-y-4">
+          <Loader2 className="w-12 h-12 mx-auto animate-spin text-primary" />
+          <h2 className="text-xl font-semibold">Importing...</h2>
+          <Progress value={progress} className="w-full" />
+        </div>
+      </Card>
+    );
+  }
+
+  // --- COMPLETE ---
+  if (step === 'complete' && importResult) {
+    return (
+      <Card className="p-8 text-center">
+        <div className="max-w-md mx-auto space-y-4">
+          <div className="w-16 h-16 mx-auto rounded-full bg-green-500/10 flex items-center justify-center">
+            <CheckCircle className="w-8 h-8 text-green-500" />
+          </div>
+          <h2 className="text-xl font-semibold">Import Complete!</h2>
+          <p className="text-muted-foreground">
+            {importResult.updatedCount} updated, {importResult.insertedCount} added
+          </p>
+          {importResult.errors && importResult.errors.length > 0 && (
+            <div className="text-left p-3 bg-destructive/10 rounded-lg">
+              <ul className="text-sm text-destructive/80 list-disc list-inside">
+                {importResult.errors.slice(0, 5).map((err, i) => <li key={i}>{err}</li>)}
+              </ul>
             </div>
-          </Card>
-        )}
-      </div>
-    </AdminLayout>
-  );
+          )}
+          <Button onClick={resetImport} className="gap-2">
+            <Search className="w-4 h-4" />
+            Scan Again
+          </Button>
+        </div>
+      </Card>
+    );
+  }
+
+  return null;
 }

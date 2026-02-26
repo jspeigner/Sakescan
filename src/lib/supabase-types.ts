@@ -173,3 +173,25 @@ export type SakeUpdate = Database['public']['Tables']['sake']['Update'];
 export type User = Database['public']['Tables']['users']['Row'];
 export type Scan = Database['public']['Tables']['scans']['Row'];
 export type Rating = Database['public']['Tables']['ratings']['Row'];
+
+export interface Brewery {
+  id: string;
+  name: string;
+  prefecture: string | null;
+  region: string | null;
+  address: string | null;
+  phone: string | null;
+  website: string | null;
+  email: string | null;
+  founded_year: number | null;
+  representative: string | null;
+  brands: string[];
+  description: string | null;
+  visiting_info: string | null;
+  tour_available: boolean;
+  image_url: string | null;
+  gallery_images: string[];
+  source_url: string | null;
+  created_at: string;
+  updated_at: string;
+}
