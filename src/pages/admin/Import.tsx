@@ -151,6 +151,7 @@ function BreweryImportPanel() {
       const response = await fetch('/api/setup-breweries', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
       });
 
       const data = await response.json();
@@ -159,8 +160,21 @@ function BreweryImportPanel() {
         setExistingCount(data.rowCount || 0);
         loadJsonData();
       } else {
-        setSetupSql(data.sql || null);
-        setStep('needs-table');
+        // Try to auto-create the table
+        const createResponse = await fetch('/api/setup-breweries', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'create' }),
+        });
+        const createData = await createResponse.json();
+
+        if (createData.exists) {
+          setExistingCount(createData.rowCount || 0);
+          loadJsonData();
+        } else {
+          setSetupSql(createData.sql || null);
+          setStep('needs-table');
+        }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to check table');
@@ -311,6 +325,30 @@ function BreweryImportPanel() {
 
   // --- NEEDS TABLE ---
   if (step === 'needs-table') {
+    const handleCreateTable = async () => {
+      setStep('checking');
+      setError(null);
+      try {
+        const response = await fetch('/api/setup-breweries', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'create' }),
+        });
+        const data = await response.json();
+        if (data.exists) {
+          setExistingCount(data.rowCount || 0);
+          loadJsonData();
+        } else {
+          setSetupSql(data.sql || null);
+          setStep('needs-table');
+          setError('Auto-creation failed. Please run the SQL manually in Supabase.');
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to create table');
+        setStep('needs-table');
+      }
+    };
+
     return (
       <Card className="p-6 space-y-4">
         <div className="flex items-center gap-3">
@@ -318,41 +356,55 @@ function BreweryImportPanel() {
           <h2 className="text-lg font-semibold">Breweries Table Needed</h2>
         </div>
         <p className="text-muted-foreground">
-          The breweries table doesn't exist yet in your database. Copy the SQL below and run it in your 
-          Supabase SQL Editor, then come back and click "Check Again".
+          The breweries table doesn't exist yet. Click the button below to create it, or copy the SQL 
+          and run it in Supabase manually.
         </p>
-        {setupSql && (
-          <div className="relative">
-            <pre className="p-4 bg-muted rounded-lg text-sm overflow-x-auto max-h-[300px]">
-              {setupSql}
-            </pre>
-            <Button
-              variant="outline"
-              size="sm"
-              className="absolute top-2 right-2 gap-1"
-              onClick={handleCopySql}
-            >
-              {copiedSql ? <CheckCheck className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-              {copiedSql ? 'Copied!' : 'Copy'}
-            </Button>
+        {error && (
+          <div className="flex items-center gap-2 text-destructive text-sm">
+            <AlertCircle className="w-4 h-4" />
+            <span>{error}</span>
           </div>
         )}
-        <div className="flex gap-3">
-          <a
-            href="https://supabase.com/dashboard/project/qpsdebikkmcdzddhphlk/sql/new"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Button variant="outline" className="gap-2">
-              <ExternalLink className="w-4 h-4" />
-              Open Supabase SQL Editor
-            </Button>
-          </a>
-          <Button onClick={checkTable} className="gap-2">
+        <div className="flex flex-wrap gap-3">
+          <Button onClick={handleCreateTable} className="gap-2">
+            <Plus className="w-4 h-4" />
+            Create Table Automatically
+          </Button>
+          <Button onClick={checkTable} variant="outline" className="gap-2">
             <Search className="w-4 h-4" />
             Check Again
           </Button>
         </div>
+        {setupSql && (
+          <details className="mt-2">
+            <summary className="text-sm text-muted-foreground cursor-pointer hover:text-foreground">
+              Manual option: view SQL
+            </summary>
+            <div className="relative mt-2">
+              <pre className="p-4 bg-muted rounded-lg text-sm overflow-x-auto max-h-[300px]">
+                {setupSql}
+              </pre>
+              <Button
+                variant="outline"
+                size="sm"
+                className="absolute top-2 right-2 gap-1"
+                onClick={handleCopySql}
+              >
+                {copiedSql ? <CheckCheck className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                {copiedSql ? 'Copied!' : 'Copy'}
+              </Button>
+            </div>
+            <a
+              href="https://supabase.com/dashboard/project/qpsdebikkmcdzddhphlk/sql/new"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 mt-2 text-sm text-muted-foreground hover:text-foreground"
+            >
+              <ExternalLink className="w-3 h-3" />
+              Open Supabase SQL Editor
+            </a>
+          </details>
+        )}
       </Card>
     );
   }
