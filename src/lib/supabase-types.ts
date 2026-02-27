@@ -56,6 +56,12 @@ export interface Database {
           bottle_image_url: string | null;
           average_rating: number | null;
           total_ratings: number;
+          yeasts: string | null;
+          water_source: string | null;
+          filtration_method: string | null;
+          base_ingredients: string | null;
+          gallery_images: string[];
+          external_id: string | null;
           created_at: string;
           updated_at: string;
         };
@@ -78,6 +84,12 @@ export interface Database {
           bottle_image_url?: string | null;
           average_rating?: number | null;
           total_ratings?: number;
+          yeasts?: string | null;
+          water_source?: string | null;
+          filtration_method?: string | null;
+          base_ingredients?: string | null;
+          gallery_images?: string[];
+          external_id?: string | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -100,6 +112,12 @@ export interface Database {
           bottle_image_url?: string | null;
           average_rating?: number | null;
           total_ratings?: number;
+          yeasts?: string | null;
+          water_source?: string | null;
+          filtration_method?: string | null;
+          base_ingredients?: string | null;
+          gallery_images?: string[];
+          external_id?: string | null;
           created_at?: string;
           updated_at?: string;
         };
