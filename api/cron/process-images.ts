@@ -1,9 +1,11 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
 
-const BATCH_SIZE = 15;
+const BATCH_SIZE = 25;
 const EXTERNAL_PATTERNS = [
   'japansake.or.jp',
+  'img.sakenomy.jp',
+  'sakenomy.jp',
   'google',
   'imgur',
   'wikimedia',
