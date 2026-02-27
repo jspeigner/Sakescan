@@ -912,10 +912,13 @@ interface ProcessingStatus {
   success: boolean;
   processed: number;
   galleryProcessed: number;
+  sakeProcessed: number;
+  breweryMainProcessed: number;
   failed: number;
   remaining: {
     breweryMainImages: number;
     breweryGalleryImages: number;
+    sakeImages: number;
   };
   errors?: string[];
   timestamp: string;
@@ -967,7 +970,7 @@ function ImageProcessorPanel() {
         setStatus(data);
         setRunHistory(prev => [data, ...prev].slice(0, 10));
 
-        if (data.remaining.breweryMainImages === 0 && data.remaining.breweryGalleryImages === 0) {
+                if (data.remaining.breweryMainImages === 0 && data.remaining.breweryGalleryImages === 0 && (data.remaining.sakeImages || 0) === 0) {
           break;
         }
       } catch {
@@ -978,7 +981,7 @@ function ImageProcessorPanel() {
   };
 
   const totalRemaining = status
-    ? status.remaining.breweryMainImages + status.remaining.breweryGalleryImages
+    ? status.remaining.breweryMainImages + status.remaining.breweryGalleryImages + (status.remaining.sakeImages || 0)
     : null;
 
   return (
@@ -1003,13 +1006,21 @@ function ImageProcessorPanel() {
         </div>
       </Card>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <Card className="p-4">
+          <div className="text-center space-y-1">
+            <p className="text-3xl font-bold">
+              {status ? (status.remaining.sakeImages || '?') : '?'}
+            </p>
+            <p className="text-sm text-muted-foreground">Sake Images</p>
+          </div>
+        </Card>
         <Card className="p-4">
           <div className="text-center space-y-1">
             <p className="text-3xl font-bold">
               {status ? status.remaining.breweryMainImages : '?'}
             </p>
-            <p className="text-sm text-muted-foreground">Brewery Images Remaining</p>
+            <p className="text-sm text-muted-foreground">Brewery Images</p>
           </div>
         </Card>
         <Card className="p-4">
@@ -1017,7 +1028,7 @@ function ImageProcessorPanel() {
             <p className="text-3xl font-bold">
               {status ? status.remaining.breweryGalleryImages : '?'}
             </p>
-            <p className="text-sm text-muted-foreground">Gallery Images Remaining</p>
+            <p className="text-sm text-muted-foreground">Gallery Images</p>
           </div>
         </Card>
         <Card className="p-4">
@@ -1026,7 +1037,7 @@ function ImageProcessorPanel() {
               {totalRemaining !== null ? (
                 totalRemaining === 0 ? (
                   <span className="text-green-500">Done</span>
-                ) : totalRemaining
+                ) : totalRemaining.toLocaleString()
               ) : '?'}
             </p>
             <p className="text-sm text-muted-foreground">Total Remaining</p>
@@ -1067,13 +1078,17 @@ function ImageProcessorPanel() {
       {status && (
         <Card className="p-4 space-y-3">
           <h3 className="font-medium">Last Run Result</h3>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 text-sm">
             <div>
-              <p className="text-muted-foreground">Main Processed</p>
-              <p className="font-medium text-green-600">{status.processed}</p>
+              <p className="text-muted-foreground">Sake</p>
+              <p className="font-medium text-green-600">{status.sakeProcessed || 0}</p>
             </div>
             <div>
-              <p className="text-muted-foreground">Gallery Processed</p>
+              <p className="text-muted-foreground">Brewery</p>
+              <p className="font-medium text-green-600">{status.breweryMainProcessed || 0}</p>
+            </div>
+            <div>
+              <p className="text-muted-foreground">Gallery</p>
               <p className="font-medium text-green-600">{status.galleryProcessed}</p>
             </div>
             <div>
@@ -1081,7 +1096,7 @@ function ImageProcessorPanel() {
               <p className="font-medium text-destructive">{status.failed}</p>
             </div>
             <div>
-              <p className="text-muted-foreground">Timestamp</p>
+              <p className="text-muted-foreground">Time</p>
               <p className="font-medium">{new Date(status.timestamp).toLocaleTimeString()}</p>
             </div>
           </div>

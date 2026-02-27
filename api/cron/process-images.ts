@@ -1,21 +1,10 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
 
-const BATCH_SIZE = 25;
-const EXTERNAL_PATTERNS = [
-  'japansake.or.jp',
-  'img.sakenomy.jp',
-  'sakenomy.jp',
-  'google',
-  'imgur',
-  'wikimedia',
-  'wikipedia',
-];
-
-function isExternalUrl(url: string | null): boolean {
-  if (!url) return false;
-  return EXTERNAL_PATTERNS.some(pattern => url.includes(pattern));
-}
+const TOTAL_BUDGET = 25;
+const BREWERY_MAIN_BUDGET = 8;
+const BREWERY_GALLERY_BUDGET = 5;
+const SAKE_BUDGET = 12;
 
 function isSupabaseUrl(url: string, supabaseUrl: string): boolean {
   return url.includes(supabaseUrl.replace('https://', '')) || url.includes('supabase.co/storage');
@@ -67,7 +56,6 @@ async function downloadAndStore(
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  // Allow GET (cron) and POST (manual trigger)
   if (req.method !== 'GET' && req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
@@ -81,13 +69,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-  let processed = 0;
+  let breweryMainProcessed = 0;
+  let breweryGalleryProcessed = 0;
+  let sakeProcessed = 0;
   let failed = 0;
-  let galleryProcessed = 0;
   const errors: string[] = [];
 
   try {
-    // --- PHASE 1: Brewery main images ---
+    // --- BREWERY MAIN IMAGES (parallel track 1) ---
     const { data: breweries } = await supabase
       .from('breweries')
       .select('id, name, image_url')
@@ -98,142 +87,112 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       b => b.image_url && !isSupabaseUrl(b.image_url, supabaseUrl)
     );
 
-    for (const brewery of breweriesToProcess.slice(0, BATCH_SIZE)) {
+    for (const brewery of breweriesToProcess.slice(0, BREWERY_MAIN_BUDGET)) {
       try {
-        const newUrl = await downloadAndStore(
-          supabase,
-          brewery.image_url!,
-          'brewery-images',
-          brewery.name
-        );
-
-        await supabase
-          .from('breweries')
-          .update({ image_url: newUrl, updated_at: new Date().toISOString() })
-          .eq('id', brewery.id);
-
-        processed++;
+        const newUrl = await downloadAndStore(supabase, brewery.image_url!, 'brewery-images', brewery.name);
+        await supabase.from('breweries').update({ image_url: newUrl, updated_at: new Date().toISOString() }).eq('id', brewery.id);
+        breweryMainProcessed++;
       } catch (err) {
         failed++;
         errors.push(`Brewery "${brewery.name}": ${err instanceof Error ? err.message : String(err)}`);
       }
     }
 
-    // --- PHASE 2: Brewery gallery images (if main images are done) ---
-    if (breweriesToProcess.length <= BATCH_SIZE) {
-      const { data: galleryBreweries } = await supabase
-        .from('breweries')
-        .select('id, name, gallery_images')
-        .not('gallery_images', 'eq', '[]')
-        .limit(200);
+    // --- BREWERY GALLERY IMAGES (parallel track 2) ---
+    const { data: galleryBreweries } = await supabase
+      .from('breweries')
+      .select('id, name, gallery_images')
+      .not('gallery_images', 'eq', '[]')
+      .limit(200);
 
-      let galleryBudget = BATCH_SIZE - processed;
+    let galleryBudget = BREWERY_GALLERY_BUDGET;
 
-      for (const brewery of galleryBreweries || []) {
+    for (const brewery of galleryBreweries || []) {
+      if (galleryBudget <= 0) break;
+
+      const gallery: string[] = Array.isArray(brewery.gallery_images) ? brewery.gallery_images : [];
+      let updated = false;
+      const newGallery = [...gallery];
+
+      for (let i = 0; i < gallery.length; i++) {
         if (galleryBudget <= 0) break;
+        if (!gallery[i] || isSupabaseUrl(gallery[i], supabaseUrl)) continue;
 
-        const gallery: string[] = Array.isArray(brewery.gallery_images) ? brewery.gallery_images : [];
-        let updated = false;
-        const newGallery = [...gallery];
-
-        for (let i = 0; i < gallery.length; i++) {
-          if (galleryBudget <= 0) break;
-          if (isSupabaseUrl(gallery[i], supabaseUrl)) continue;
-          if (!gallery[i]) continue;
-
-          try {
-            const newUrl = await downloadAndStore(
-              supabase,
-              gallery[i],
-              'brewery-gallery',
-              `${brewery.name}-${i}`
-            );
-            newGallery[i] = newUrl;
-            galleryProcessed++;
-            galleryBudget--;
-            updated = true;
-          } catch {
-            failed++;
-            galleryBudget--;
-          }
+        try {
+          const newUrl = await downloadAndStore(supabase, gallery[i], 'brewery-gallery', `${brewery.name}-${i}`);
+          newGallery[i] = newUrl;
+          breweryGalleryProcessed++;
+          galleryBudget--;
+          updated = true;
+        } catch {
+          failed++;
+          galleryBudget--;
         }
+      }
 
-        if (updated) {
-          await supabase
-            .from('breweries')
-            .update({ gallery_images: newGallery, updated_at: new Date().toISOString() })
-            .eq('id', brewery.id);
-        }
+      if (updated) {
+        await supabase.from('breweries').update({ gallery_images: newGallery, updated_at: new Date().toISOString() }).eq('id', brewery.id);
       }
     }
 
-    // --- PHASE 3: Sake images (if brewery images are done) ---
-    if (breweriesToProcess.length === 0) {
-      const { data: sakes } = await supabase
-        .from('sake')
-        .select('id, name, label_image_url, bottle_image_url')
-        .limit(500);
+    // --- SAKE IMAGES (parallel track 3) ---
+    const { data: sakes } = await supabase
+      .from('sake')
+      .select('id, name, label_image_url, bottle_image_url')
+      .not('label_image_url', 'is', null)
+      .limit(500);
 
-      const sakesToProcess = (sakes || []).filter(s =>
-        (s.label_image_url && !isSupabaseUrl(s.label_image_url, supabaseUrl) && isExternalUrl(s.label_image_url)) ||
-        (s.bottle_image_url && !isSupabaseUrl(s.bottle_image_url, supabaseUrl) && isExternalUrl(s.bottle_image_url))
-      );
+    const sakesToProcess = (sakes || []).filter(s =>
+      (s.label_image_url && !isSupabaseUrl(s.label_image_url, supabaseUrl)) ||
+      (s.bottle_image_url && !isSupabaseUrl(s.bottle_image_url, supabaseUrl))
+    );
 
-      let sakeBudget = BATCH_SIZE - processed - galleryProcessed;
+    let sakeBudget = SAKE_BUDGET;
 
-      for (const sake of sakesToProcess.slice(0, sakeBudget)) {
-        if (sake.label_image_url && !isSupabaseUrl(sake.label_image_url, supabaseUrl)) {
-          try {
-            const newUrl = await downloadAndStore(supabase, sake.label_image_url, 'sake-images', sake.name);
-            await supabase.from('sake').update({ label_image_url: newUrl, updated_at: new Date().toISOString() }).eq('id', sake.id);
-            processed++;
-          } catch {
-            failed++;
-          }
+    for (const sake of sakesToProcess.slice(0, sakeBudget)) {
+      if (sake.label_image_url && !isSupabaseUrl(sake.label_image_url, supabaseUrl)) {
+        try {
+          const newUrl = await downloadAndStore(supabase, sake.label_image_url, 'sake-images', sake.name);
+          await supabase.from('sake').update({ label_image_url: newUrl, updated_at: new Date().toISOString() }).eq('id', sake.id);
+          sakeProcessed++;
+        } catch {
+          failed++;
         }
-        if (sake.bottle_image_url && !isSupabaseUrl(sake.bottle_image_url, supabaseUrl)) {
-          try {
-            const newUrl = await downloadAndStore(supabase, sake.bottle_image_url, 'sake-images', `${sake.name}-bottle`);
-            await supabase.from('sake').update({ bottle_image_url: newUrl, updated_at: new Date().toISOString() }).eq('id', sake.id);
-            processed++;
-          } catch {
-            failed++;
-          }
+      }
+      if (sake.bottle_image_url && !isSupabaseUrl(sake.bottle_image_url, supabaseUrl)) {
+        try {
+          const newUrl = await downloadAndStore(supabase, sake.bottle_image_url, 'sake-images', `${sake.name}-bottle`);
+          await supabase.from('sake').update({ bottle_image_url: newUrl, updated_at: new Date().toISOString() }).eq('id', sake.id);
+          sakeProcessed++;
+        } catch {
+          failed++;
         }
       }
     }
 
     // --- STATUS: Count remaining ---
-    const { data: remainingBreweryMain } = await supabase
-      .from('breweries')
-      .select('image_url')
-      .not('image_url', 'is', null)
-      .limit(2000);
-
-    const remainingMainCount = (remainingBreweryMain || []).filter(
-      b => b.image_url && !isSupabaseUrl(b.image_url, supabaseUrl)
-    ).length;
-
-    const { data: remainingGallery } = await supabase
-      .from('breweries')
-      .select('gallery_images')
-      .not('gallery_images', 'eq', '[]')
-      .limit(2000);
+    const remainingBreweryMain = breweriesToProcess.length - breweryMainProcessed;
 
     let remainingGalleryCount = 0;
-    (remainingGallery || []).forEach(b => {
+    (galleryBreweries || []).forEach(b => {
       const gallery: string[] = Array.isArray(b.gallery_images) ? b.gallery_images : [];
       remainingGalleryCount += gallery.filter(url => url && !isSupabaseUrl(url, supabaseUrl)).length;
     });
+    remainingGalleryCount -= breweryGalleryProcessed;
+
+    const remainingSake = sakesToProcess.length - Math.ceil(sakeProcessed / 2);
 
     return res.status(200).json({
       success: true,
-      processed,
-      galleryProcessed,
+      processed: breweryMainProcessed + sakeProcessed,
+      galleryProcessed: breweryGalleryProcessed,
+      sakeProcessed,
+      breweryMainProcessed,
       failed,
       remaining: {
-        breweryMainImages: remainingMainCount,
-        breweryGalleryImages: remainingGalleryCount,
+        breweryMainImages: Math.max(0, remainingBreweryMain),
+        breweryGalleryImages: Math.max(0, remainingGalleryCount),
+        sakeImages: Math.max(0, remainingSake),
       },
       errors: errors.length > 0 ? errors.slice(0, 5) : undefined,
       timestamp: new Date().toISOString(),
