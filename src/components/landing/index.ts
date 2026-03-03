@@ -3,5 +3,6 @@ export { Hero } from "./Hero";
 export { Features } from "./Features";
 export { HowItWorks } from "./HowItWorks";
 export { Testimonials } from "./Testimonials";
+export { BlogShowcase } from "./BlogShowcase";
 export { CTA } from "./CTA";
 export { Footer } from "./Footer";

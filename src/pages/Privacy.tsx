@@ -1,9 +1,16 @@
 import { Header } from "@/components/landing/Header";
 import { Footer } from "@/components/landing/Footer";
+import { SEO } from "@/components/SEO";
 
 export default function Privacy() {
   return (
     <div className="min-h-screen bg-background">
+      <SEO
+        title="Privacy Policy"
+        description="SakeScan's privacy policy. Learn how we collect, use, and protect your data when using our sake scanning and recommendation app."
+        path="/privacy"
+        noindex
+      />
       <Header />
       <main className="pt-24 pb-16">
         <article className="max-w-3xl mx-auto px-6 prose prose-gray dark:prose-invert">

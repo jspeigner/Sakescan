@@ -1,4 +1,5 @@
 import { Link } from "react-router-dom";
+import { IOS_APP_STORE_URL } from "@/lib/app-links";
 
 export function Footer() {
   return (
@@ -22,21 +23,21 @@ export function Footer() {
 
           {/* Links */}
           <div>
-            <h4 className="font-semibold mb-4">Product</h4>
+            <h4 className="font-semibold mb-4">Explore</h4>
             <ul className="space-y-2 text-sm text-muted-foreground">
-              <li><a href="#features" className="hover:text-foreground transition-colors">Features</a></li>
-              <li><a href="#how-it-works" className="hover:text-foreground transition-colors">How It Works</a></li>
-              <li><a href="#" className="hover:text-foreground transition-colors">Pricing</a></li>
-              <li><a href="#" className="hover:text-foreground transition-colors">Download</a></li>
+              <li><Link to="/explore" className="hover:text-foreground transition-colors">Browse Sake</Link></li>
+              <li><Link to="/blog" className="hover:text-foreground transition-colors">Sake Blog</Link></li>
+              <li><Link to="/guides" className="hover:text-foreground transition-colors">City Guides</Link></li>
+              <li><a href={IOS_APP_STORE_URL} target="_blank" rel="noopener noreferrer" className="hover:text-foreground transition-colors">Download App</a></li>
             </ul>
           </div>
 
           <div>
-            <h4 className="font-semibold mb-4">Resources</h4>
+            <h4 className="font-semibold mb-4">Learn</h4>
             <ul className="space-y-2 text-sm text-muted-foreground">
-              <li><a href="#" className="hover:text-foreground transition-colors">Sake Guide</a></li>
-              <li><a href="#" className="hover:text-foreground transition-colors">Blog</a></li>
-              <li><a href="#" className="hover:text-foreground transition-colors">API Docs</a></li>
+              <li><Link to="/blog/sake-for-beginners" className="hover:text-foreground transition-colors">Sake for Beginners</Link></li>
+              <li><Link to="/blog/types-of-sake" className="hover:text-foreground transition-colors">Types of Sake</Link></li>
+              <li><Link to="/blog/how-is-sake-made" className="hover:text-foreground transition-colors">How Sake Is Made</Link></li>
               <li><Link to="/contact" className="hover:text-foreground transition-colors">Support</Link></li>
             </ul>
           </div>

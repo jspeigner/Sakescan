@@ -1,5 +1,6 @@
 import { Header } from "@/components/landing/Header";
 import { Footer } from "@/components/landing/Footer";
+import { SEO } from "@/components/SEO";
 import { Card } from "@/components/ui/card";
 import { Heart, Target, Users, Globe } from "lucide-react";
 
@@ -36,6 +37,11 @@ const team = [
 export default function About() {
   return (
     <div className="min-h-screen bg-background">
+      <SEO
+        title="About SakeScan"
+        description="Learn about SakeScan's mission to democratize sake knowledge. Founded with a passion for Japanese craft, we've cataloged 50,000+ sakes and built a community of 25,000+ enthusiasts."
+        path="/about"
+      />
       <Header />
       <main className="pt-24 pb-16">
         {/* Hero */}

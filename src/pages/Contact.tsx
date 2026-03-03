@@ -1,5 +1,6 @@
 import { Header } from "@/components/landing/Header";
 import { Footer } from "@/components/landing/Footer";
+import { SEO } from "@/components/SEO";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,6 +11,11 @@ import { Mail, MessageCircle, FileText } from "lucide-react";
 export default function Contact() {
   return (
     <div className="min-h-screen bg-background">
+      <SEO
+        title="Contact & Support"
+        description="Get in touch with the SakeScan team. Questions about sake identification, app features, or partnership opportunities? We're here to help."
+        path="/contact"
+      />
       <Header />
       <main className="pt-24 pb-16">
         <div className="max-w-4xl mx-auto px-6">

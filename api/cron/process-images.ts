@@ -321,6 +321,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (s.bottle_image_url && !isSupabaseUrl(s.bottle_image_url, supabaseUrl)) remainingSake++;
     });
 
+    const totalProcessed = breweryMainProcessed + sakeProcessed + breweryGalleryProcessed;
+    console.log(`[process-images] OK processed=${totalProcessed} sake=${sakeProcessed} breweryMain=${breweryMainProcessed} gallery=${breweryGalleryProcessed} failed=${failed} remaining=${remainingBreweryMain + remainingGalleryCount + remainingSake}`);
+
     return res.status(200).json({
       success: true,
       processed: breweryMainProcessed + sakeProcessed,

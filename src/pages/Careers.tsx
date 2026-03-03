@@ -1,5 +1,6 @@
 import { Header } from "@/components/landing/Header";
 import { Footer } from "@/components/landing/Footer";
+import { SEO } from "@/components/SEO";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { MapPin, Briefcase, ArrowRight } from "lucide-react";
@@ -56,6 +57,11 @@ const perks = [
 export default function Careers() {
   return (
     <div className="min-h-screen bg-background">
+      <SEO
+        title="Careers at SakeScan"
+        description="Join the SakeScan team and help bring the art of sake to the world. Explore open positions in engineering, design, and marketing."
+        path="/careers"
+      />
       <Header />
       <main className="pt-24 pb-16">
         {/* Hero */}

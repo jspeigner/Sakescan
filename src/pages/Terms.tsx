@@ -1,9 +1,16 @@
 import { Header } from "@/components/landing/Header";
 import { Footer } from "@/components/landing/Footer";
+import { SEO } from "@/components/SEO";
 
 export default function Terms() {
   return (
     <div className="min-h-screen bg-background">
+      <SEO
+        title="Terms of Service"
+        description="SakeScan terms of service. Read the terms and conditions for using SakeScan's sake identification and recommendation services."
+        path="/terms"
+        noindex
+      />
       <Header />
       <main className="pt-24 pb-16">
         <article className="max-w-3xl mx-auto px-6 prose prose-gray dark:prose-invert">
