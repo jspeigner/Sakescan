@@ -16,7 +16,7 @@ A sake discovery app that lets users scan sake labels (like Vivino for wine) to 
 - Footer with navigation
 
 ### Company Pages
-- `/about` - About Us page with company story, values, and team
+- `/about` - About Us page with company story and values
 - `/careers` - Careers page with open positions
 - `/contact` - Contact & Support page with FAQ
 - `/privacy` - Privacy Policy

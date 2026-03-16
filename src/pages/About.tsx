@@ -27,13 +27,6 @@ const values = [
   },
 ];
 
-const team = [
-  { name: "Yuki Tanaka", role: "Founder & CEO", initials: "YT" },
-  { name: "James Chen", role: "CTO", initials: "JC" },
-  { name: "Mika Sato", role: "Head of Sake Curation", initials: "MS" },
-  { name: "Alex Rivera", role: "Head of Design", initials: "AR" },
-];
-
 export default function About() {
   return (
     <div className="min-h-screen bg-background">
@@ -91,22 +84,6 @@ export default function About() {
                   </div>
                 </div>
               </Card>
-            ))}
-          </div>
-        </section>
-
-        {/* Team */}
-        <section className="max-w-4xl mx-auto px-6">
-          <h2 className="text-2xl font-serif font-bold text-center mb-10">Our Team</h2>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
-            {team.map((member) => (
-              <div key={member.name} className="text-center">
-                <div className="w-20 h-20 rounded-full bg-primary/10 flex items-center justify-center mx-auto mb-3">
-                  <span className="text-primary font-semibold text-lg">{member.initials}</span>
-                </div>
-                <h3 className="font-semibold">{member.name}</h3>
-                <p className="text-sm text-muted-foreground">{member.role}</p>
-              </div>
             ))}
           </div>
         </section>

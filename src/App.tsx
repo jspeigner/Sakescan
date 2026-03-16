@@ -29,6 +29,7 @@ import AdminUsers from "./pages/admin/Users";
 import AdminReviews from "./pages/admin/Reviews";
 import AdminSettings from "./pages/admin/Settings";
 import AdminImport from "./pages/admin/Import";
+import AuthCallback from "./pages/AuthCallback";
 
 const queryClient = new QueryClient();
 
@@ -55,6 +56,8 @@ const App = () => (
               <Route path="/explore" element={<SakeExplore />} />
               <Route path="/sake/:slug" element={<SakeDetail />} />
               <Route path="/brewery/:slug" element={<BreweryDetail />} />
+              {/* Auth callback for mobile app (password reset, etc.) */}
+              <Route path="/auth/callback" element={<AuthCallback />} />
               {/* Admin routes */}
               <Route path="/admin/login" element={<AdminLogin />} />
               <Route path="/admin" element={<ProtectedRoute><AdminDashboard /></ProtectedRoute>} />
