@@ -38,10 +38,11 @@ function relevanceScore(url: string, title: string | undefined, tokens: string[]
 }
 
 function sourcePriority(source: string): number {
-  if (source === 'Sakura Sake Shop') return 40;
-  if (source === 'Umami Mart') return 40;
-  if (source === 'Sake Times') return 30;
-  if (source === 'Google Images') return 0;
+  // Prefer real image-search hits over merchant listing chrome (was inverted before).
+  if (source === 'Google Images') return 48;
+  if (source === 'Sakura Sake Shop') return 28;
+  if (source === 'Umami Mart') return 28;
+  if (source === 'Sake Times') return 24;
   return 15;
 }
 
@@ -67,8 +68,14 @@ function filterAndRankImages(
       return rel >= 4;
     }
 
-    if (img.source === 'Sakura Sake Shop' || img.source === 'Umami Mart') {
-      if (tokens.length > 0 && rel < 2) return false;
+    if (
+      img.source === 'Sakura Sake Shop' ||
+      img.source === 'Umami Mart' ||
+      img.source === 'Sake Times'
+    ) {
+      // Score from URL only — we do not pass fake titles that matched every image.
+      const urlRel = relevanceScore(img.url, undefined, tokens);
+      if (tokens.length > 0 && urlRel < 3) return false;
     }
 
     return true;
@@ -142,6 +149,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           url: sakuraSakeUrl,
           formats: ['markdown', 'html'],
           onlyMainContent: true,
+          // Default Firecrawl cache is ~2 days — stale listing HTML repeats the same images.
+          maxAge: 0,
         }),
       });
 
@@ -169,7 +178,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           results.images.push({
             url,
             source: 'Sakura Sake Shop',
-            title: name,
           });
         });
 
@@ -209,6 +217,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           url: umamiMartUrl,
           formats: ['markdown', 'html'],
           onlyMainContent: true,
+          maxAge: 0,
         }),
       });
 
@@ -239,7 +248,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           results.images.push({
             url,
             source: 'Umami Mart',
-            title: name,
           });
         });
 
@@ -282,6 +290,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             url: sakeTimesUrl,
             formats: ['html'],
             onlyMainContent: true,
+            maxAge: 0,
           }),
         });
 
@@ -306,7 +315,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             results.images.push({
               url,
               source: 'Sake Times',
-              title: nameJapanese || name,
             });
           });
         }
@@ -328,6 +336,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         body: JSON.stringify({
           url: googleImagesUrl,
           formats: ['html'],
+          // Image search grid + embedded URLs live outside "main content" extraction.
+          onlyMainContent: false,
+          maxAge: 0,
         }),
       });
 
@@ -358,7 +369,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           });
         }
 
-        [...foundUrls].slice(0, 5).forEach((url) => {
+        [...foundUrls].slice(0, 24).forEach((url) => {
           results.images.push({
             url,
             source: 'Google Images',
