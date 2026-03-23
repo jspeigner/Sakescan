@@ -140,10 +140,10 @@ export default function SakeExplore() {
                   <Link key={sake.id} to={`/sake/${slugify(sake.name)}-${sake.id.slice(0, 8)}`} className="group block">
                     <Card className="overflow-hidden transition-all duration-200 hover:shadow-md hover:-translate-y-0.5 h-full">
                       <div className="aspect-[4/3] bg-muted/50 flex items-center justify-center overflow-hidden">
-                        {sake.label_image_url ? (
+                        {sake.image_url ? (
                           <img
-                            src={withImageCacheBust(sake.label_image_url, sake.updated_at)}
-                            alt={`${sake.name} sake label`}
+                            src={withImageCacheBust(sake.image_url, sake.updated_at)}
+                            alt={`${sake.name} sake`}
                             className="w-full h-full object-cover transition-transform group-hover:scale-105"
                             loading="lazy"
                           />

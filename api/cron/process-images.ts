@@ -244,13 +244,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (!rateLimited) {
       const { data: sakes } = await supabase
         .from('sake')
-        .select('id, name, label_image_url, bottle_image_url')
-        .not('label_image_url', 'is', null)
+        .select('id, name, image_url')
+        .not('image_url', 'is', null)
         .limit(500);
 
-      const sakesToProcess = (sakes || []).filter(s =>
-        (s.label_image_url && !isSupabaseUrl(s.label_image_url, supabaseUrl)) ||
-        (s.bottle_image_url && !isSupabaseUrl(s.bottle_image_url, supabaseUrl))
+      const sakesToProcess = (sakes || []).filter(
+        (s) => s.image_url && !isSupabaseUrl(s.image_url, supabaseUrl)
       );
 
       let sakeBudget = SAKE_BUDGET;
@@ -258,15 +257,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       for (const sake of sakesToProcess.slice(0, sakeBudget)) {
         if (rateLimited) break;
 
-        if (sake.label_image_url && !isSupabaseUrl(sake.label_image_url, supabaseUrl)) {
+        if (sake.image_url && !isSupabaseUrl(sake.image_url, supabaseUrl)) {
           try {
-            const result = await downloadAndStore(supabase, sake.label_image_url, 'sake-images', sake.name, seenHashes);
-            if (result.rateLimited) { rateLimited = true; break; }
+            const result = await downloadAndStore(supabase, sake.image_url, 'sake-images', sake.name, seenHashes);
+            if (result.rateLimited) {
+              rateLimited = true;
+              break;
+            }
             if (result.skippedPlaceholder) {
-              await supabase.from('sake').update({ label_image_url: null, updated_at: new Date().toISOString() }).eq('id', sake.id);
+              await supabase
+                .from('sake')
+                .update({ image_url: null, updated_at: new Date().toISOString() })
+                .eq('id', sake.id);
               skippedPlaceholders++;
             } else {
-              await supabase.from('sake').update({ label_image_url: result.url, updated_at: new Date().toISOString() }).eq('id', sake.id);
+              await supabase
+                .from('sake')
+                .update({ image_url: result.url, updated_at: new Date().toISOString() })
+                .eq('id', sake.id);
               sakeProcessed++;
             }
             await sleep(DELAY_MS);
@@ -274,30 +282,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             failed++;
             const msg = err instanceof Error ? err.message : String(err);
             if (msg.includes('Blocked') || msg.includes('Not an image') || msg.includes('Too small')) {
-              await supabase.from('sake').update({ label_image_url: null, updated_at: new Date().toISOString() }).eq('id', sake.id);
-            }
-          }
-        }
-
-        if (rateLimited) break;
-
-        if (sake.bottle_image_url && !isSupabaseUrl(sake.bottle_image_url, supabaseUrl)) {
-          try {
-            const result = await downloadAndStore(supabase, sake.bottle_image_url, 'sake-images', `${sake.name}-bottle`, seenHashes);
-            if (result.rateLimited) { rateLimited = true; break; }
-            if (result.skippedPlaceholder) {
-              await supabase.from('sake').update({ bottle_image_url: null, updated_at: new Date().toISOString() }).eq('id', sake.id);
-              skippedPlaceholders++;
-            } else {
-              await supabase.from('sake').update({ bottle_image_url: result.url, updated_at: new Date().toISOString() }).eq('id', sake.id);
-              sakeProcessed++;
-            }
-            await sleep(DELAY_MS);
-          } catch (err) {
-            failed++;
-            const msg = err instanceof Error ? err.message : String(err);
-            if (msg.includes('Blocked') || msg.includes('Not an image') || msg.includes('Too small')) {
-              await supabase.from('sake').update({ bottle_image_url: null, updated_at: new Date().toISOString() }).eq('id', sake.id);
+              await supabase
+                .from('sake')
+                .update({ image_url: null, updated_at: new Date().toISOString() })
+                .eq('id', sake.id);
             }
           }
         }
@@ -314,11 +302,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       remainingGalleryCount += gallery.filter(url => url && !isSupabaseUrl(url, supabaseUrl)).length;
     });
 
-    const { data: sCheck } = await supabase.from('sake').select('label_image_url, bottle_image_url').not('label_image_url', 'is', null).limit(5000);
+    const { data: sCheck } = await supabase
+      .from('sake')
+      .select('image_url')
+      .not('image_url', 'is', null)
+      .limit(5000);
     let remainingSake = 0;
-    (sCheck || []).forEach(s => {
-      if (s.label_image_url && !isSupabaseUrl(s.label_image_url, supabaseUrl)) remainingSake++;
-      if (s.bottle_image_url && !isSupabaseUrl(s.bottle_image_url, supabaseUrl)) remainingSake++;
+    (sCheck || []).forEach((s) => {
+      if (s.image_url && !isSupabaseUrl(s.image_url, supabaseUrl)) remainingSake++;
     });
 
     const totalProcessed = breweryMainProcessed + sakeProcessed + breweryGalleryProcessed;

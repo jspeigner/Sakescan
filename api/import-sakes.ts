@@ -91,7 +91,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // Fetch all existing sakes
       const { data: existingSakes, error: fetchError } = await supabase
         .from('sake')
-        .select('id, name, name_japanese, brewery, label_image_url, bottle_image_url');
+        .select('id, name, name_japanese, brewery, image_url');
 
       if (fetchError) throw fetchError;
 
@@ -118,7 +118,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
         if (match) {
           // Check if existing sake is missing at least one image
-          const needsImage = !match.label_image_url || !match.bottle_image_url;
+          const needsImage = !match.image_url;
           
           results.push({
             ...scraped,
@@ -171,7 +171,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           const { error } = await supabase
             .from('sake')
             .update({
-              label_image_url: finalImageUrl,
+              image_url: finalImageUrl,
               updated_at: new Date().toISOString(),
             })
             .eq('id', sake.existingId);
@@ -204,7 +204,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             brewery: sake.brewery || 'Unknown',
             type: sake.type || null,
             prefecture: sake.prefecture || null,
-            label_image_url: finalImageUrl,
+            image_url: finalImageUrl,
             total_ratings: 0,
           });
 

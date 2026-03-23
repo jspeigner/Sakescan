@@ -25,8 +25,7 @@ interface SakeFormData {
   alcohol_percentage: number | null;
   smv: number | null;
   acidity: number | null;
-  label_image_url: string;
-  bottle_image_url: string;
+  image_url: string;
 }
 
 interface SakeModalProps {
@@ -81,8 +80,7 @@ export function SakeModal({ open, onOpenChange, sake, onSaved }: SakeModalProps)
     alcohol_percentage: null,
     smv: null,
     acidity: null,
-    label_image_url: "",
-    bottle_image_url: "",
+    image_url: "",
   });
 
   useEffect(() => {
@@ -101,8 +99,7 @@ export function SakeModal({ open, onOpenChange, sake, onSaved }: SakeModalProps)
         alcohol_percentage: sake.alcohol_percentage,
         smv: sake.smv,
         acidity: sake.acidity,
-        label_image_url: sake.label_image_url || "",
-        bottle_image_url: sake.bottle_image_url || "",
+        image_url: sake.image_url || "",
       });
     } else {
       setForm({
@@ -119,13 +116,12 @@ export function SakeModal({ open, onOpenChange, sake, onSaved }: SakeModalProps)
         alcohol_percentage: null,
         smv: null,
         acidity: null,
-        label_image_url: "",
-        bottle_image_url: "",
+        image_url: "",
       });
     }
   }, [sake, open]);
 
-  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>, field: 'label_image_url' | 'bottle_image_url') => {
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
@@ -180,7 +176,7 @@ export function SakeModal({ open, onOpenChange, sake, onSaved }: SakeModalProps)
         throw new Error("Server did not return an image URL");
       }
 
-      setForm((prev) => ({ ...prev, [field]: data.url as string }));
+      setForm((prev) => ({ ...prev, image_url: data.url as string }));
     } catch (error) {
       console.error("Error uploading image:", error);
       alert(error instanceof Error ? error.message : "Failed to upload image");
@@ -190,8 +186,8 @@ export function SakeModal({ open, onOpenChange, sake, onSaved }: SakeModalProps)
     }
   };
 
-  const handleSelectImage = (url: string, field: 'label_image_url' | 'bottle_image_url') => {
-    setForm(prev => ({ ...prev, [field]: url }));
+  const handleSelectImage = (url: string) => {
+    setForm((prev) => ({ ...prev, image_url: url }));
   };
 
   const handleImportData = (data: Record<string, unknown>) => {
@@ -250,36 +246,20 @@ export function SakeModal({ open, onOpenChange, sake, onSaved }: SakeModalProps)
 
     setLoading(true);
     try {
-      // Download any external images before saving
-      let labelImageUrl = form.label_image_url;
-      let bottleImageUrl = form.bottle_image_url;
-
-      if (labelImageUrl && !isSupabaseUrl(labelImageUrl)) {
+      let imageUrl = form.image_url;
+      if (imageUrl && !isSupabaseUrl(imageUrl)) {
         try {
-          labelImageUrl = await downloadExternalImage(labelImageUrl);
+          imageUrl = await downloadExternalImage(imageUrl);
         } catch {
-          if (!confirm('Failed to download label image. Save with external URL anyway?')) {
+          if (!confirm("Failed to download image. Save with external URL anyway?")) {
             setLoading(false);
             return;
           }
         }
       }
 
-      if (bottleImageUrl && !isSupabaseUrl(bottleImageUrl)) {
-        try {
-          bottleImageUrl = await downloadExternalImage(bottleImageUrl);
-        } catch {
-          if (!confirm('Failed to download bottle image. Save with external URL anyway?')) {
-            setLoading(false);
-            return;
-          }
-        }
-      }
-
-      const labelFinal =
-        labelImageUrl && String(labelImageUrl).trim() !== "" ? String(labelImageUrl).trim() : null;
-      const bottleFinal =
-        bottleImageUrl && String(bottleImageUrl).trim() !== "" ? String(bottleImageUrl).trim() : null;
+      const imageFinal =
+        imageUrl && String(imageUrl).trim() !== "" ? String(imageUrl).trim() : null;
 
       const payload = {
         name: form.name,
@@ -301,21 +281,14 @@ export function SakeModal({ open, onOpenChange, sake, onSaved }: SakeModalProps)
             : Number(form.alcohol_percentage),
         smv: form.smv === null || form.smv === undefined ? null : Number(form.smv),
         acidity: form.acidity === null || form.acidity === undefined ? null : Number(form.acidity),
-        label_image_url: labelFinal,
-        bottle_image_url: bottleFinal,
+        image_url: imageFinal,
         updated_at: new Date().toISOString(),
       };
 
-      const prevLabel = sake?.label_image_url?.trim() || null;
-      const prevBottle = sake?.bottle_image_url?.trim() || null;
+      const prevImage = sake?.image_url?.trim() || null;
       const storageUrlsToRemove: string[] = [];
-      if (sake) {
-        if (prevLabel && prevLabel !== labelFinal && isSupabaseUrl(prevLabel)) {
-          storageUrlsToRemove.push(prevLabel);
-        }
-        if (prevBottle && prevBottle !== bottleFinal && isSupabaseUrl(prevBottle)) {
-          storageUrlsToRemove.push(prevBottle);
-        }
+      if (sake && prevImage && prevImage !== imageFinal && isSupabaseUrl(prevImage)) {
+        storageUrlsToRemove.push(prevImage);
       }
 
       let savedId: string;
@@ -344,8 +317,7 @@ export function SakeModal({ open, onOpenChange, sake, onSaved }: SakeModalProps)
           },
           body: JSON.stringify({
             sakeId: savedId,
-            label_image_url: labelFinal,
-            bottle_image_url: bottleFinal,
+            image_url: imageFinal,
           }),
         });
         if (!syncRes.ok) {
@@ -353,7 +325,7 @@ export function SakeModal({ open, onOpenChange, sake, onSaved }: SakeModalProps)
           console.error("admin-sync-sake-images failed:", syncRes.status, errBody);
           if (syncRes.status >= 500 || syncRes.status === 401 || syncRes.status === 403) {
             alert(
-              "Image fields might not have updated. Confirm SUPABASE_SERVICE_ROLE_KEY and admin session on Vercel, then save again."
+              "Image might not have updated. Confirm SUPABASE_SERVICE_ROLE_KEY and admin session on Vercel, then save again."
             );
           }
         }
@@ -535,14 +507,13 @@ export function SakeModal({ open, onOpenChange, sake, onSaved }: SakeModalProps)
             />
           </div>
 
-          {/* Images */}
+          {/* Sake image */}
           <div className="space-y-4">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <div>
-                <Label>Images</Label>
+                <Label>Sake image</Label>
                 <p className="text-xs text-muted-foreground mt-1 max-w-md">
-                  The site and admin list use the <strong>label</strong> image. If a bad picture is still showing, clear the{" "}
-                  <strong>bottle</strong> slot too (wrong imports often land there).
+                  One photo per sake (label or bottle). Used on the website, admin list, and mobile app.
                 </p>
               </div>
               <div className="flex flex-wrap gap-2">
@@ -550,11 +521,9 @@ export function SakeModal({ open, onOpenChange, sake, onSaved }: SakeModalProps)
                   type="button"
                   variant="secondary"
                   size="sm"
-                  onClick={() =>
-                    setForm((prev) => ({ ...prev, label_image_url: "", bottle_image_url: "" }))
-                  }
+                  onClick={() => setForm((prev) => ({ ...prev, image_url: "" }))}
                 >
-                  Clear both images
+                  Clear image
                 </Button>
                 <Button
                   type="button"
@@ -568,98 +537,47 @@ export function SakeModal({ open, onOpenChange, sake, onSaved }: SakeModalProps)
                 </Button>
               </div>
             </div>
-            
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label className="text-sm text-muted-foreground">Label Image</Label>
-              {form.label_image_url ? (
-                <div className="relative w-full h-40 rounded-lg border border-border overflow-hidden">
-                  <img
-                    src={form.label_image_url}
-                    alt="Label"
-                    className="w-full h-full object-cover"
-                  />
+
+            <div className="space-y-2 max-w-md">
+              {form.image_url ? (
+                <div className="relative w-full h-48 rounded-lg border border-border overflow-hidden">
+                  <img src={form.image_url} alt="Sake" className="w-full h-full object-cover" />
                   <button
                     type="button"
-                    onClick={() => setForm(prev => ({ ...prev, label_image_url: "" }))}
+                    onClick={() => setForm((prev) => ({ ...prev, image_url: "" }))}
                     className="absolute top-2 right-2 p-1 bg-destructive text-destructive-foreground rounded-full"
                   >
                     <X className="w-4 h-4" />
                   </button>
                 </div>
               ) : (
-                <label className="flex flex-col items-center justify-center w-full h-40 border-2 border-dashed border-border rounded-lg cursor-pointer hover:border-primary/50 transition-colors">
+                <label className="flex flex-col items-center justify-center w-full h-48 border-2 border-dashed border-border rounded-lg cursor-pointer hover:border-primary/50 transition-colors">
                   <Upload className="w-8 h-8 text-muted-foreground mb-2" />
-                  <span className="text-sm text-muted-foreground">Upload label image</span>
+                  <span className="text-sm text-muted-foreground">Upload image</span>
                   <input
                     type="file"
                     accept="image/*"
                     className="hidden"
-                    onChange={(e) => handleImageUpload(e, 'label_image_url')}
+                    onChange={(e) => void handleImageUpload(e)}
                     disabled={uploading}
                   />
                 </label>
               )}
             </div>
 
-            <div className="space-y-2">
-              <Label className="text-sm text-muted-foreground">Bottle Image</Label>
-              {form.bottle_image_url ? (
-                <div className="relative w-full h-40 rounded-lg border border-border overflow-hidden">
-                  <img
-                    src={form.bottle_image_url}
-                    alt="Bottle"
-                    className="w-full h-full object-cover"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setForm(prev => ({ ...prev, bottle_image_url: "" }))}
-                    className="absolute top-2 right-2 p-1 bg-destructive text-destructive-foreground rounded-full"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
-              ) : (
-                <label className="flex flex-col items-center justify-center w-full h-40 border-2 border-dashed border-border rounded-lg cursor-pointer hover:border-primary/50 transition-colors">
-                  <Upload className="w-8 h-8 text-muted-foreground mb-2" />
-                  <span className="text-sm text-muted-foreground">Upload bottle image</span>
-                  <input
-                    type="file"
-                    accept="image/*"
-                    className="hidden"
-                    onChange={(e) => handleImageUpload(e, 'bottle_image_url')}
-                    disabled={uploading}
-                  />
-                </label>
-              )}
-            </div>
-            </div>
-          </div>
-
-          {/* Or paste URL */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label htmlFor="label_url">Or paste label image URL</Label>
+            <div className="space-y-2 max-w-md">
+              <Label htmlFor="image_url_paste">Or paste image URL</Label>
               <Input
-                id="label_url"
-                value={form.label_image_url || ""}
-                onChange={(e) => setForm(prev => ({ ...prev, label_image_url: e.target.value }))}
+                id="image_url_paste"
+                value={form.image_url || ""}
+                onChange={(e) => setForm((prev) => ({ ...prev, image_url: e.target.value }))}
                 placeholder="https://..."
               />
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="bottle_url">Or paste bottle image URL</Label>
-              <Input
-                id="bottle_url"
-                value={form.bottle_image_url || ""}
-                onChange={(e) => setForm(prev => ({ ...prev, bottle_image_url: e.target.value }))}
-                placeholder="https://..."
-              />
-            </div>
+            <p className="text-xs text-muted-foreground">
+              Uploads go through the server (up to 2.5MB). External URLs download to our storage when you save.
+            </p>
           </div>
-          <p className="text-xs text-muted-foreground">
-            Uploads go through the server (up to 2.5MB) so they work even when Storage blocks browser uploads. External URLs still download when you save.
-          </p>
 
           {/* Actions */}
           <div className="flex justify-end gap-3 pt-4 border-t border-border">

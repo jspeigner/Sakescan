@@ -33,11 +33,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const body = req.body as {
     sakeId?: string;
-    label_image_url?: string | null;
-    bottle_image_url?: string | null;
+    image_url?: string | null;
   };
 
-  const { sakeId, label_image_url, bottle_image_url } = body;
+  const { sakeId, image_url } = body;
   if (!sakeId || typeof sakeId !== 'string') {
     return res.status(400).json({ error: 'sakeId is required' });
   }
@@ -47,12 +46,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const { data, error } = await admin
     .from('sake')
     .update({
-      label_image_url: label_image_url ?? null,
-      bottle_image_url: bottle_image_url ?? null,
+      image_url: image_url ?? null,
       updated_at: new Date().toISOString(),
     })
     .eq('id', sakeId)
-    .select('id, label_image_url, bottle_image_url')
+    .select('id, image_url')
     .single();
 
   if (error) {

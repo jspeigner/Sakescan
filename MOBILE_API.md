@@ -35,14 +35,15 @@ Use the Supabase client SDK for your platform (iOS/Android/Flutter). The anon ke
 | water_source        | text    | `白神山系地下伏流水`               |
 | filtration_method   | text    | `袋吊り` (e.g. bag-hang drip)    |
 | base_ingredients    | text    | Additional ingredients            |
-| label_image_url     | text    | URL to label image               |
-| bottle_image_url    | text    | URL to bottle image              |
+| image_url           | text    | URL to product photo (label or bottle) |
 | gallery_images      | jsonb   | `["url1", "url2"]` extra photos  |
 | external_id         | text    | Source ID (e.g. `TST0000047374`) |
 | average_rating      | number  | `4.2` (out of 5)                 |
 | total_ratings       | number  | `15`                             |
 | created_at          | timestamp |                                |
 | updated_at          | timestamp |                                |
+
+**Mobile apps:** Use `image_url` for the main product photo. `label_image_url` and `bottle_image_url` are no longer present after the DB migration (data was merged into `image_url`, preferring bottle when both existed).
 
 ### `breweries` — 1,516 Japanese sake breweries
 
@@ -183,7 +184,7 @@ const { data } = await supabase
 // Get user's ratings
 const { data } = await supabase
   .from('ratings')
-  .select('*, sake(name, label_image_url, brewery)')
+  .select('*, sake(name, image_url, brewery)')
   .eq('user_id', userId)
 
 // Submit a rating
@@ -202,7 +203,7 @@ Supabase Auth is enabled. Use `supabase.auth.signUp()`, `signInWithPassword()`, 
 
 ## Data Stats (as of Feb 2026)
 
-- 35,961 sakes (10,308 with label images, 10,008 with bottle images)
+- 35,961+ sakes; each row has a single optional `image_url` (replaces former `label_image_url` / `bottle_image_url`)
 - 1,516 breweries (with images, contact info, descriptions)
 - Breweries cover all 47 Japanese prefectures
 - Oldest brewery: founded 1500s

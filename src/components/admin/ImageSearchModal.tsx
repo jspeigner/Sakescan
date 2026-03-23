@@ -38,7 +38,7 @@ interface ImageSearchModalProps {
   brewery?: string;
   currentType?: string;
   currentPrefecture?: string;
-  onSelectImage: (url: string, field: 'label_image_url' | 'bottle_image_url') => void;
+  onSelectImage: (url: string) => void;
   onImportData: (data: Partial<SakeData>) => void;
 }
 
@@ -58,7 +58,6 @@ export function ImageSearchModal({
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<SearchResult | null>(null);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
-  const [imageField, setImageField] = useState<'label_image_url' | 'bottle_image_url'>('label_image_url');
   const [dataToImport, setDataToImport] = useState<Set<keyof SakeData>>(new Set());
 
   const handleSearch = async () => {
@@ -133,7 +132,7 @@ export function ImageSearchModal({
       const data = await response.json();
       
       // Pass the Supabase storage URL to the parent
-      onSelectImage(data.url, imageField);
+      onSelectImage(data.url);
       setSelectedImage(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save image');
@@ -280,25 +279,6 @@ export function ImageSearchModal({
 
                     {selectedImage ? (
                       <div className="flex flex-wrap items-center gap-3 p-3 bg-muted rounded-lg">
-                        <span className="text-sm font-medium">Use as:</span>
-                        <div className="flex gap-2">
-                          <Button
-                            size="sm"
-                            variant={imageField === 'label_image_url' ? 'default' : 'outline'}
-                            onClick={() => setImageField('label_image_url')}
-                            disabled={downloading}
-                          >
-                            Label Image
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant={imageField === 'bottle_image_url' ? 'default' : 'outline'}
-                            onClick={() => setImageField('bottle_image_url')}
-                            disabled={downloading}
-                          >
-                            Bottle Image
-                          </Button>
-                        </div>
                         <Button size="sm" onClick={handleConfirmImage} disabled={downloading}>
                           {downloading ? (
                             <>
@@ -308,7 +288,7 @@ export function ImageSearchModal({
                           ) : (
                             <>
                               <Download className="w-4 h-4 mr-1" />
-                              Download & Save
+                              Download & Save to sake image
                             </>
                           )}
                         </Button>

@@ -57,7 +57,7 @@ export default function AdminSakes() {
 
       // Apply filter for missing images
       if (filter === 'missing_images') {
-        query = query.or('label_image_url.is.null,label_image_url.eq.');
+        query = query.or('image_url.is.null,image_url.eq.');
       }
 
       const { data, error, count } = await query;
@@ -70,7 +70,7 @@ export default function AdminSakes() {
       let missingQuery = supabase
         .from('sake')
         .select('*', { count: 'exact', head: true })
-        .or('label_image_url.is.null,label_image_url.eq.');
+        .or('image_url.is.null,image_url.eq.');
       
       if (breweryFilter) {
         missingQuery = missingQuery.eq('brewery', breweryFilter);
@@ -214,9 +214,9 @@ export default function AdminSakes() {
                 {sakes.map((sake) => (
                   <TableRow key={sake.id}>
                     <TableCell>
-                      {sake.label_image_url ? (
+                      {sake.image_url ? (
                         <img
-                          src={withImageCacheBust(sake.label_image_url, sake.updated_at)}
+                          src={withImageCacheBust(sake.image_url, sake.updated_at)}
                           alt={sake.name}
                           className="w-10 h-10 rounded object-cover"
                         />

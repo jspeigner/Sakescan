@@ -42,13 +42,13 @@ export default function BreweryDetail() {
       if (!brewery) return [];
       const { data } = await supabase
         .from("sake")
-        .select("id, name, type, average_rating, label_image_url, polishing_ratio, updated_at")
+        .select("id, name, type, average_rating, image_url, polishing_ratio, updated_at")
         .ilike("brewery", `%${brewery.name}%`)
         .order("average_rating", { ascending: false, nullsFirst: false })
         .limit(20);
       return (data ?? []) as Pick<
         Sake,
-        "id" | "name" | "type" | "average_rating" | "label_image_url" | "polishing_ratio" | "updated_at"
+        "id" | "name" | "type" | "average_rating" | "image_url" | "polishing_ratio" | "updated_at"
       >[];
     },
     enabled: !!brewery,
@@ -203,9 +203,9 @@ export default function BreweryDetail() {
                   >
                     <Card className="p-4 flex items-center gap-4 hover:shadow-sm transition-shadow">
                       <div className="w-12 h-16 rounded bg-muted/50 flex items-center justify-center flex-shrink-0 overflow-hidden">
-                        {sake.label_image_url ? (
+                        {sake.image_url ? (
                           <img
-                            src={withImageCacheBust(sake.label_image_url, sake.updated_at)}
+                            src={withImageCacheBust(sake.image_url, sake.updated_at)}
                             alt={sake.name}
                             className="w-full h-full object-cover"
                             loading="lazy"

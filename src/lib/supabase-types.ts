@@ -52,8 +52,7 @@ export interface Database {
           alcohol_percentage: number | null;
           smv: number | null;
           acidity: number | null;
-          label_image_url: string | null;
-          bottle_image_url: string | null;
+          image_url: string | null;
           average_rating: number | null;
           total_ratings: number;
           yeasts: string | null;
@@ -80,8 +79,7 @@ export interface Database {
           alcohol_percentage?: number | null;
           smv?: number | null;
           acidity?: number | null;
-          label_image_url?: string | null;
-          bottle_image_url?: string | null;
+          image_url?: string | null;
           average_rating?: number | null;
           total_ratings?: number;
           yeasts?: string | null;
@@ -108,8 +106,7 @@ export interface Database {
           alcohol_percentage?: number | null;
           smv?: number | null;
           acidity?: number | null;
-          label_image_url?: string | null;
-          bottle_image_url?: string | null;
+          image_url?: string | null;
           average_rating?: number | null;
           total_ratings?: number;
           yeasts?: string | null;

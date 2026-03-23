@@ -38,7 +38,7 @@ export default function SakeDetail() {
       if (!sake) return [];
       const { data } = await supabase
         .from("sake")
-        .select("id, name, type, average_rating, label_image_url")
+        .select("id, name, type, average_rating, image_url")
         .eq("brewery", sake.brewery)
         .neq("id", sake.id)
         .limit(4);
@@ -62,7 +62,7 @@ export default function SakeDetail() {
     "@type": "Product",
     name: sake.name,
     description: sake.description ?? `${sake.name} ${sake.type ?? "sake"} from ${sake.brewery}`,
-    image: sake.label_image_url,
+    image: sake.image_url,
     brand: { "@type": "Brand", name: sake.brewery },
     ...(sake.average_rating
       ? {
@@ -85,7 +85,7 @@ export default function SakeDetail() {
         title={`${sake.name} — ${sake.type ?? "Sake"} from ${sake.brewery}`}
         description={sake.description ?? `${sake.name} is a ${sake.type ?? "sake"} made by ${sake.brewery}${sake.prefecture ? ` in ${sake.prefecture}` : ""}. Explore tasting notes, food pairings, and ratings.`}
         path={`/sake/${slug}`}
-        image={sake.label_image_url ?? undefined}
+        image={sake.image_url ?? undefined}
         schema={productSchema}
       />
       <Header />
@@ -101,10 +101,10 @@ export default function SakeDetail() {
           <div className="mt-6 flex flex-col md:flex-row gap-8">
             <div className="md:w-1/3 flex-shrink-0">
               <div className="aspect-[3/4] rounded-xl overflow-hidden bg-muted/50 flex items-center justify-center sticky top-28">
-                {sake.label_image_url ? (
+                {sake.image_url ? (
                   <img
-                    src={withImageCacheBust(sake.label_image_url, sake.updated_at)}
-                    alt={`${sake.name} sake label`}
+                    src={withImageCacheBust(sake.image_url, sake.updated_at)}
+                    alt={`${sake.name} sake`}
                     className="w-full h-full object-cover"
                   />
                 ) : (
@@ -217,7 +217,7 @@ export default function SakeDetail() {
                 <div className="mb-8">
                   <h2 className="text-lg font-serif font-semibold mb-3">More from {sake.brewery}</h2>
                   <div className="grid grid-cols-2 gap-3">
-                    {relatedSakes.map((rs: { id: string; name: string; type: string | null; average_rating: number | null; label_image_url: string | null }) => (
+                    {relatedSakes.map((rs: { id: string; name: string; type: string | null; average_rating: number | null; image_url: string | null }) => (
                       <Link
                         key={rs.id}
                         to={`/sake/${slugify(rs.name)}-${rs.id.slice(0, 8)}`}

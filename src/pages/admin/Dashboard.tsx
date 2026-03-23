@@ -119,8 +119,8 @@ export default function AdminDashboard() {
                 {topSakes.map((sake, index) => (
                   <div key={sake.id} className="flex items-center gap-4">
                     <span className="text-sm font-medium text-muted-foreground w-6">{index + 1}</span>
-                    {sake.label_image_url ? (
-                      <img src={sake.label_image_url} alt={sake.name} className="w-8 h-8 rounded object-cover" />
+                    {sake.image_url ? (
+                      <img src={sake.image_url} alt={sake.name} className="w-8 h-8 rounded object-cover" />
                     ) : (
                       <div className="w-8 h-8 rounded bg-muted" />
                     )}
