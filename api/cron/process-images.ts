@@ -19,6 +19,17 @@ function isSupabaseUrl(url: string, supabaseUrl: string): boolean {
   return url.includes(supabaseUrl.replace('https://', '')) || url.includes('supabase.co/storage');
 }
 
+/** Host from project URL — used to filter DB rows that still need mirroring into Storage. */
+function supabaseProjectHost(supabaseUrl: string): string | null {
+  try {
+    const normalized = supabaseUrl.startsWith('http') ? supabaseUrl : `https://${supabaseUrl}`;
+    return new URL(normalized).hostname || null;
+  } catch {
+    const host = supabaseUrl.replace(/^https?:\/\//, '').split('/')[0]?.trim();
+    return host || null;
+  }
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -138,6 +149,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   let breweryMainProcessed = 0;
   let breweryGalleryProcessed = 0;
   let sakeProcessed = 0;
+  /** Rows returned by external-URL sake query (for cron diagnostics). */
+  let sakeExternalRowsFetched = 0;
   let failed = 0;
   let skippedPlaceholders = 0;
   let rateLimited = false;
@@ -244,12 +257,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     // --- SAKE IMAGES ---
+    // Previously: .limit(500) on any non-null image_url — almost always already Supabase URLs → Sake 0.
+    // Now: query rows whose URL does not look hosted on this project / supabase (still verify in JS).
     if (!rateLimited) {
-      const { data: sakes } = await supabase
+      const projectHost = supabaseProjectHost(supabaseUrl);
+      let sakeQuery = supabase
         .from('sake')
         .select('id, name, image_url')
         .not('image_url', 'is', null)
+        .neq('image_url', '');
+
+      if (projectHost) {
+        sakeQuery = sakeQuery.not('image_url', 'ilike', `%${projectHost}%`);
+      }
+      sakeQuery = sakeQuery.not('image_url', 'ilike', '%supabase.co%');
+
+      const { data: sakes } = await sakeQuery
+        .order('updated_at', { ascending: true })
         .limit(500);
+
+      sakeExternalRowsFetched = (sakes || []).length;
 
       const sakesToProcess = (sakes || []).filter(
         (s) => s.image_url && !isSupabaseUrl(s.image_url, supabaseUrl)
@@ -305,15 +332,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       remainingGalleryCount += gallery.filter(url => url && !isSupabaseUrl(url, supabaseUrl)).length;
     });
 
-    const { data: sCheck } = await supabase
-      .from('sake')
-      .select('image_url')
-      .not('image_url', 'is', null)
-      .limit(5000);
-    let remainingSake = 0;
-    (sCheck || []).forEach((s) => {
-      if (s.image_url && !isSupabaseUrl(s.image_url, supabaseUrl)) remainingSake++;
-    });
+    const projectHostForCount = supabaseProjectHost(supabaseUrl);
+    let remainingSakeQuery = supabase.from('sake').select('image_url', { count: 'exact', head: true }).not('image_url', 'is', null).neq('image_url', '');
+    if (projectHostForCount) {
+      remainingSakeQuery = remainingSakeQuery.not('image_url', 'ilike', `%${projectHostForCount}%`);
+    }
+    remainingSakeQuery = remainingSakeQuery.not('image_url', 'ilike', '%supabase.co%');
+    const { count: remainingSakeApprox } = await remainingSakeQuery;
+    const remainingSake = remainingSakeApprox ?? 0;
 
     const totalProcessed = breweryMainProcessed + sakeProcessed + breweryGalleryProcessed;
     console.log(`[process-images] OK processed=${totalProcessed} sake=${sakeProcessed} breweryMain=${breweryMainProcessed} gallery=${breweryGalleryProcessed} failed=${failed} remaining=${remainingBreweryMain + remainingGalleryCount + remainingSake}`);
@@ -330,7 +356,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       remaining: {
         breweryMainImages: Math.max(0, remainingBreweryMain),
         breweryGalleryImages: Math.max(0, remainingGalleryCount),
+        /** Approximate count of rows still needing mirror (same filters as sake queue). */
         sakeImages: Math.max(0, remainingSake),
+      },
+      sakeQueue: {
+        externalRowsFetched: sakeExternalRowsFetched,
+        note: 'Sake mirroring only processes non-Supabase image_url rows; see remaining.sakeImages.',
       },
       errors: errors.length > 0 ? errors.slice(0, 10) : undefined,
       timestamp: new Date().toISOString(),
