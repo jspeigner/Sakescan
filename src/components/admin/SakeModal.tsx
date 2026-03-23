@@ -129,31 +129,64 @@ export function SakeModal({ open, onOpenChange, sake, onSaved }: SakeModalProps)
     const file = e.target.files?.[0];
     if (!file) return;
 
+    const maxBytes = 2.5 * 1024 * 1024;
+    if (file.size > maxBytes) {
+      alert(
+        `This image is too large (max 2.5MB for admin upload). This file is ${(file.size / 1024 / 1024).toFixed(1)}MB. Compress it or use a smaller photo.`
+      );
+      e.target.value = "";
+      return;
+    }
+
+    const token = session?.access_token;
+    if (!token) {
+      alert("Sign in again as admin, then retry the upload.");
+      e.target.value = "";
+      return;
+    }
+
     setUploading(true);
     try {
-      const fileExt = file.name.split('.').pop();
-      const fileName = `${Date.now()}-${Math.random().toString(36).substring(7)}.${fileExt}`;
-      const filePath = `sake-images/${fileName}`;
+      const imageBase64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const result = reader.result as string;
+          const comma = result.indexOf(",");
+          resolve(comma >= 0 ? result.slice(comma + 1) : result);
+        };
+        reader.onerror = () => reject(new Error("Could not read file"));
+        reader.readAsDataURL(file);
+      });
 
-      const { error: uploadError } = await supabase.storage
-        .from('sake-images')
-        .upload(filePath, file, {
-          contentType: file.type,
-          upsert: false,
-        });
+      const response = await fetch("/api/upload-sake-image", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          imageBase64,
+          contentType: file.type || "image/jpeg",
+          originalFileName: file.name,
+        }),
+      });
 
-      if (uploadError) throw uploadError;
+      const data = (await response.json()) as { error?: string; url?: string };
 
-      const { data } = supabase.storage
-        .from('sake-images')
-        .getPublicUrl(filePath);
+      if (!response.ok) {
+        throw new Error(data.error || `Upload failed (${response.status})`);
+      }
+      if (!data.url) {
+        throw new Error("Server did not return an image URL");
+      }
 
-      setForm(prev => ({ ...prev, [field]: data.publicUrl }));
+      setForm((prev) => ({ ...prev, [field]: data.url as string }));
     } catch (error) {
-      console.error('Error uploading image:', error);
-      alert('Failed to upload image');
+      console.error("Error uploading image:", error);
+      alert(error instanceof Error ? error.message : "Failed to upload image");
     } finally {
       setUploading(false);
+      e.target.value = "";
     }
   };
 
@@ -625,7 +658,7 @@ export function SakeModal({ open, onOpenChange, sake, onSaved }: SakeModalProps)
             </div>
           </div>
           <p className="text-xs text-muted-foreground">
-            External image URLs will be automatically downloaded and saved to our storage when you save.
+            Uploads go through the server (up to 2.5MB) so they work even when Storage blocks browser uploads. External URLs still download when you save.
           </p>
 
           {/* Actions */}
