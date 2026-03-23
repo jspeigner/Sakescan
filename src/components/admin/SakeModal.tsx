@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useAuth } from "@/hooks/use-auth";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -62,6 +63,7 @@ const PREFECTURES = [
 ];
 
 export function SakeModal({ open, onOpenChange, sake, onSaved }: SakeModalProps) {
+  const { session } = useAuth();
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [imageSearchOpen, setImageSearchOpen] = useState(false);
@@ -241,28 +243,75 @@ export function SakeModal({ open, onOpenChange, sake, onSaved }: SakeModalProps)
         }
       }
 
+      const labelFinal =
+        labelImageUrl && String(labelImageUrl).trim() !== "" ? String(labelImageUrl).trim() : null;
+      const bottleFinal =
+        bottleImageUrl && String(bottleImageUrl).trim() !== "" ? String(bottleImageUrl).trim() : null;
+
       const payload = {
-        ...form,
-        label_image_url: labelImageUrl,
-        bottle_image_url: bottleImageUrl,
-        polishing_ratio: form.polishing_ratio ? Number(form.polishing_ratio) : null,
-        alcohol_percentage: form.alcohol_percentage ? Number(form.alcohol_percentage) : null,
-        smv: form.smv ? Number(form.smv) : null,
-        acidity: form.acidity ? Number(form.acidity) : null,
+        name: form.name,
+        name_japanese: form.name_japanese.trim() || null,
+        brewery: form.brewery,
+        type: form.type.trim() || null,
+        subtype: form.subtype.trim() || null,
+        region: form.region.trim() || null,
+        prefecture: form.prefecture.trim() || null,
+        description: form.description.trim() || null,
+        rice_variety: form.rice_variety.trim() || null,
+        polishing_ratio:
+          form.polishing_ratio === null || form.polishing_ratio === undefined
+            ? null
+            : Number(form.polishing_ratio),
+        alcohol_percentage:
+          form.alcohol_percentage === null || form.alcohol_percentage === undefined
+            ? null
+            : Number(form.alcohol_percentage),
+        smv: form.smv === null || form.smv === undefined ? null : Number(form.smv),
+        acidity: form.acidity === null || form.acidity === undefined ? null : Number(form.acidity),
+        label_image_url: labelFinal,
+        bottle_image_url: bottleFinal,
         updated_at: new Date().toISOString(),
       };
 
+      const prevLabel = sake?.label_image_url?.trim() || null;
+      const prevBottle = sake?.bottle_image_url?.trim() || null;
+      const storageUrlsToRemove: string[] = [];
       if (sake) {
-        const { error } = await supabase
-          .from('sake')
-          .update(payload)
-          .eq('id', sake.id);
+        if (prevLabel && prevLabel !== labelFinal && isSupabaseUrl(prevLabel)) {
+          storageUrlsToRemove.push(prevLabel);
+        }
+        if (prevBottle && prevBottle !== bottleFinal && isSupabaseUrl(prevBottle)) {
+          storageUrlsToRemove.push(prevBottle);
+        }
+      }
+
+      if (sake) {
+        const { error } = await supabase.from("sake").update(payload).eq("id", sake.id);
         if (error) throw error;
       } else {
-        const { error } = await supabase
-          .from('sake')
-          .insert(payload);
+        const { error } = await supabase.from("sake").insert(payload);
         if (error) throw error;
+      }
+
+      const token = session?.access_token;
+      if (token && storageUrlsToRemove.length > 0) {
+        for (const publicUrl of storageUrlsToRemove) {
+          try {
+            const delRes = await fetch("/api/delete-sake-storage", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${token}`,
+              },
+              body: JSON.stringify({ publicUrl }),
+            });
+            if (!delRes.ok) {
+              console.warn("Could not remove old file from storage:", await delRes.text());
+            }
+          } catch (e) {
+            console.warn("Storage delete request failed:", e);
+          }
+        }
       }
 
       onSaved();

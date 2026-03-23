@@ -1,12 +1,90 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
+type SearchImageRow = {
+  url: string;
+  thumbnail?: string;
+  source: string;
+  title?: string;
+};
+
+const JUNK_URL_REGEXES = [
+  /shutterstock|gettyimages|istockphoto|dreamstime|alamy|123rf|depositphotos/i,
+  /avatar|gravatar|favicon|emoji|sprite|profile[_-]?pic/i,
+  /\/blog\/|\/news\/|\/articles?\/|infographic|diagram\.|chart\.png/i,
+  /\.svg(\?|$)/i,
+  /youtube\.|ytimg\.|facebook\.|fbcdn|instagram\.|cdninstagram|tiktok|pinterest\.|pinimg\./i,
+  /wikipedia\.org\/static|wikimedia\.org\/.*\/thumb\/.*\/\d+px-/i,
+];
+
+function searchTokens(name: string, nameJapanese?: string, brewery?: string): string[] {
+  const raw = [name, nameJapanese ?? '', brewery ?? ''].join(' ').toLowerCase();
+  const parts = raw
+    .replace(/[^\p{L}\p{N}\s]+/gu, ' ')
+    .split(/\s+/)
+    .filter((t) => t.length >= 2);
+  return [...new Set(parts)];
+}
+
+function relevanceScore(url: string, title: string | undefined, tokens: string[]): number {
+  const hay = `${url} ${title ?? ''}`.toLowerCase();
+  let s = 0;
+  for (const t of tokens) {
+    if (hay.includes(t)) s += 3;
+  }
+  if (hay.includes('nihonshu') || hay.includes('japanese sake')) s += 2;
+  if (hay.includes('sake')) s += 1;
+  if (hay.includes('/products/') || hay.includes('product')) s += 1;
+  return s;
+}
+
+function sourcePriority(source: string): number {
+  if (source === 'Sakura Sake Shop') return 40;
+  if (source === 'Umami Mart') return 40;
+  if (source === 'Sake Times') return 30;
+  if (source === 'Google Images') return 0;
+  return 15;
+}
+
+function filterAndRankImages(
+  images: SearchImageRow[],
+  name: string,
+  nameJapanese: string | undefined,
+  brewery: string | undefined
+): SearchImageRow[] {
+  const tokens = searchTokens(name, nameJapanese, brewery);
+
+  const kept = images.filter((img) => {
+    if (!img.url.startsWith('http')) return false;
+    if (JUNK_URL_REGEXES.some((re) => re.test(img.url))) return false;
+    const u = img.url.toLowerCase();
+    if (u.includes('logo') && !u.includes('bottle') && !u.includes('product')) return false;
+
+    const rel = relevanceScore(img.url, img.title, tokens);
+
+    if (img.source === 'Google Images') {
+      if (tokens.length === 0) return rel >= 2;
+      if (tokens.length === 1) return rel >= 3;
+      return rel >= 4;
+    }
+
+    if (img.source === 'Sakura Sake Shop' || img.source === 'Umami Mart') {
+      if (tokens.length > 0 && rel < 2) return false;
+    }
+
+    return true;
+  });
+
+  const scored = kept.map((img) => ({
+    img,
+    score: relevanceScore(img.url, img.title, tokens) + sourcePriority(img.source),
+  }));
+
+  scored.sort((a, b) => b.score - a.score);
+  return scored.map((x) => x.img).slice(0, 20);
+}
+
 interface SearchResult {
-  images: Array<{
-    url: string;
-    thumbnail?: string;
-    source: string;
-    title?: string;
-  }>;
+  images: SearchImageRow[];
   sakeData?: {
     name?: string;
     nameJapanese?: string;
@@ -292,11 +370,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       console.error('Google Images scrape error:', googleError);
     }
 
-    // Remove duplicates by URL
     const uniqueImages = results.images.filter((img, index, self) =>
       index === self.findIndex((t) => t.url === img.url)
     );
-    results.images = uniqueImages;
+    results.images = filterAndRankImages(uniqueImages, name, nameJapanese, brewery);
 
     return res.status(200).json(results);
   } catch (error) {

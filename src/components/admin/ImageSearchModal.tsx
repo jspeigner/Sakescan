@@ -375,7 +375,7 @@ export function ImageSearchModal({
               <ul className="text-sm text-muted-foreground space-y-1">
                 <li>• Make sure the sake name is accurate for best results</li>
                 <li>• Adding the Japanese name improves search quality</li>
-                <li>• The search checks Tippsy Sake, Sake Times, and Google Images</li>
+                <li>• The search checks Sakura Sake Shop, Umami Mart, Sake Times, then Google Images (strict filter)</li>
                 <li>• Use "Open Google Images" to manually find and copy image URLs</li>
               </ul>
             </Card>
