@@ -43,7 +43,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
   if (!supabaseUrl || !supabaseAnonKey || !supabaseServiceKey) {
-    return res.status(500).json({ error: 'Supabase not configured' });
+    const missing: string[] = [];
+    if (!supabaseUrl) missing.push('VITE_SUPABASE_URL or SUPABASE_URL');
+    if (!supabaseAnonKey) missing.push('VITE_SUPABASE_ANON_KEY or SUPABASE_ANON_KEY');
+    if (!supabaseServiceKey) missing.push('SUPABASE_SERVICE_ROLE_KEY');
+    return res.status(500).json({
+      error: 'Supabase not configured',
+      hint:
+        'Server uploads need all three values on your host (Vercel ENV tab, etc.). The service role key is only for API routes — copy it from Supabase → Project Settings → API → service_role (secret).',
+      missing,
+    });
   }
 
   const userClient = createClient(supabaseUrl, supabaseAnonKey);
