@@ -11,6 +11,7 @@ import { Star, MapPin, Globe, Phone, Calendar, Wine, Loader2 } from "lucide-reac
 import { supabase } from "@/lib/supabase";
 import type { Brewery, Sake } from "@/lib/supabase-types";
 import NotFound from "./NotFound";
+import { withImageCacheBust } from "@/lib/image-url";
 
 function slugify(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
@@ -41,11 +42,14 @@ export default function BreweryDetail() {
       if (!brewery) return [];
       const { data } = await supabase
         .from("sake")
-        .select("id, name, type, average_rating, label_image_url, polishing_ratio")
+        .select("id, name, type, average_rating, label_image_url, polishing_ratio, updated_at")
         .ilike("brewery", `%${brewery.name}%`)
         .order("average_rating", { ascending: false, nullsFirst: false })
         .limit(20);
-      return (data ?? []) as Pick<Sake, "id" | "name" | "type" | "average_rating" | "label_image_url" | "polishing_ratio">[];
+      return (data ?? []) as Pick<
+        Sake,
+        "id" | "name" | "type" | "average_rating" | "label_image_url" | "polishing_ratio" | "updated_at"
+      >[];
     },
     enabled: !!brewery,
   });
@@ -200,7 +204,12 @@ export default function BreweryDetail() {
                     <Card className="p-4 flex items-center gap-4 hover:shadow-sm transition-shadow">
                       <div className="w-12 h-16 rounded bg-muted/50 flex items-center justify-center flex-shrink-0 overflow-hidden">
                         {sake.label_image_url ? (
-                          <img src={sake.label_image_url} alt={sake.name} className="w-full h-full object-cover" loading="lazy" />
+                          <img
+                            src={withImageCacheBust(sake.label_image_url, sake.updated_at)}
+                            alt={sake.name}
+                            className="w-full h-full object-cover"
+                            loading="lazy"
+                          />
                         ) : (
                           <Wine className="w-5 h-5 text-muted-foreground/30" />
                         )}

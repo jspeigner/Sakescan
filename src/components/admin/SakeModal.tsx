@@ -285,15 +285,47 @@ export function SakeModal({ open, onOpenChange, sake, onSaved }: SakeModalProps)
         }
       }
 
+      let savedId: string;
       if (sake) {
         const { error } = await supabase.from("sake").update(payload).eq("id", sake.id);
         if (error) throw error;
+        savedId = sake.id;
       } else {
-        const { error } = await supabase.from("sake").insert(payload);
+        const { data: inserted, error } = await supabase
+          .from("sake")
+          .insert(payload)
+          .select("id")
+          .single();
         if (error) throw error;
+        if (!inserted?.id) throw new Error("Insert did not return id");
+        savedId = inserted.id;
       }
 
       const token = session?.access_token;
+      if (token) {
+        const syncRes = await fetch("/api/admin-sync-sake-images", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            sakeId: savedId,
+            label_image_url: labelFinal,
+            bottle_image_url: bottleFinal,
+          }),
+        });
+        if (!syncRes.ok) {
+          const errBody = await syncRes.text();
+          console.error("admin-sync-sake-images failed:", syncRes.status, errBody);
+          if (syncRes.status >= 500 || syncRes.status === 401 || syncRes.status === 403) {
+            alert(
+              "Image fields might not have updated. Confirm SUPABASE_SERVICE_ROLE_KEY and admin session on Vercel, then save again."
+            );
+          }
+        }
+      }
+
       if (token && storageUrlsToRemove.length > 0) {
         for (const publicUrl of storageUrlsToRemove) {
           try {
@@ -472,18 +504,36 @@ export function SakeModal({ open, onOpenChange, sake, onSaved }: SakeModalProps)
 
           {/* Images */}
           <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <Label>Images</Label>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => setImageSearchOpen(true)}
-                disabled={!form.name}
-              >
-                <Search className="w-4 h-4 mr-2" />
-                Find Images
-              </Button>
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <Label>Images</Label>
+                <p className="text-xs text-muted-foreground mt-1 max-w-md">
+                  The site and admin list use the <strong>label</strong> image. If a bad picture is still showing, clear the{" "}
+                  <strong>bottle</strong> slot too (wrong imports often land there).
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  onClick={() =>
+                    setForm((prev) => ({ ...prev, label_image_url: "", bottle_image_url: "" }))
+                  }
+                >
+                  Clear both images
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setImageSearchOpen(true)}
+                  disabled={!form.name}
+                >
+                  <Search className="w-4 h-4 mr-2" />
+                  Find Images
+                </Button>
+              </div>
             </div>
             
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

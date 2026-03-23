@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { AdminLayout } from "@/components/admin";
 import { SakeModal } from "@/components/admin/SakeModal";
@@ -12,10 +13,12 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Search, Plus, MoreHorizontal, Loader2, Pencil, Trash2, Star, ImageOff, X } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import type { Sake } from "@/lib/supabase-types";
+import { withImageCacheBust } from "@/lib/image-url";
 
 const PAGE_SIZE = 20;
 
 export default function AdminSakes() {
+  const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
   const breweryFilter = searchParams.get('brewery') || '';
   
@@ -213,7 +216,7 @@ export default function AdminSakes() {
                     <TableCell>
                       {sake.label_image_url ? (
                         <img
-                          src={sake.label_image_url}
+                          src={withImageCacheBust(sake.label_image_url, sake.updated_at)}
                           alt={sake.name}
                           className="w-10 h-10 rounded object-cover"
                         />
@@ -305,7 +308,13 @@ export default function AdminSakes() {
         open={modalOpen}
         onOpenChange={setModalOpen}
         sake={editingSake}
-        onSaved={fetchSakes}
+        onSaved={() => {
+          void fetchSakes();
+          void queryClient.invalidateQueries({ queryKey: ["explore-sake"] });
+          void queryClient.invalidateQueries({ queryKey: ["sake-detail"] });
+          void queryClient.invalidateQueries({ queryKey: ["related-sake"] });
+          void queryClient.invalidateQueries({ queryKey: ["brewery-sakes"] });
+        }}
       />
     </AdminLayout>
   );

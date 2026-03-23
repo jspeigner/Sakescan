@@ -11,6 +11,7 @@ import { Star, Droplets, Thermometer, Wine, Wheat, MapPin, Loader2 } from "lucid
 import { supabase } from "@/lib/supabase";
 import type { Sake } from "@/lib/supabase-types";
 import NotFound from "./NotFound";
+import { withImageCacheBust } from "@/lib/image-url";
 
 export default function SakeDetail() {
   const { slug } = useParams<{ slug: string }>();
@@ -102,7 +103,7 @@ export default function SakeDetail() {
               <div className="aspect-[3/4] rounded-xl overflow-hidden bg-muted/50 flex items-center justify-center sticky top-28">
                 {sake.label_image_url ? (
                   <img
-                    src={sake.label_image_url}
+                    src={withImageCacheBust(sake.label_image_url, sake.updated_at)}
                     alt={`${sake.name} sake label`}
                     className="w-full h-full object-cover"
                   />

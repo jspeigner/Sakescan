@@ -13,6 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Search, Star, Wine, Loader2 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import type { Sake } from "@/lib/supabase-types";
+import { withImageCacheBust } from "@/lib/image-url";
 
 function slugify(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
@@ -141,7 +142,7 @@ export default function SakeExplore() {
                       <div className="aspect-[4/3] bg-muted/50 flex items-center justify-center overflow-hidden">
                         {sake.label_image_url ? (
                           <img
-                            src={sake.label_image_url}
+                            src={withImageCacheBust(sake.label_image_url, sake.updated_at)}
                             alt={`${sake.name} sake label`}
                             className="w-full h-full object-cover transition-transform group-hover:scale-105"
                             loading="lazy"
