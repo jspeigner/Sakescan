@@ -1185,9 +1185,11 @@ function ImageProcessorPanel() {
           <div className="space-y-2 flex-1">
             <h2 className="text-lg font-semibold">Background Image Processor</h2>
             <p className="text-sm text-muted-foreground">
-              Sake cron: <strong>audit</strong> wrong photos (vision) → <strong>discover</strong> missing images (Firecrawl + vision) →{' '}
-              <strong>mirror</strong> external URLs into Storage. Needs <code className="text-xs">OPENAI_API_KEY</code> and{' '}
-              <code className="text-xs">FIRECRAWL_API_KEY</code> on Vercel for discover/audit.
+              Sake job always <strong>downloads image bytes</strong> and uploads them to the <code className="text-xs">sake-images</code> bucket, then
+              saves the public <strong>Storage URL</strong> on the row. It does not leave remote hotlinks when a step succeeds. Flow:{' '}
+              <strong>audit</strong> (vision) → <strong>discover</strong> (Firecrawl + vision for rows with no image) →{' '}
+              <strong>mirror</strong> (rows that still have an external <code className="text-xs">image_url</code>). Needs{' '}
+              <code className="text-xs">OPENAI_API_KEY</code> and <code className="text-xs">FIRECRAWL_API_KEY</code> on Vercel for discover/audit.
             </p>
             <div className="flex flex-col gap-1 text-sm text-muted-foreground">
               <div className="flex items-center gap-1.5">
@@ -1211,7 +1213,10 @@ function ImageProcessorPanel() {
             <p className="text-3xl font-bold">
               {status ? (status.remaining.sakeMissingImage ?? '?') : '?'}
             </p>
-            <p className="text-sm text-muted-foreground">Sake — no image</p>
+            <p className="text-sm font-medium text-foreground">Sake — no image yet</p>
+            <p className="text-xs text-muted-foreground leading-snug px-1">
+              Rows with empty <code className="text-[10px]">image_url</code>. Discover finds candidates, then downloads and uploads to Storage.
+            </p>
           </div>
         </Card>
         <Card className="p-4">
@@ -1219,7 +1224,11 @@ function ImageProcessorPanel() {
             <p className="text-3xl font-bold">
               {status ? (status.remaining.sakeImages || '?') : '?'}
             </p>
-            <p className="text-sm text-muted-foreground">Sake — external URL</p>
+            <p className="text-sm font-medium text-foreground">Sake — external URL</p>
+            <p className="text-xs text-muted-foreground leading-snug px-1">
+              Rows whose <code className="text-[10px]">image_url</code> is not your Storage yet. Mirror downloads each file and re-uploads to{' '}
+              <code className="text-[10px]">sake-images</code>.
+            </p>
           </div>
         </Card>
         <Card className="p-4">
