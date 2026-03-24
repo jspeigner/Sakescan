@@ -9,9 +9,6 @@ import {
 import { searchSakeImageCandidates, urlLooksLikeNonSakeProduct } from './lib/sakeImageDiscovery';
 import { validateJapaneseSakeProductPhoto } from './lib/sakeImageVision';
 
-/** Vercel Node function duration (seconds). Also set in vercel.json for this path. */
-export const maxDuration = 300;
-
 /** Mirror external image_url into Storage (per run). */
 const MIRROR_OPS_BUDGET = 220;
 /** Attempt to fill missing image_url (Firecrawl + vision + upload). */
@@ -78,81 +75,91 @@ function shuffleInPlace<T>(arr: T[]): void {
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'GET' && req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
-
-  const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
-  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-  if (!supabaseUrl || !supabaseServiceKey) {
-    return res.status(500).json({
-      error: 'Supabase not configured',
-      hint: 'Set VITE_SUPABASE_URL or SUPABASE_URL plus SUPABASE_SERVICE_ROLE_KEY on Vercel (same as other API routes).',
-    });
-  }
-
-  const supabase = createClient(supabaseUrl, supabaseServiceKey);
-  const firecrawlKey = process.env.FIRECRAWL_API_KEY;
-  const openaiKey = process.env.OPENAI_API_KEY;
-
-  const q = req.query as Record<string, string | string[] | undefined>;
-  const statsOnly = req.method === 'GET' && q.stats === '1';
-
-  if (statsOnly) {
-    const projectHostForCount = supabaseProjectHost(supabaseUrl);
-    let remainingSakeQuery = supabase
-      .from('sake')
-      .select('image_url', { count: 'exact', head: true })
-      .not('image_url', 'is', null)
-      .neq('image_url', '');
-    if (projectHostForCount) {
-      remainingSakeQuery = remainingSakeQuery.not('image_url', 'ilike', `%${projectHostForCount}%`);
-    }
-    remainingSakeQuery = remainingSakeQuery.not('image_url', 'ilike', '%supabase.co%');
-    const { count: remainingSakeApprox } = await remainingSakeQuery;
-    const remainingSake = remainingSakeApprox ?? 0;
-    const brewRem = await countBreweryRemaining(supabase, supabaseUrl);
-    const sakeMissingImage = await countSakeMissingImage(supabase);
-
-    return res.status(200).json({
-      success: true,
-      job: 'sake',
-      statsOnly: true,
-      processed: 0,
-      galleryProcessed: 0,
-      sakeProcessed: 0,
-      breweryMainProcessed: 0,
-      failed: 0,
-      skippedPlaceholders: 0,
-      rateLimited: false,
-      remaining: {
-        sakeImages: Math.max(0, remainingSake),
-        sakeMissingImage,
-        breweryMainImages: brewRem.breweryMainImages,
-        breweryGalleryImages: brewRem.breweryGalleryImages,
-      },
-      env: {
-        discoverEnabled: Boolean(firecrawlKey && openaiKey),
-        auditEnabled: Boolean(openaiKey),
-      },
-      timestamp: new Date().toISOString(),
-    });
-  }
-
-  let sakeMirrored = 0;
-  let sakeDiscovered = 0;
-  let sakeAuditCleared = 0;
-  let sakeExternalRowsFetched = 0;
-  let mirrorOpsRemaining = MIRROR_OPS_BUDGET;
-  let failed = 0;
-  let skippedPlaceholders = 0;
-  let rateLimited = false;
-  const errors: string[] = [];
-  const seenHashes = new Set<string>();
-  const knownPlaceholderHashes = new Set<string>();
-
   try {
+    const q = req.query as Record<string, string | string[] | undefined>;
+
+    /** Smallest possible response — proves the function bundle loads (use if full job fails). */
+    if (req.method === 'GET' && q.quick === '1') {
+      return res.status(200).json({
+        ok: true,
+        ping: 'process-images',
+        node: process.version,
+      });
+    }
+
+    if (req.method !== 'GET' && req.method !== 'POST') {
+      return res.status(405).json({ error: 'Method not allowed' });
+    }
+
+    const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
+    const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+    if (!supabaseUrl || !supabaseServiceKey) {
+      return res.status(500).json({
+        error: 'Supabase not configured',
+        hint: 'Set VITE_SUPABASE_URL or SUPABASE_URL plus SUPABASE_SERVICE_ROLE_KEY on Vercel (same as other API routes).',
+      });
+    }
+
+    const supabase = createClient(supabaseUrl, supabaseServiceKey);
+    const firecrawlKey = process.env.FIRECRAWL_API_KEY;
+    const openaiKey = process.env.OPENAI_API_KEY;
+
+    const statsOnly = req.method === 'GET' && q.stats === '1';
+
+    if (statsOnly) {
+      const projectHostForCount = supabaseProjectHost(supabaseUrl);
+      let remainingSakeQuery = supabase
+        .from('sake')
+        .select('image_url', { count: 'exact', head: true })
+        .not('image_url', 'is', null)
+        .neq('image_url', '');
+      if (projectHostForCount) {
+        remainingSakeQuery = remainingSakeQuery.not('image_url', 'ilike', `%${projectHostForCount}%`);
+      }
+      remainingSakeQuery = remainingSakeQuery.not('image_url', 'ilike', '%supabase.co%');
+      const { count: remainingSakeApprox } = await remainingSakeQuery;
+      const remainingSake = remainingSakeApprox ?? 0;
+      const brewRem = await countBreweryRemaining(supabase, supabaseUrl);
+      const sakeMissingImage = await countSakeMissingImage(supabase);
+
+      return res.status(200).json({
+        success: true,
+        job: 'sake',
+        statsOnly: true,
+        processed: 0,
+        galleryProcessed: 0,
+        sakeProcessed: 0,
+        breweryMainProcessed: 0,
+        failed: 0,
+        skippedPlaceholders: 0,
+        rateLimited: false,
+        remaining: {
+          sakeImages: Math.max(0, remainingSake),
+          sakeMissingImage,
+          breweryMainImages: brewRem.breweryMainImages,
+          breweryGalleryImages: brewRem.breweryGalleryImages,
+        },
+        env: {
+          discoverEnabled: Boolean(firecrawlKey && openaiKey),
+          auditEnabled: Boolean(openaiKey),
+        },
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    let sakeMirrored = 0;
+    let sakeDiscovered = 0;
+    let sakeAuditCleared = 0;
+    let sakeExternalRowsFetched = 0;
+    let mirrorOpsRemaining = MIRROR_OPS_BUDGET;
+    let failed = 0;
+    let skippedPlaceholders = 0;
+    let rateLimited = false;
+    const errors: string[] = [];
+    const seenHashes = new Set<string>();
+    const knownPlaceholderHashes = new Set<string>();
+
     // --- AUDIT: clear clearly wrong hosted images (e.g. whisky bottle) ---
     if (openaiKey) {
       const { data: auditPool } = await supabase
@@ -408,6 +415,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
   } catch (error) {
     console.error('Cron process-images (sake) error:', error);
-    return res.status(500).json({ error: 'Processing failed', details: String(error) });
+    const message = error instanceof Error ? error.message : String(error);
+    const stack = error instanceof Error ? error.stack : undefined;
+    if (!res.headersSent) {
+      return res.status(500).json({
+        error: 'Processing failed',
+        details: message,
+        ...(process.env.NODE_ENV !== 'production' && stack ? { stack } : {}),
+      });
+    }
+    return;
   }
 }

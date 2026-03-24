@@ -5,7 +5,8 @@
   ],
   "functions": {
     "api/cron/process-images.ts": {
-      "maxDuration": 300
+      "maxDuration": 300,
+      "memory": 3008
     },
     "api/cron/process-brewery-images.ts": {
       "maxDuration": 120
