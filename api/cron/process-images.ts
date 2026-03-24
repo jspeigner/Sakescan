@@ -1,132 +1,77 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
-import { createHash } from 'crypto';
+import {
+  downloadAndStore,
+  isSupabaseUrl,
+  sleep,
+  supabaseProjectHost,
+} from './lib/imageMirror';
+import { searchSakeImageCandidates, urlLooksLikeNonSakeProduct } from '../lib/sakeImageDiscovery';
+import { validateJapaneseSakeProductPhoto } from '../lib/sakeImageVision';
 
-const BREWERY_MAIN_BUDGET = 8;
-const BREWERY_GALLERY_BUDGET = 5;
-const SAKE_BUDGET = 12;
-const DELAY_MS = 500;
+/** Mirror external image_url into Storage (per run). */
+const MIRROR_OPS_BUDGET = 220;
+/** Attempt to fill missing image_url (Firecrawl + vision + upload). */
+const DISCOVER_ROW_CAP = 28;
+const DISCOVER_CANDIDATES_MAX = 5;
+/** Spot-check hosted images; clear when vision says not sake. */
+const AUDIT_ROW_CAP = 10;
+const DELAY_MS = 80;
+const DELAY_MS_DISCOVER = 120;
 
-// Known placeholder image hashes (populated as we encounter them)
-const KNOWN_PLACEHOLDER_HASHES = new Set<string>();
+type SakeRow = {
+  id: string;
+  name: string;
+  name_japanese: string | null;
+  brewery: string;
+  image_url: string | null;
+};
 
-// Minimum size to be a real product photo (not a tiny icon/placeholder)
-const MIN_IMAGE_BYTES = 3000;
-// Maximum reasonable size to avoid downloading huge files
-const MAX_IMAGE_BYTES = 15_000_000;
-
-function isSupabaseUrl(url: string, supabaseUrl: string): boolean {
-  return url.includes(supabaseUrl.replace('https://', '')) || url.includes('supabase.co/storage');
-}
-
-/** Host from project URL — used to filter DB rows that still need mirroring into Storage. */
-function supabaseProjectHost(supabaseUrl: string): string | null {
-  try {
-    const normalized = supabaseUrl.startsWith('http') ? supabaseUrl : `https://${supabaseUrl}`;
-    return new URL(normalized).hostname || null;
-  } catch {
-    const host = supabaseUrl.replace(/^https?:\/\//, '').split('/')[0]?.trim();
-    return host || null;
-  }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-interface DownloadResult {
-  url: string;
-  skippedPlaceholder?: boolean;
-  rateLimited?: boolean;
-}
-
-async function downloadAndStore(
+async function countBreweryRemaining(
   supabase: ReturnType<typeof createClient>,
-  imageUrl: string,
-  folder: string,
-  name: string,
-  seenHashes: Set<string>
-): Promise<DownloadResult> {
-  const response = await fetch(imageUrl, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-      'Accept-Language': 'en-US,en;q=0.9,ja;q=0.8',
-      'Referer': imageUrl.includes('sakenomy') ? 'https://sakenomy.jp/' : 'https://japansake.or.jp/',
-    },
-    redirect: 'follow',
+  supabaseUrl: string
+): Promise<{ breweryMainImages: number; breweryGalleryImages: number }> {
+  const { data: breweries } = await supabase
+    .from('breweries')
+    .select('image_url')
+    .not('image_url', 'is', null)
+    .limit(3000);
+  let breweryMainImages = 0;
+  (breweries || []).forEach((b) => {
+    if (b.image_url && !isSupabaseUrl(b.image_url, supabaseUrl)) breweryMainImages++;
   });
 
-  // Rate limit detection
-  if (response.status === 429) {
-    return { url: imageUrl, rateLimited: true };
+  let breweryGalleryImages = 0;
+  const { data: gCheck } = await supabase
+    .from('breweries')
+    .select('gallery_images')
+    .not('gallery_images', 'eq', '[]')
+    .limit(2000);
+  (gCheck || []).forEach((b) => {
+    const gallery: string[] = Array.isArray(b.gallery_images) ? b.gallery_images : [];
+    breweryGalleryImages += gallery.filter((url) => url && !isSupabaseUrl(url, supabaseUrl)).length;
+  });
+
+  return { breweryMainImages, breweryGalleryImages };
+}
+
+async function countSakeMissingImage(supabase: ReturnType<typeof createClient>): Promise<number> {
+  const { count: nullCount } = await supabase
+    .from('sake')
+    .select('id', { count: 'exact', head: true })
+    .is('image_url', null);
+  const { count: emptyCount } = await supabase
+    .from('sake')
+    .select('id', { count: 'exact', head: true })
+    .eq('image_url', '');
+  return (nullCount ?? 0) + (emptyCount ?? 0);
+}
+
+function shuffleInPlace<T>(arr: T[]): void {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
   }
-
-  if (response.status === 403 || response.status === 401) {
-    throw new Error(`Blocked: HTTP ${response.status}`);
-  }
-
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
-  const contentType = response.headers.get('content-type') || '';
-
-  // Reject non-image responses (HTML error pages, redirects to login, etc.)
-  if (contentType.includes('text/html') || contentType.includes('application/json')) {
-    throw new Error('Not an image (received HTML/JSON)');
-  }
-
-  const buffer = await response.arrayBuffer();
-
-  // Reject images that are too small (likely placeholders or icons)
-  if (buffer.byteLength < MIN_IMAGE_BYTES) {
-    throw new Error(`Too small (${buffer.byteLength} bytes) - likely placeholder`);
-  }
-
-  if (buffer.byteLength > MAX_IMAGE_BYTES) {
-    throw new Error(`Too large (${buffer.byteLength} bytes)`);
-  }
-
-  // Hash the image content to detect duplicates/placeholders
-  const hash = createHash('md5').update(Buffer.from(buffer)).digest('hex');
-
-  // If we've seen this exact image before in this run, it's probably a placeholder
-  if (KNOWN_PLACEHOLDER_HASHES.has(hash)) {
-    return { url: imageUrl, skippedPlaceholder: true };
-  }
-
-  // Check if this hash appeared multiple times (track across run)
-  if (seenHashes.has(hash)) {
-    // Second time seeing this image = placeholder
-    KNOWN_PLACEHOLDER_HASHES.add(hash);
-    return { url: imageUrl, skippedPlaceholder: true };
-  }
-  seenHashes.add(hash);
-
-  // Determine extension
-  let ext = 'jpg';
-  if (contentType.includes('png')) ext = 'png';
-  else if (contentType.includes('webp')) ext = 'webp';
-  else if (contentType.includes('gif')) ext = 'gif';
-  else if (contentType.includes('avif')) ext = 'avif';
-
-  const safeName = (name || 'img')
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '')
-    .substring(0, 40);
-
-  const rand = Math.random().toString(36).substring(2, 8);
-  const filePath = `${folder}/${safeName}-${Date.now()}-${rand}.${ext}`;
-
-  const { error } = await supabase.storage
-    .from('sake-images')
-    .upload(filePath, buffer, { contentType: contentType || 'image/jpeg', upsert: false });
-
-  if (error) throw new Error(error.message);
-
-  const { data } = supabase.storage.from('sake-images').getPublicUrl(filePath);
-  return { url: data.publicUrl };
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -145,195 +90,271 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   const supabase = createClient(supabaseUrl, supabaseServiceKey);
+  const firecrawlKey = process.env.FIRECRAWL_API_KEY;
+  const openaiKey = process.env.OPENAI_API_KEY;
 
-  let breweryMainProcessed = 0;
-  let breweryGalleryProcessed = 0;
-  let sakeProcessed = 0;
-  /** Rows returned by external-URL sake query (for cron diagnostics). */
+  const q = req.query as Record<string, string | string[] | undefined>;
+  const statsOnly = req.method === 'GET' && q.stats === '1';
+
+  if (statsOnly) {
+    const projectHostForCount = supabaseProjectHost(supabaseUrl);
+    let remainingSakeQuery = supabase
+      .from('sake')
+      .select('image_url', { count: 'exact', head: true })
+      .not('image_url', 'is', null)
+      .neq('image_url', '');
+    if (projectHostForCount) {
+      remainingSakeQuery = remainingSakeQuery.not('image_url', 'ilike', `%${projectHostForCount}%`);
+    }
+    remainingSakeQuery = remainingSakeQuery.not('image_url', 'ilike', '%supabase.co%');
+    const { count: remainingSakeApprox } = await remainingSakeQuery;
+    const remainingSake = remainingSakeApprox ?? 0;
+    const brewRem = await countBreweryRemaining(supabase, supabaseUrl);
+    const sakeMissingImage = await countSakeMissingImage(supabase);
+
+    return res.status(200).json({
+      success: true,
+      job: 'sake',
+      statsOnly: true,
+      processed: 0,
+      galleryProcessed: 0,
+      sakeProcessed: 0,
+      breweryMainProcessed: 0,
+      failed: 0,
+      skippedPlaceholders: 0,
+      rateLimited: false,
+      remaining: {
+        sakeImages: Math.max(0, remainingSake),
+        sakeMissingImage,
+        breweryMainImages: brewRem.breweryMainImages,
+        breweryGalleryImages: brewRem.breweryGalleryImages,
+      },
+      env: {
+        discoverEnabled: Boolean(firecrawlKey && openaiKey),
+        auditEnabled: Boolean(openaiKey),
+      },
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  let sakeMirrored = 0;
+  let sakeDiscovered = 0;
+  let sakeAuditCleared = 0;
   let sakeExternalRowsFetched = 0;
+  let mirrorOpsRemaining = MIRROR_OPS_BUDGET;
   let failed = 0;
   let skippedPlaceholders = 0;
   let rateLimited = false;
   const errors: string[] = [];
   const seenHashes = new Set<string>();
+  const knownPlaceholderHashes = new Set<string>();
 
   try {
-    // --- BREWERY MAIN IMAGES ---
-    const { data: breweries } = await supabase
-      .from('breweries')
-      .select('id, name, image_url')
-      .not('image_url', 'is', null)
-      .limit(500);
-
-    const breweriesToProcess = (breweries || []).filter(
-      b => b.image_url && !isSupabaseUrl(b.image_url, supabaseUrl)
-    );
-
-    for (const brewery of breweriesToProcess.slice(0, BREWERY_MAIN_BUDGET)) {
-      if (rateLimited) break;
-      try {
-        const result = await downloadAndStore(supabase, brewery.image_url!, 'brewery-images', brewery.name, seenHashes);
-
-        if (result.rateLimited) {
-          rateLimited = true;
-          errors.push('Rate limited by image host - stopping this run');
-          break;
-        }
-
-        if (result.skippedPlaceholder) {
-          // Clear the URL so we don't keep trying this placeholder
-          await supabase.from('breweries').update({ image_url: null, updated_at: new Date().toISOString() }).eq('id', brewery.id);
-          skippedPlaceholders++;
-        } else {
-          await supabase.from('breweries').update({ image_url: result.url, updated_at: new Date().toISOString() }).eq('id', brewery.id);
-          breweryMainProcessed++;
-        }
-
-        await sleep(DELAY_MS);
-      } catch (err) {
-        failed++;
-        const msg = err instanceof Error ? err.message : String(err);
-        errors.push(`Brewery "${brewery.name}": ${msg}`);
-
-        // If blocked, clear the URL to avoid retrying forever
-        if (msg.includes('Blocked') || msg.includes('Not an image')) {
-          await supabase.from('breweries').update({ image_url: null, updated_at: new Date().toISOString() }).eq('id', brewery.id);
-        }
-      }
-    }
-
-    // --- BREWERY GALLERY IMAGES ---
-    if (!rateLimited) {
-      const { data: galleryBreweries } = await supabase
-        .from('breweries')
-        .select('id, name, gallery_images')
-        .not('gallery_images', 'eq', '[]')
-        .limit(200);
-
-      let galleryBudget = BREWERY_GALLERY_BUDGET;
-
-      for (const brewery of galleryBreweries || []) {
-        if (galleryBudget <= 0 || rateLimited) break;
-
-        const gallery: string[] = Array.isArray(brewery.gallery_images) ? brewery.gallery_images : [];
-        let updated = false;
-        const newGallery = [...gallery];
-
-        for (let i = 0; i < gallery.length; i++) {
-          if (galleryBudget <= 0 || rateLimited) break;
-          if (!gallery[i] || isSupabaseUrl(gallery[i], supabaseUrl)) continue;
-
-          try {
-            const result = await downloadAndStore(supabase, gallery[i], 'brewery-gallery', `${brewery.name}-${i}`, seenHashes);
-
-            if (result.rateLimited) {
-              rateLimited = true;
-              break;
-            }
-
-            if (result.skippedPlaceholder) {
-              newGallery[i] = '';
-              skippedPlaceholders++;
-            } else {
-              newGallery[i] = result.url;
-              breweryGalleryProcessed++;
-            }
-
-            galleryBudget--;
-            updated = true;
-            await sleep(DELAY_MS);
-          } catch {
-            failed++;
-            galleryBudget--;
-          }
-        }
-
-        if (updated) {
-          // Remove empty strings from gallery
-          const cleanGallery = newGallery.filter(url => url);
-          await supabase.from('breweries').update({ gallery_images: cleanGallery, updated_at: new Date().toISOString() }).eq('id', brewery.id);
-        }
-      }
-    }
-
-    // --- SAKE IMAGES ---
-    // Previously: .limit(500) on any non-null image_url — almost always already Supabase URLs → Sake 0.
-    // Now: query rows whose URL does not look hosted on this project / supabase (still verify in JS).
-    if (!rateLimited) {
-      const projectHost = supabaseProjectHost(supabaseUrl);
-      let sakeQuery = supabase
+    // --- AUDIT: clear clearly wrong hosted images (e.g. whisky bottle) ---
+    if (openaiKey) {
+      const { data: auditPool } = await supabase
         .from('sake')
-        .select('id, name, image_url')
+        .select('id, name, name_japanese, brewery, image_url')
         .not('image_url', 'is', null)
-        .neq('image_url', '');
+        .neq('image_url', '')
+        .limit(120);
 
-      if (projectHost) {
-        sakeQuery = sakeQuery.not('image_url', 'ilike', `%${projectHost}%`);
-      }
-      sakeQuery = sakeQuery.not('image_url', 'ilike', '%supabase.co%');
+      const auditCandidates = (auditPool || []).filter(
+        (r) => r.image_url && isSupabaseUrl(r.image_url, supabaseUrl)
+      ) as SakeRow[];
 
-      const { data: sakes } = await sakeQuery
-        .order('updated_at', { ascending: true })
-        .limit(500);
+      shuffleInPlace(auditCandidates);
+      const auditBatch = auditCandidates.slice(0, AUDIT_ROW_CAP);
 
-      sakeExternalRowsFetched = (sakes || []).length;
-
-      const sakesToProcess = (sakes || []).filter(
-        (s) => s.image_url && !isSupabaseUrl(s.image_url, supabaseUrl)
-      );
-
-      let sakeBudget = SAKE_BUDGET;
-
-      for (const sake of sakesToProcess.slice(0, sakeBudget)) {
+      for (const row of auditBatch) {
         if (rateLimited) break;
+        if (!row.image_url) continue;
+        try {
+          const v = await validateJapaneseSakeProductPhoto(openaiKey, row.image_url, {
+            sakeName: row.name,
+            brewery: row.brewery,
+          });
+          await sleep(DELAY_MS_DISCOVER);
+          if (!v.isJapaneseSakeProductPhoto || v.confidence === 'low') {
+            await supabase
+              .from('sake')
+              .update({ image_url: null, updated_at: new Date().toISOString() })
+              .eq('id', row.id);
+            sakeAuditCleared++;
+            console.log(`[process-images/audit] cleared ${row.name}: ${v.briefReason}`);
+          }
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          errors.push(`audit ${row.name}: ${msg.slice(0, 120)}`);
+        }
+      }
+    }
 
-        if (sake.image_url && !isSupabaseUrl(sake.image_url, supabaseUrl)) {
-          try {
-            const result = await downloadAndStore(supabase, sake.image_url, 'sake-images', sake.name, seenHashes);
-            if (result.rateLimited) {
-              rateLimited = true;
-              break;
-            }
-            if (result.skippedPlaceholder) {
-              await supabase
-                .from('sake')
-                .update({ image_url: null, updated_at: new Date().toISOString() })
-                .eq('id', sake.id);
-              skippedPlaceholders++;
-            } else {
+    // --- DISCOVER: null / empty image_url ---
+    if (firecrawlKey && openaiKey && !rateLimited) {
+      const { data: missingPool } = await supabase
+        .from('sake')
+        .select('id, name, name_japanese, brewery, image_url')
+        .or('image_url.is.null,image_url.eq.')
+        .order('updated_at', { ascending: true })
+        .limit(120);
+
+      const missingRows = (missingPool || []) as SakeRow[];
+      let discoverAttempts = 0;
+
+      for (const row of missingRows) {
+        if (discoverAttempts >= DISCOVER_ROW_CAP || rateLimited) break;
+        discoverAttempts++;
+
+        try {
+          const { images } = await searchSakeImageCandidates(
+            firecrawlKey,
+            {
+              name: row.name,
+              nameJapanese: row.name_japanese,
+              brewery: row.brewery,
+            },
+            'google-only'
+          );
+          await sleep(DELAY_MS_DISCOVER);
+
+          let placed = false;
+          for (const img of images.slice(0, DISCOVER_CANDIDATES_MAX)) {
+            if (rateLimited) break;
+            if (urlLooksLikeNonSakeProduct(img.url)) continue;
+
+            try {
+              const v = await validateJapaneseSakeProductPhoto(openaiKey, img.url, {
+                sakeName: row.name,
+                brewery: row.brewery,
+              });
+              await sleep(DELAY_MS_DISCOVER);
+
+              if (!v.isJapaneseSakeProductPhoto || v.confidence === 'low') continue;
+
+              const result = await downloadAndStore(
+                supabase,
+                img.url,
+                'sake-images',
+                row.name,
+                seenHashes,
+                knownPlaceholderHashes
+              );
+
+              if (result.rateLimited) {
+                rateLimited = true;
+                errors.push('Rate limited during discover — stopping');
+                break;
+              }
+
+              if (result.skippedPlaceholder) continue;
+
               await supabase
                 .from('sake')
                 .update({ image_url: result.url, updated_at: new Date().toISOString() })
-                .eq('id', sake.id);
-              sakeProcessed++;
-            }
-            await sleep(DELAY_MS);
-          } catch (err) {
-            failed++;
-            const msg = err instanceof Error ? err.message : String(err);
-            if (msg.includes('Blocked') || msg.includes('Not an image') || msg.includes('Too small')) {
-              await supabase
-                .from('sake')
-                .update({ image_url: null, updated_at: new Date().toISOString() })
-                .eq('id', sake.id);
+                .eq('id', row.id);
+              sakeDiscovered++;
+              placed = true;
+              break;
+            } catch (inner) {
+              failed++;
             }
           }
+
+          if (!placed) {
+            /* leave null; try again on a later run */
+          }
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          errors.push(`discover ${row.name}: ${msg.slice(0, 120)}`);
+        }
+      }
+    } else if (!firecrawlKey || !openaiKey) {
+      errors.push(
+        !firecrawlKey && !openaiKey
+          ? 'Discover skipped: set FIRECRAWL_API_KEY and OPENAI_API_KEY'
+          : !firecrawlKey
+            ? 'Discover skipped: FIRECRAWL_API_KEY missing'
+            : 'Discover skipped: OPENAI_API_KEY missing'
+      );
+    }
+
+    // --- MIRROR: external URL → Supabase Storage ---
+    const projectHost = supabaseProjectHost(supabaseUrl);
+    let sakeQuery = supabase
+      .from('sake')
+      .select('id, name, image_url')
+      .not('image_url', 'is', null)
+      .neq('image_url', '');
+
+    if (projectHost) {
+      sakeQuery = sakeQuery.not('image_url', 'ilike', `%${projectHost}%`);
+    }
+    sakeQuery = sakeQuery.not('image_url', 'ilike', '%supabase.co%');
+
+    const { data: sakes } = await sakeQuery.order('updated_at', { ascending: true }).limit(1500);
+
+    sakeExternalRowsFetched = (sakes || []).length;
+
+    const sakesToMirror = (sakes || []).filter(
+      (s) => s.image_url && !isSupabaseUrl(s.image_url, supabaseUrl)
+    );
+
+    for (const sake of sakesToMirror) {
+      if (rateLimited || mirrorOpsRemaining <= 0) break;
+
+      if (sake.image_url && !isSupabaseUrl(sake.image_url, supabaseUrl)) {
+        try {
+          const result = await downloadAndStore(
+            supabase,
+            sake.image_url,
+            'sake-images',
+            sake.name,
+            seenHashes,
+            knownPlaceholderHashes
+          );
+          mirrorOpsRemaining--;
+
+          if (result.rateLimited) {
+            rateLimited = true;
+            errors.push('Rate limited by image host — stopping mirror');
+            break;
+          }
+          if (result.skippedPlaceholder) {
+            await supabase
+              .from('sake')
+              .update({ image_url: null, updated_at: new Date().toISOString() })
+              .eq('id', sake.id);
+            skippedPlaceholders++;
+          } else {
+            await supabase
+              .from('sake')
+              .update({ image_url: result.url, updated_at: new Date().toISOString() })
+              .eq('id', sake.id);
+            sakeMirrored++;
+          }
+          await sleep(DELAY_MS);
+        } catch (err) {
+          mirrorOpsRemaining--;
+          failed++;
+          const msg = err instanceof Error ? err.message : String(err);
+          if (msg.includes('Blocked') || msg.includes('Not an image') || msg.includes('Too small')) {
+            await supabase
+              .from('sake')
+              .update({ image_url: null, updated_at: new Date().toISOString() })
+              .eq('id', sake.id);
+          }
+          await sleep(DELAY_MS);
         }
       }
     }
 
-    // --- STATUS ---
-    const remainingBreweryMain = breweriesToProcess.length - breweryMainProcessed - skippedPlaceholders;
-
-    let remainingGalleryCount = 0;
-    const { data: gCheck } = await supabase.from('breweries').select('gallery_images').not('gallery_images', 'eq', '[]').limit(2000);
-    (gCheck || []).forEach(b => {
-      const gallery: string[] = Array.isArray(b.gallery_images) ? b.gallery_images : [];
-      remainingGalleryCount += gallery.filter(url => url && !isSupabaseUrl(url, supabaseUrl)).length;
-    });
-
     const projectHostForCount = supabaseProjectHost(supabaseUrl);
-    let remainingSakeQuery = supabase.from('sake').select('image_url', { count: 'exact', head: true }).not('image_url', 'is', null).neq('image_url', '');
+    let remainingSakeQuery = supabase
+      .from('sake')
+      .select('image_url', { count: 'exact', head: true })
+      .not('image_url', 'is', null)
+      .neq('image_url', '');
     if (projectHostForCount) {
       remainingSakeQuery = remainingSakeQuery.not('image_url', 'ilike', `%${projectHostForCount}%`);
     }
@@ -341,33 +362,49 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const { count: remainingSakeApprox } = await remainingSakeQuery;
     const remainingSake = remainingSakeApprox ?? 0;
 
-    const totalProcessed = breweryMainProcessed + sakeProcessed + breweryGalleryProcessed;
-    console.log(`[process-images] OK processed=${totalProcessed} sake=${sakeProcessed} breweryMain=${breweryMainProcessed} gallery=${breweryGalleryProcessed} failed=${failed} remaining=${remainingBreweryMain + remainingGalleryCount + remainingSake}`);
+    const brewRem = await countBreweryRemaining(supabase, supabaseUrl);
+    const sakeMissingImage = await countSakeMissingImage(supabase);
+
+    const mirrorOpsUsed = MIRROR_OPS_BUDGET - mirrorOpsRemaining;
+    const sakeProcessedTotal = sakeMirrored + sakeDiscovered;
+
+    console.log(
+      `[process-images/sake] mirror=${sakeMirrored} discover=${sakeDiscovered} auditCleared=${sakeAuditCleared} failed=${failed} externalRemaining≈${remainingSake} missingImg=${sakeMissingImage} mirrorOps=${mirrorOpsUsed}`
+    );
 
     return res.status(200).json({
       success: true,
-      processed: breweryMainProcessed + sakeProcessed,
-      galleryProcessed: breweryGalleryProcessed,
-      sakeProcessed,
-      breweryMainProcessed,
+      job: 'sake',
+      mirrorOpsBudget: MIRROR_OPS_BUDGET,
+      mirrorOpsUsed,
+      mirrorOpsRemaining,
+      sakeProcessed: sakeProcessedTotal,
+      sakeMirrored,
+      sakeDiscovered,
+      sakeAuditCleared,
+      discoverRowCap: DISCOVER_ROW_CAP,
+      auditRowCap: AUDIT_ROW_CAP,
+      processed: sakeProcessedTotal,
+      galleryProcessed: 0,
+      breweryMainProcessed: 0,
       failed,
       skippedPlaceholders,
       rateLimited,
       remaining: {
-        breweryMainImages: Math.max(0, remainingBreweryMain),
-        breweryGalleryImages: Math.max(0, remainingGalleryCount),
-        /** Approximate count of rows still needing mirror (same filters as sake queue). */
         sakeImages: Math.max(0, remainingSake),
+        sakeMissingImage,
+        breweryMainImages: brewRem.breweryMainImages,
+        breweryGalleryImages: brewRem.breweryGalleryImages,
       },
       sakeQueue: {
         externalRowsFetched: sakeExternalRowsFetched,
-        note: 'Sake mirroring only processes non-Supabase image_url rows; see remaining.sakeImages.',
+        note: 'Audit → discover (missing) → mirror external URLs. Discover needs FIRECRAWL + OPENAI.',
       },
-      errors: errors.length > 0 ? errors.slice(0, 10) : undefined,
+      errors: errors.length > 0 ? errors.slice(0, 15) : undefined,
       timestamp: new Date().toISOString(),
     });
   } catch (error) {
-    console.error('Cron process-images error:', error);
+    console.error('Cron process-images (sake) error:', error);
     return res.status(500).json({ error: 'Processing failed', details: String(error) });
   }
 }

@@ -910,16 +910,23 @@ function SakeImportPanel() {
 
 interface ProcessingStatus {
   success: boolean;
+  job?: 'sake' | 'brewery';
+  statsOnly?: boolean;
   processed: number;
   galleryProcessed: number;
   sakeProcessed: number;
+  sakeMirrored?: number;
+  sakeDiscovered?: number;
+  sakeAuditCleared?: number;
   breweryMainProcessed: number;
   failed: number;
   remaining: {
     breweryMainImages: number;
     breweryGalleryImages: number;
     sakeImages: number;
+    sakeMissingImage?: number;
   };
+  env?: { discoverEnabled?: boolean; auditEnabled?: boolean };
   errors?: string[];
   timestamp: string;
 }
@@ -930,14 +937,14 @@ function ImageProcessorPanel() {
   const [running, setRunning] = useState(false);
   const [runHistory, setRunHistory] = useState<ProcessingStatus[]>([]);
 
+  /** Counts only — does not download or mirror images. */
   const fetchStatus = async () => {
     setLoading(true);
     try {
-      const response = await fetch('/api/cron/process-images', { method: 'POST' });
-      if (!response.ok) throw new Error('Failed to run');
+      const response = await fetch('/api/cron/process-images?stats=1', { method: 'GET' });
+      if (!response.ok) throw new Error('Failed to load stats');
       const data: ProcessingStatus = await response.json();
       setStatus(data);
-      setRunHistory(prev => [data, ...prev].slice(0, 10));
     } catch (err) {
       console.error('Status check failed:', err);
     } finally {
@@ -945,14 +952,14 @@ function ImageProcessorPanel() {
     }
   };
 
-  const handleRunBatch = async () => {
+  const handleRunSakeBatch = async () => {
     setRunning(true);
     try {
       const response = await fetch('/api/cron/process-images', { method: 'POST' });
       if (!response.ok) throw new Error('Failed to process');
       const data: ProcessingStatus = await response.json();
       setStatus(data);
-      setRunHistory(prev => [data, ...prev].slice(0, 10));
+      setRunHistory((prev) => [data, ...prev].slice(0, 10));
     } catch (err) {
       console.error('Processing failed:', err);
     } finally {
@@ -960,7 +967,26 @@ function ImageProcessorPanel() {
     }
   };
 
-  const handleRunMultiple = async (batches: number) => {
+  const handleRunBreweryBatch = async () => {
+    setRunning(true);
+    try {
+      const response = await fetch('/api/cron/process-brewery-images', { method: 'POST' });
+      if (!response.ok) throw new Error('Failed to process breweries');
+      const data: ProcessingStatus = await response.json();
+      setStatus(data);
+      setRunHistory((prev) => [data, ...prev].slice(0, 10));
+    } catch (err) {
+      console.error('Brewery processing failed:', err);
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  /** Mirror cap per cron run (discover + audit are separate limits on the server). */
+  const SAKE_MIRROR_PER_RUN = 220;
+  const SAKE_CRON_RUNS_PER_DAY = 6;
+
+  const handleRunMultipleSake = async (batches: number) => {
     setRunning(true);
     for (let i = 0; i < batches; i++) {
       try {
@@ -968,9 +994,11 @@ function ImageProcessorPanel() {
         if (!response.ok) break;
         const data: ProcessingStatus = await response.json();
         setStatus(data);
-        setRunHistory(prev => [data, ...prev].slice(0, 10));
+        setRunHistory((prev) => [data, ...prev].slice(0, 10));
 
-                if (data.remaining.breweryMainImages === 0 && data.remaining.breweryGalleryImages === 0 && (data.remaining.sakeImages || 0) === 0) {
+        const ext = data.remaining.sakeImages || 0;
+        const miss = data.remaining.sakeMissingImage ?? 0;
+        if (ext === 0 && miss === 0) {
           break;
         }
       } catch {
@@ -981,7 +1009,10 @@ function ImageProcessorPanel() {
   };
 
   const totalRemaining = status
-    ? status.remaining.breweryMainImages + status.remaining.breweryGalleryImages + (status.remaining.sakeImages || 0)
+    ? status.remaining.breweryMainImages +
+      status.remaining.breweryGalleryImages +
+      (status.remaining.sakeImages || 0) +
+      (status.remaining.sakeMissingImage ?? 0)
     : null;
 
   return (
@@ -994,25 +1025,41 @@ function ImageProcessorPanel() {
           <div className="space-y-2 flex-1">
             <h2 className="text-lg font-semibold">Background Image Processor</h2>
             <p className="text-sm text-muted-foreground">
-              Automatically downloads external images and stores them in Supabase storage. 
-              Runs as a scheduled cron job every 6 hours, processing 15 images per run. 
-              You can also trigger it manually below.
+              Sake cron: <strong>audit</strong> wrong photos (vision) → <strong>discover</strong> missing images (Firecrawl + vision) →{' '}
+              <strong>mirror</strong> external URLs into Storage. Needs <code className="text-xs">OPENAI_API_KEY</code> and{' '}
+              <code className="text-xs">FIRECRAWL_API_KEY</code> on Vercel for discover/audit.
             </p>
-            <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
-              <Clock className="w-4 h-4" />
-              <span>Cron schedule: every 6 hours (4 times/day)</span>
+            <div className="flex flex-col gap-1 text-sm text-muted-foreground">
+              <div className="flex items-center gap-1.5">
+                <Clock className="w-4 h-4 shrink-0" />
+                <span>
+                  Sake cron: every 4 hours — mirror up to {SAKE_MIRROR_PER_RUN}/run + discover batch ({SAKE_CRON_RUNS_PER_DAY}×/day)
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <Clock className="w-4 h-4 shrink-0" />
+                <span>Brewery cron: once daily (small batch)</span>
+              </div>
             </div>
           </div>
         </div>
       </Card>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
+        <Card className="p-4">
+          <div className="text-center space-y-1">
+            <p className="text-3xl font-bold">
+              {status ? (status.remaining.sakeMissingImage ?? '?') : '?'}
+            </p>
+            <p className="text-sm text-muted-foreground">Sake — no image</p>
+          </div>
+        </Card>
         <Card className="p-4">
           <div className="text-center space-y-1">
             <p className="text-3xl font-bold">
               {status ? (status.remaining.sakeImages || '?') : '?'}
             </p>
-            <p className="text-sm text-muted-foreground">Sake Images</p>
+            <p className="text-sm text-muted-foreground">Sake — external URL</p>
           </div>
         </Card>
         <Card className="p-4">
@@ -1045,61 +1092,101 @@ function ImageProcessorPanel() {
         </Card>
       </div>
 
-      {status && totalRemaining !== null && totalRemaining > 0 && (
+      {status &&
+        ((status.remaining.sakeImages || 0) > 0 || (status.remaining.sakeMissingImage ?? 0) > 0) && (
         <Card className="p-4 space-y-2">
-          <div className="flex items-center justify-between text-sm">
-            <span className="text-muted-foreground">Estimated completion</span>
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 text-sm">
+            <span className="text-muted-foreground">Rough ETA at cron rate (mirror portion)</span>
             <span className="font-medium">
-              ~{Math.ceil(totalRemaining / (15 * 4))} days at current rate
+              external: ~
+              {Math.ceil(
+                (status.remaining.sakeImages || 0) / (SAKE_MIRROR_PER_RUN * SAKE_CRON_RUNS_PER_DAY)
+              )}{' '}
+              d · missing: filled in discover batches (28/run)
             </span>
           </div>
         </Card>
       )}
 
       <div className="flex flex-wrap gap-3">
-        <Button onClick={handleRunBatch} disabled={running || loading} className="gap-2">
+        <Button onClick={handleRunSakeBatch} disabled={running || loading} className="gap-2">
           {running ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
-          Run 1 Batch (15 images)
+          Run full sake job
         </Button>
-        <Button variant="outline" onClick={() => handleRunMultiple(5)} disabled={running || loading} className="gap-2">
+        <Button variant="outline" onClick={() => handleRunMultipleSake(5)} disabled={running || loading} className="gap-2">
           {running ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
-          Run 5 Batches (75 images)
+          Run 5× in a row
         </Button>
-        <Button variant="outline" onClick={() => handleRunMultiple(20)} disabled={running || loading} className="gap-2">
+        <Button variant="outline" onClick={() => handleRunMultipleSake(20)} disabled={running || loading} className="gap-2">
           {running ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
-          Run 20 Batches (300 images)
+          Run 20× in a row
+        </Button>
+        <Button variant="secondary" onClick={handleRunBreweryBatch} disabled={running || loading} className="gap-2">
+          {running ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+          Run brewery batch
         </Button>
         <Button variant="ghost" onClick={fetchStatus} disabled={loading || running} className="gap-2">
           {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
-          Check Status
+          Refresh counts
         </Button>
       </div>
 
       {status && (
         <Card className="p-4 space-y-3">
           <h3 className="font-medium">Last Run Result</h3>
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 text-sm">
-            <div>
-              <p className="text-muted-foreground">Sake</p>
-              <p className="font-medium text-green-600">{status.sakeProcessed || 0}</p>
+          {status.statsOnly ? (
+            <p className="text-sm text-muted-foreground">Counts only — use &quot;Run full sake job&quot; to audit, discover, and mirror.</p>
+          ) : status.job === 'sake' ? (
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-4 text-sm">
+              <div>
+                <p className="text-muted-foreground">Total sake</p>
+                <p className="font-medium text-green-600">{status.sakeProcessed || 0}</p>
+              </div>
+              <div>
+                <p className="text-muted-foreground">Mirrored</p>
+                <p className="font-medium text-green-600">{status.sakeMirrored ?? 0}</p>
+              </div>
+              <div>
+                <p className="text-muted-foreground">Discovered</p>
+                <p className="font-medium text-green-600">{status.sakeDiscovered ?? 0}</p>
+              </div>
+              <div>
+                <p className="text-muted-foreground">Audit cleared</p>
+                <p className="font-medium text-amber-600">{status.sakeAuditCleared ?? 0}</p>
+              </div>
+              <div>
+                <p className="text-muted-foreground">Failed</p>
+                <p className="font-medium text-destructive">{status.failed}</p>
+              </div>
+              <div>
+                <p className="text-muted-foreground">Time</p>
+                <p className="font-medium">{new Date(status.timestamp).toLocaleTimeString()}</p>
+              </div>
             </div>
-            <div>
-              <p className="text-muted-foreground">Brewery</p>
-              <p className="font-medium text-green-600">{status.breweryMainProcessed || 0}</p>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 text-sm">
+              <div>
+                <p className="text-muted-foreground">Sake</p>
+                <p className="font-medium text-green-600">{status.sakeProcessed || 0}</p>
+              </div>
+              <div>
+                <p className="text-muted-foreground">Brewery</p>
+                <p className="font-medium text-green-600">{status.breweryMainProcessed || 0}</p>
+              </div>
+              <div>
+                <p className="text-muted-foreground">Gallery</p>
+                <p className="font-medium text-green-600">{status.galleryProcessed}</p>
+              </div>
+              <div>
+                <p className="text-muted-foreground">Failed</p>
+                <p className="font-medium text-destructive">{status.failed}</p>
+              </div>
+              <div>
+                <p className="text-muted-foreground">Time</p>
+                <p className="font-medium">{new Date(status.timestamp).toLocaleTimeString()}</p>
+              </div>
             </div>
-            <div>
-              <p className="text-muted-foreground">Gallery</p>
-              <p className="font-medium text-green-600">{status.galleryProcessed}</p>
-            </div>
-            <div>
-              <p className="text-muted-foreground">Failed</p>
-              <p className="font-medium text-destructive">{status.failed}</p>
-            </div>
-            <div>
-              <p className="text-muted-foreground">Time</p>
-              <p className="font-medium">{new Date(status.timestamp).toLocaleTimeString()}</p>
-            </div>
-          </div>
+          )}
           {status.errors && status.errors.length > 0 && (
             <div className="p-3 bg-destructive/10 rounded-lg">
               <p className="text-sm font-medium text-destructive mb-1">Errors:</p>
@@ -1132,7 +1219,10 @@ function ImageProcessorPanel() {
                   <TableCell className="text-green-600">{run.galleryProcessed}</TableCell>
                   <TableCell className="text-destructive">{run.failed}</TableCell>
                   <TableCell className="hidden sm:table-cell">
-                    {run.remaining.breweryMainImages + run.remaining.breweryGalleryImages}
+                    {(run.remaining.sakeImages || 0) +
+                      (run.remaining.sakeMissingImage ?? 0) +
+                      run.remaining.breweryMainImages +
+                      run.remaining.breweryGalleryImages}
                   </TableCell>
                 </TableRow>
               ))}
