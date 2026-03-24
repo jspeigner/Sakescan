@@ -2,7 +2,8 @@ import { createClient } from '@supabase/supabase-js';
 import { createHash } from 'crypto';
 
 export const MIN_IMAGE_BYTES = 3000;
-export const MAX_IMAGE_BYTES = 15_000_000;
+/** Product shots rarely need more; large files risk OOM in serverless. */
+export const MAX_IMAGE_BYTES = 8_000_000;
 
 export function isSupabaseUrl(url: string, supabaseUrl: string): boolean {
   return url.includes(supabaseUrl.replace('https://', '')) || url.includes('supabase.co/storage');

@@ -1045,20 +1045,27 @@ function ImageProcessorPanel() {
     }
   };
 
+  /** Default: many short requests — avoids FUNCTION_INVOCATION_FAILED (OOM / platform kill) on long single runs. */
   const handleRunSakeBatch = async () => {
     setRunning(true);
     setProcessorError(null);
-    const toastId = toast.loading('Running full sake job…', {
-      description: 'Pro: one request, up to ~5 minutes (audit → discover → mirror). Keep this tab open.',
+    const toastId = toast.loading('Running sake job…', {
+      description: 'Short chunks in sequence (reliable on Vercel). Keep this tab open.',
       duration: 400_000,
     });
     try {
-      const data = await runSakeImageJobFull();
+      const data = await runSakeImageJobChunked((round, chunk) => {
+        toast.loading(`Sake job — chunk ${round}…`, {
+          id: toastId,
+          description: `External URLs ~${chunk.remaining.sakeImages ?? 0} · missing image ${chunk.remaining.sakeMissingImage ?? 0}`,
+          duration: 400_000,
+        });
+      });
       setStatus(data);
       setRunHistory((prev) => [data, ...prev].slice(0, 10));
       toast.success('Sake job finished', {
         id: toastId,
-        description: `Mirrored ${data.sakeMirrored ?? 0}, discovered ${data.sakeDiscovered ?? 0}, audit cleared ${data.sakeAuditCleared ?? 0}`,
+        description: `Last chunk: mirrored ${data.sakeMirrored ?? 0}, discovered ${data.sakeDiscovered ?? 0}, audit cleared ${data.sakeAuditCleared ?? 0}`,
       });
       if (data.errors && data.errors.length > 0) {
         toast.message('Warnings', { description: data.errors.slice(0, 3).join(' · ') });
@@ -1073,26 +1080,21 @@ function ImageProcessorPanel() {
     }
   };
 
-  const handleRunSakeBatchChunked = async () => {
+  /** One POST — can still hit memory limits; use if chunks work but you want fewer round-trips. */
+  const handleRunSakeBatchSingle = async () => {
     setRunning(true);
     setProcessorError(null);
-    const toastId = toast.loading('Running sake job (short chunks)…', {
-      description: 'Many quick requests — for strict ~10s limits or if the full job times out.',
+    const toastId = toast.loading('Running single long sake job…', {
+      description: 'One request, up to ~5 min. If this fails with FUNCTION_INVOCATION_FAILED, use the default chunked run.',
       duration: 400_000,
     });
     try {
-      const data = await runSakeImageJobChunked((round, chunk) => {
-        toast.loading(`Sake job — chunk ${round}…`, {
-          id: toastId,
-          description: `External URLs ~${chunk.remaining.sakeImages ?? 0} · missing image ${chunk.remaining.sakeMissingImage ?? 0}`,
-          duration: 400_000,
-        });
-      });
+      const data = await runSakeImageJobFull();
       setStatus(data);
       setRunHistory((prev) => [data, ...prev].slice(0, 10));
-      toast.success('Sake job finished (chunked)', {
+      toast.success('Sake job finished (single request)', {
         id: toastId,
-        description: `Last chunk: mirrored ${data.sakeMirrored ?? 0}, discovered ${data.sakeDiscovered ?? 0}, audit cleared ${data.sakeAuditCleared ?? 0}`,
+        description: `Mirrored ${data.sakeMirrored ?? 0}, discovered ${data.sakeDiscovered ?? 0}, audit cleared ${data.sakeAuditCleared ?? 0}`,
       });
       if (data.errors && data.errors.length > 0) {
         toast.message('Warnings', { description: data.errors.slice(0, 3).join(' · ') });
@@ -1143,7 +1145,7 @@ function ImageProcessorPanel() {
     const toastId = toast.loading(`Running ${batches} sake jobs in a row…`, { duration: 600_000 });
     try {
       for (let i = 0; i < batches; i++) {
-        const data = await runSakeImageJobFull();
+        const data = await runSakeImageJobChunked();
         setStatus(data);
         setRunHistory((prev) => [data, ...prev].slice(0, 10));
 
@@ -1191,7 +1193,7 @@ function ImageProcessorPanel() {
               <div className="flex items-center gap-1.5">
                 <Clock className="w-4 h-4 shrink-0" />
                 <span>
-                  Sake cron: every 4 hours — full run (Pro: up to 300s) · mirror budget {SAKE_MIRROR_PER_RUN}/run
+                  Sake cron: every 4 hours — short chunk per run (reliable) · up to {SAKE_MIRROR_PER_RUN} mirror ops when time allows
                 </span>
               </div>
               <div className="flex items-center gap-1.5">
@@ -1281,11 +1283,11 @@ function ImageProcessorPanel() {
       <div className="flex flex-wrap gap-3">
         <Button onClick={handleRunSakeBatch} disabled={running || loading} className="gap-2">
           {running ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
-          Run full sake job
+          Run sake job
         </Button>
-        <Button variant="outline" onClick={handleRunSakeBatchChunked} disabled={running || loading} className="gap-2">
+        <Button variant="outline" onClick={handleRunSakeBatchSingle} disabled={running || loading} className="gap-2">
           {running ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
-          Run in short chunks
+          Single long request (Pro)
         </Button>
         <Button variant="outline" onClick={() => handleRunMultipleSake(5)} disabled={running || loading} className="gap-2">
           {running ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
@@ -1309,7 +1311,7 @@ function ImageProcessorPanel() {
         <Card className="p-4 space-y-3">
           <h3 className="font-medium">Last Run Result</h3>
           {status.statsOnly ? (
-            <p className="text-sm text-muted-foreground">Counts only — use &quot;Run full sake job&quot; to audit, discover, and mirror.</p>
+            <p className="text-sm text-muted-foreground">Counts only — use &quot;Run sake job&quot; to audit, discover, and mirror.</p>
           ) : status.job === 'sake' ? (
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-4 text-sm">
               <div>

@@ -162,7 +162,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let sakeDiscovered = 0;
     let sakeAuditCleared = 0;
     let sakeExternalRowsFetched = 0;
-    let mirrorOpsRemaining = MIRROR_OPS_BUDGET;
+    /** Single long runs hold more in memory (vision base64, buffers); chunked stays aggressive. */
+    const discoverRowCapThisRun = chunked ? DISCOVER_ROW_CAP : Math.min(DISCOVER_ROW_CAP, 14);
+    const auditRowCapThisRun = chunked ? AUDIT_ROW_CAP : Math.min(AUDIT_ROW_CAP, 6);
+    const mirrorOpsBudgetThisRun = chunked ? MIRROR_OPS_BUDGET : Math.min(MIRROR_OPS_BUDGET, 80);
+    let mirrorOpsRemaining = mirrorOpsBudgetThisRun;
     let failed = 0;
     let skippedPlaceholders = 0;
     let rateLimited = false;
@@ -184,7 +188,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       ) as SakeRow[];
 
       shuffleInPlace(auditCandidates);
-      const auditBatch = auditCandidates.slice(0, AUDIT_ROW_CAP);
+      const auditBatch = auditCandidates.slice(0, auditRowCapThisRun);
 
       for (const row of auditBatch) {
         if (shouldStopChunk()) {
@@ -231,7 +235,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           hitTimeBudget = true;
           break;
         }
-        if (discoverAttempts >= DISCOVER_ROW_CAP || rateLimited) break;
+        if (discoverAttempts >= discoverRowCapThisRun || rateLimited) break;
         discoverAttempts++;
 
         try {
@@ -403,7 +407,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const brewRem = await countBreweryRemaining(supabase, supabaseUrl);
     const sakeMissingImage = await countSakeMissingImage(supabase);
 
-    const mirrorOpsUsed = MIRROR_OPS_BUDGET - mirrorOpsRemaining;
+    const mirrorOpsUsed = mirrorOpsBudgetThisRun - mirrorOpsRemaining;
     const sakeProcessedTotal = sakeMirrored + sakeDiscovered;
 
     const runAgain =
@@ -422,15 +426,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       chunkBudgetMs: chunked ? CHUNK_WALL_MS : undefined,
       hitTimeBudget: chunked ? hitTimeBudget : undefined,
       runAgain: chunked ? runAgain : undefined,
-      mirrorOpsBudget: MIRROR_OPS_BUDGET,
+      mirrorOpsBudget: mirrorOpsBudgetThisRun,
       mirrorOpsUsed,
       mirrorOpsRemaining,
       sakeProcessed: sakeProcessedTotal,
       sakeMirrored,
       sakeDiscovered,
       sakeAuditCleared,
-      discoverRowCap: DISCOVER_ROW_CAP,
-      auditRowCap: AUDIT_ROW_CAP,
+      discoverRowCap: discoverRowCapThisRun,
+      auditRowCap: auditRowCapThisRun,
       processed: sakeProcessedTotal,
       galleryProcessed: 0,
       breweryMainProcessed: 0,

@@ -14,7 +14,7 @@
   },
   "crons": [
     {
-      "path": "/api/cron/process-images",
+      "path": "/api/cron/process-images?chunk=1",
       "schedule": "0 */4 * * *"
     },
     {
