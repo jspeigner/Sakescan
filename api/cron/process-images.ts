@@ -6,8 +6,11 @@ import {
   sleep,
   supabaseProjectHost,
 } from './lib/imageMirror';
-import { searchSakeImageCandidates, urlLooksLikeNonSakeProduct } from '../lib/sakeImageDiscovery';
-import { validateJapaneseSakeProductPhoto } from '../lib/sakeImageVision';
+import { searchSakeImageCandidates, urlLooksLikeNonSakeProduct } from './lib/sakeImageDiscovery';
+import { validateJapaneseSakeProductPhoto } from './lib/sakeImageVision';
+
+/** Vercel Node function duration (seconds). Also set in vercel.json for this path. */
+export const maxDuration = 300;
 
 /** Mirror external image_url into Storage (per run). */
 const MIRROR_OPS_BUDGET = 220;

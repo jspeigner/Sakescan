@@ -13,7 +13,10 @@ function parseVisionJson(text: string): SakeVisionResult | null {
   try {
     const o = JSON.parse(text) as Record<string, unknown>;
     const ok = o.isJapaneseSakeProductPhoto === true;
-    const conf = o.confidence === 'high' || o.confidence === 'medium' || o.confidence === 'low' ? o.confidence : 'medium';
+    const conf =
+      o.confidence === 'high' || o.confidence === 'medium' || o.confidence === 'low'
+        ? o.confidence
+        : 'medium';
     const reason = typeof o.briefReason === 'string' ? o.briefReason : '';
     return { isJapaneseSakeProductPhoto: ok, confidence: conf, briefReason: reason };
   } catch {

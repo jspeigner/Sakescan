@@ -933,18 +933,30 @@ interface ProcessingStatus {
 }
 
 async function parseFetchJson<T>(response: Response, label: string): Promise<T> {
-  const ct = response.headers.get('content-type') || '';
   const raw = await response.text();
-  const looksHtml = raw.trimStart().startsWith('<!') || raw.includes('<html');
+  const trimmed = raw.trim();
+  const looksHtml = trimmed.startsWith('<!') || raw.includes('<html');
+  const ct = response.headers.get('content-type') || '';
+
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    try {
+      return JSON.parse(raw) as T;
+    } catch {
+      throw new Error(`${label}: invalid JSON body (${response.status})`);
+    }
+  }
+
   if (!ct.includes('application/json')) {
+    const snippet = raw.slice(0, 280).replace(/\s+/g, ' ');
     throw new Error(
-      `${label}: expected JSON (${response.status})${
+      `${label}: non-JSON response (${response.status})${
         looksHtml
-          ? ' — this page is not hitting Vercel /api (e.g. local Vite has no serverless routes). Open your deployed app URL.'
+          ? ' — open your deployed Vercel URL (local dev has no /api).'
           : ''
-      }`
+      }${snippet ? ` — ${snippet}` : ''}`
     );
   }
+
   try {
     return JSON.parse(raw) as T;
   } catch {
