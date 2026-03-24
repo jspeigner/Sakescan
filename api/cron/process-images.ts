@@ -19,6 +19,9 @@ const AUDIT_ROW_CAP = 10;
 const DELAY_MS = 80;
 const DELAY_MS_DISCOVER = 120;
 
+/** Hobby plan ~10s hard limit; stay under so we return JSON before the platform kills the isolate. */
+const CHUNK_WALL_MS = 7500;
+
 type SakeRow = {
   id: string;
   name: string;
@@ -106,6 +109,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const openaiKey = process.env.OPENAI_API_KEY;
 
     const statsOnly = req.method === 'GET' && q.stats === '1';
+    const chunked =
+      q.chunk === '1' ||
+      q.chunk === 'true' ||
+      (Array.isArray(q.chunk) && (q.chunk[0] === '1' || q.chunk[0] === 'true'));
+    const chunkDeadlineMs = chunked ? Date.now() + CHUNK_WALL_MS : Number.POSITIVE_INFINITY;
+    const shouldStopChunk = (): boolean => Date.now() >= chunkDeadlineMs;
+    let hitTimeBudget = false;
 
     if (statsOnly) {
       const projectHostForCount = supabaseProjectHost(supabaseUrl);
@@ -177,6 +187,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const auditBatch = auditCandidates.slice(0, AUDIT_ROW_CAP);
 
       for (const row of auditBatch) {
+        if (shouldStopChunk()) {
+          hitTimeBudget = true;
+          break;
+        }
         if (rateLimited) break;
         if (!row.image_url) continue;
         try {
@@ -201,7 +215,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     // --- DISCOVER: null / empty image_url ---
-    if (firecrawlKey && openaiKey && !rateLimited) {
+    if (firecrawlKey && openaiKey && !rateLimited && !hitTimeBudget) {
       const { data: missingPool } = await supabase
         .from('sake')
         .select('id, name, name_japanese, brewery, image_url')
@@ -213,6 +227,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       let discoverAttempts = 0;
 
       for (const row of missingRows) {
+        if (shouldStopChunk()) {
+          hitTimeBudget = true;
+          break;
+        }
         if (discoverAttempts >= DISCOVER_ROW_CAP || rateLimited) break;
         discoverAttempts++;
 
@@ -230,6 +248,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
           let placed = false;
           for (const img of images.slice(0, DISCOVER_CANDIDATES_MAX)) {
+            if (shouldStopChunk()) {
+              hitTimeBudget = true;
+              break;
+            }
             if (rateLimited) break;
             if (urlLooksLikeNonSakeProduct(img.url)) continue;
 
@@ -302,59 +324,65 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
     sakeQuery = sakeQuery.not('image_url', 'ilike', '%supabase.co%');
 
-    const { data: sakes } = await sakeQuery.order('updated_at', { ascending: true }).limit(1500);
+    if (!hitTimeBudget) {
+      const { data: sakes } = await sakeQuery.order('updated_at', { ascending: true }).limit(1500);
 
-    sakeExternalRowsFetched = (sakes || []).length;
+      sakeExternalRowsFetched = (sakes || []).length;
 
-    const sakesToMirror = (sakes || []).filter(
-      (s) => s.image_url && !isSupabaseUrl(s.image_url, supabaseUrl)
-    );
+      const sakesToMirror = (sakes || []).filter(
+        (s) => s.image_url && !isSupabaseUrl(s.image_url, supabaseUrl)
+      );
 
-    for (const sake of sakesToMirror) {
-      if (rateLimited || mirrorOpsRemaining <= 0) break;
+      for (const sake of sakesToMirror) {
+        if (shouldStopChunk()) {
+          hitTimeBudget = true;
+          break;
+        }
+        if (rateLimited || mirrorOpsRemaining <= 0) break;
 
-      if (sake.image_url && !isSupabaseUrl(sake.image_url, supabaseUrl)) {
-        try {
-          const result = await downloadAndStore(
-            supabase,
-            sake.image_url,
-            'sake-images',
-            sake.name,
-            seenHashes,
-            knownPlaceholderHashes
-          );
-          mirrorOpsRemaining--;
+        if (sake.image_url && !isSupabaseUrl(sake.image_url, supabaseUrl)) {
+          try {
+            const result = await downloadAndStore(
+              supabase,
+              sake.image_url,
+              'sake-images',
+              sake.name,
+              seenHashes,
+              knownPlaceholderHashes
+            );
+            mirrorOpsRemaining--;
 
-          if (result.rateLimited) {
-            rateLimited = true;
-            errors.push('Rate limited by image host — stopping mirror');
-            break;
+            if (result.rateLimited) {
+              rateLimited = true;
+              errors.push('Rate limited by image host — stopping mirror');
+              break;
+            }
+            if (result.skippedPlaceholder) {
+              await supabase
+                .from('sake')
+                .update({ image_url: null, updated_at: new Date().toISOString() })
+                .eq('id', sake.id);
+              skippedPlaceholders++;
+            } else {
+              await supabase
+                .from('sake')
+                .update({ image_url: result.url, updated_at: new Date().toISOString() })
+                .eq('id', sake.id);
+              sakeMirrored++;
+            }
+            await sleep(DELAY_MS);
+          } catch (err) {
+            mirrorOpsRemaining--;
+            failed++;
+            const msg = err instanceof Error ? err.message : String(err);
+            if (msg.includes('Blocked') || msg.includes('Not an image') || msg.includes('Too small')) {
+              await supabase
+                .from('sake')
+                .update({ image_url: null, updated_at: new Date().toISOString() })
+                .eq('id', sake.id);
+            }
+            await sleep(DELAY_MS);
           }
-          if (result.skippedPlaceholder) {
-            await supabase
-              .from('sake')
-              .update({ image_url: null, updated_at: new Date().toISOString() })
-              .eq('id', sake.id);
-            skippedPlaceholders++;
-          } else {
-            await supabase
-              .from('sake')
-              .update({ image_url: result.url, updated_at: new Date().toISOString() })
-              .eq('id', sake.id);
-            sakeMirrored++;
-          }
-          await sleep(DELAY_MS);
-        } catch (err) {
-          mirrorOpsRemaining--;
-          failed++;
-          const msg = err instanceof Error ? err.message : String(err);
-          if (msg.includes('Blocked') || msg.includes('Not an image') || msg.includes('Too small')) {
-            await supabase
-              .from('sake')
-              .update({ image_url: null, updated_at: new Date().toISOString() })
-              .eq('id', sake.id);
-          }
-          await sleep(DELAY_MS);
         }
       }
     }
@@ -378,13 +406,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const mirrorOpsUsed = MIRROR_OPS_BUDGET - mirrorOpsRemaining;
     const sakeProcessedTotal = sakeMirrored + sakeDiscovered;
 
+    const runAgain =
+      chunked &&
+      !rateLimited &&
+      (hitTimeBudget || remainingSake > 0 || sakeMissingImage > 0);
+
     console.log(
-      `[process-images/sake] mirror=${sakeMirrored} discover=${sakeDiscovered} auditCleared=${sakeAuditCleared} failed=${failed} externalRemaining≈${remainingSake} missingImg=${sakeMissingImage} mirrorOps=${mirrorOpsUsed}`
+      `[process-images/sake] chunked=${chunked} hitBudget=${hitTimeBudget} mirror=${sakeMirrored} discover=${sakeDiscovered} auditCleared=${sakeAuditCleared} failed=${failed} externalRemaining≈${remainingSake} missingImg=${sakeMissingImage} mirrorOps=${mirrorOpsUsed} runAgain=${runAgain}`
     );
 
     return res.status(200).json({
       success: true,
       job: 'sake',
+      chunked,
+      chunkBudgetMs: chunked ? CHUNK_WALL_MS : undefined,
+      hitTimeBudget: chunked ? hitTimeBudget : undefined,
+      runAgain: chunked ? runAgain : undefined,
       mirrorOpsBudget: MIRROR_OPS_BUDGET,
       mirrorOpsUsed,
       mirrorOpsRemaining,

@@ -913,6 +913,11 @@ interface ProcessingStatus {
   success: boolean;
   job?: 'sake' | 'brewery';
   statsOnly?: boolean;
+  /** Short serverless chunks (Vercel Hobby ~10s limit). */
+  chunked?: boolean;
+  chunkBudgetMs?: number;
+  hitTimeBudget?: boolean;
+  runAgain?: boolean;
   processed: number;
   galleryProcessed: number;
   sakeProcessed: number;
@@ -921,6 +926,7 @@ interface ProcessingStatus {
   sakeAuditCleared?: number;
   breweryMainProcessed: number;
   failed: number;
+  rateLimited?: boolean;
   remaining: {
     breweryMainImages: number;
     breweryGalleryImages: number;
@@ -964,6 +970,39 @@ async function parseFetchJson<T>(response: Response, label: string): Promise<T> 
   }
 }
 
+const SAKE_CHUNK_URL = '/api/cron/process-images?chunk=1';
+const SAKE_CHUNK_MAX_ROUNDS = 80;
+const SAKE_CHUNK_POLL_MS = 120;
+
+async function runSakeImageJobChunked(
+  onProgress?: (round: number, data: ProcessingStatus) => void
+): Promise<ProcessingStatus> {
+  let last: ProcessingStatus | null = null;
+  for (let round = 1; round <= SAKE_CHUNK_MAX_ROUNDS; round++) {
+    const response = await fetch(SAKE_CHUNK_URL, { method: 'POST' });
+    const data = await parseFetchJson<ProcessingStatus & { error?: string; details?: string }>(
+      response,
+      'Sake job'
+    );
+    if (!response.ok) {
+      throw new Error(data.error || data.details || `Request failed (${response.status})`);
+    }
+    last = data;
+    onProgress?.(round, data);
+    if (!data.runAgain) {
+      return data;
+    }
+    if (data.rateLimited) {
+      return data;
+    }
+    await new Promise((r) => setTimeout(r, SAKE_CHUNK_POLL_MS));
+  }
+  if (!last) {
+    throw new Error('Sake job: no response');
+  }
+  return last;
+}
+
 function ImageProcessorPanel() {
   const [status, setStatus] = useState<ProcessingStatus | null>(null);
   const [loading, setLoading] = useState(false);
@@ -996,24 +1035,24 @@ function ImageProcessorPanel() {
   const handleRunSakeBatch = async () => {
     setRunning(true);
     setProcessorError(null);
-    const toastId = toast.loading('Running full sake job…', {
-      description: 'Audit, discover, and mirror can take 2–6 minutes. Keep this tab open.',
+    const toastId = toast.loading('Running sake image job…', {
+      description:
+        'Uses short server requests so Vercel can finish each one in time. This tab can stay open for a few minutes.',
       duration: 400_000,
     });
     try {
-      const response = await fetch('/api/cron/process-images', { method: 'POST' });
-      const data = await parseFetchJson<ProcessingStatus & { error?: string; details?: string }>(
-        response,
-        'Sake job'
-      );
-      if (!response.ok) {
-        throw new Error(data.error || data.details || `Request failed (${response.status})`);
-      }
+      const data = await runSakeImageJobChunked((round, chunk) => {
+        toast.loading(`Sake job — chunk ${round}…`, {
+          id: toastId,
+          description: `External URLs ~${chunk.remaining.sakeImages ?? 0} · missing image ${chunk.remaining.sakeMissingImage ?? 0}`,
+          duration: 400_000,
+        });
+      });
       setStatus(data);
       setRunHistory((prev) => [data, ...prev].slice(0, 10));
       toast.success('Sake job finished', {
         id: toastId,
-        description: `Mirrored ${data.sakeMirrored ?? 0}, discovered ${data.sakeDiscovered ?? 0}, audit cleared ${data.sakeAuditCleared ?? 0}`,
+        description: `Last chunk: mirrored ${data.sakeMirrored ?? 0}, discovered ${data.sakeDiscovered ?? 0}, audit cleared ${data.sakeAuditCleared ?? 0}`,
       });
       if (data.errors && data.errors.length > 0) {
         toast.message('Warnings', { description: data.errors.slice(0, 3).join(' · ') });
@@ -1064,17 +1103,16 @@ function ImageProcessorPanel() {
     const toastId = toast.loading(`Running ${batches} sake jobs in a row…`, { duration: 600_000 });
     try {
       for (let i = 0; i < batches; i++) {
-        const response = await fetch('/api/cron/process-images', { method: 'POST' });
-        const data = await parseFetchJson<ProcessingStatus & { error?: string }>(response, 'Sake job');
-        if (!response.ok) {
-          throw new Error(data.error || `Batch ${i + 1} failed (${response.status})`);
-        }
+        const data = await runSakeImageJobChunked();
         setStatus(data);
         setRunHistory((prev) => [data, ...prev].slice(0, 10));
 
         const ext = data.remaining.sakeImages || 0;
         const miss = data.remaining.sakeMissingImage ?? 0;
         if (ext === 0 && miss === 0) {
+          break;
+        }
+        if (data.rateLimited) {
           break;
         }
       }
@@ -1113,7 +1151,7 @@ function ImageProcessorPanel() {
               <div className="flex items-center gap-1.5">
                 <Clock className="w-4 h-4 shrink-0" />
                 <span>
-                  Sake cron: every 4 hours — mirror up to {SAKE_MIRROR_PER_RUN}/run + discover batch ({SAKE_CRON_RUNS_PER_DAY}×/day)
+                  Sake cron: every 4 hours — each run uses a short chunk (Vercel time limits); mirror up to {SAKE_MIRROR_PER_RUN}/chunk when time allows
                 </span>
               </div>
               <div className="flex items-center gap-1.5">
