@@ -970,9 +970,22 @@ async function parseFetchJson<T>(response: Response, label: string): Promise<T> 
   }
 }
 
-const SAKE_CHUNK_URL = '/api/cron/process-images?chunk=1';
+const SAKE_JOB_URL = '/api/cron/process-images';
+const SAKE_CHUNK_URL = `${SAKE_JOB_URL}?chunk=1`;
 const SAKE_CHUNK_MAX_ROUNDS = 80;
 const SAKE_CHUNK_POLL_MS = 120;
+
+async function runSakeImageJobFull(): Promise<ProcessingStatus> {
+  const response = await fetch(SAKE_JOB_URL, { method: 'POST' });
+  const data = await parseFetchJson<ProcessingStatus & { error?: string; details?: string }>(
+    response,
+    'Sake job'
+  );
+  if (!response.ok) {
+    throw new Error(data.error || data.details || `Request failed (${response.status})`);
+  }
+  return data;
+}
 
 async function runSakeImageJobChunked(
   onProgress?: (round: number, data: ProcessingStatus) => void
@@ -1035,9 +1048,36 @@ function ImageProcessorPanel() {
   const handleRunSakeBatch = async () => {
     setRunning(true);
     setProcessorError(null);
-    const toastId = toast.loading('Running sake image job…', {
-      description:
-        'Uses short server requests so Vercel can finish each one in time. This tab can stay open for a few minutes.',
+    const toastId = toast.loading('Running full sake job…', {
+      description: 'Pro: one request, up to ~5 minutes (audit → discover → mirror). Keep this tab open.',
+      duration: 400_000,
+    });
+    try {
+      const data = await runSakeImageJobFull();
+      setStatus(data);
+      setRunHistory((prev) => [data, ...prev].slice(0, 10));
+      toast.success('Sake job finished', {
+        id: toastId,
+        description: `Mirrored ${data.sakeMirrored ?? 0}, discovered ${data.sakeDiscovered ?? 0}, audit cleared ${data.sakeAuditCleared ?? 0}`,
+      });
+      if (data.errors && data.errors.length > 0) {
+        toast.message('Warnings', { description: data.errors.slice(0, 3).join(' · ') });
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Processing failed';
+      setProcessorError(msg);
+      console.error('Processing failed:', err);
+      toast.error(msg, { id: toastId });
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  const handleRunSakeBatchChunked = async () => {
+    setRunning(true);
+    setProcessorError(null);
+    const toastId = toast.loading('Running sake job (short chunks)…', {
+      description: 'Many quick requests — for strict ~10s limits or if the full job times out.',
       duration: 400_000,
     });
     try {
@@ -1050,7 +1090,7 @@ function ImageProcessorPanel() {
       });
       setStatus(data);
       setRunHistory((prev) => [data, ...prev].slice(0, 10));
-      toast.success('Sake job finished', {
+      toast.success('Sake job finished (chunked)', {
         id: toastId,
         description: `Last chunk: mirrored ${data.sakeMirrored ?? 0}, discovered ${data.sakeDiscovered ?? 0}, audit cleared ${data.sakeAuditCleared ?? 0}`,
       });
@@ -1103,7 +1143,7 @@ function ImageProcessorPanel() {
     const toastId = toast.loading(`Running ${batches} sake jobs in a row…`, { duration: 600_000 });
     try {
       for (let i = 0; i < batches; i++) {
-        const data = await runSakeImageJobChunked();
+        const data = await runSakeImageJobFull();
         setStatus(data);
         setRunHistory((prev) => [data, ...prev].slice(0, 10));
 
@@ -1151,7 +1191,7 @@ function ImageProcessorPanel() {
               <div className="flex items-center gap-1.5">
                 <Clock className="w-4 h-4 shrink-0" />
                 <span>
-                  Sake cron: every 4 hours — each run uses a short chunk (Vercel time limits); mirror up to {SAKE_MIRROR_PER_RUN}/chunk when time allows
+                  Sake cron: every 4 hours — full run (Pro: up to 300s) · mirror budget {SAKE_MIRROR_PER_RUN}/run
                 </span>
               </div>
               <div className="flex items-center gap-1.5">
@@ -1242,6 +1282,10 @@ function ImageProcessorPanel() {
         <Button onClick={handleRunSakeBatch} disabled={running || loading} className="gap-2">
           {running ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
           Run full sake job
+        </Button>
+        <Button variant="outline" onClick={handleRunSakeBatchChunked} disabled={running || loading} className="gap-2">
+          {running ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+          Run in short chunks
         </Button>
         <Button variant="outline" onClick={() => handleRunMultipleSake(5)} disabled={running || loading} className="gap-2">
           {running ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
