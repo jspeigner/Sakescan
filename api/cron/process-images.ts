@@ -5,9 +5,9 @@ import {
   isSupabaseUrl,
   sleep,
   supabaseProjectHost,
-} from './lib/imageMirror';
-import { searchSakeImageCandidates, urlLooksLikeNonSakeProduct } from './lib/sakeImageDiscovery';
-import { validateJapaneseSakeProductPhoto } from './lib/sakeImageVision';
+} from './lib/imageMirror.js';
+import { searchSakeImageCandidates, urlLooksLikeNonSakeProduct } from './lib/sakeImageDiscovery.js';
+import { validateJapaneseSakeProductPhoto } from './lib/sakeImageVision.js';
 
 /** Mirror external image_url into Storage (per run). */
 const MIRROR_OPS_BUDGET = 220;

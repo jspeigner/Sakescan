@@ -5,7 +5,7 @@ import {
   isSupabaseUrl,
   sleep,
   supabaseProjectHost,
-} from './lib/imageMirror';
+} from './lib/imageMirror.js';
 
 /** Low volume: brewery assets change rarely. */
 const BREWERY_MAIN_BUDGET = 8;
