@@ -24,6 +24,7 @@ import {
   Play,
   Clock
 } from "lucide-react";
+import { toast } from "@/components/ui/sonner";
 
 // ---- Shared types ----
 
@@ -931,22 +932,50 @@ interface ProcessingStatus {
   timestamp: string;
 }
 
+async function parseFetchJson<T>(response: Response, label: string): Promise<T> {
+  const ct = response.headers.get('content-type') || '';
+  const raw = await response.text();
+  const looksHtml = raw.trimStart().startsWith('<!') || raw.includes('<html');
+  if (!ct.includes('application/json')) {
+    throw new Error(
+      `${label}: expected JSON (${response.status})${
+        looksHtml
+          ? ' — this page is not hitting Vercel /api (e.g. local Vite has no serverless routes). Open your deployed app URL.'
+          : ''
+      }`
+    );
+  }
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    throw new Error(`${label}: invalid JSON (${response.status})`);
+  }
+}
+
 function ImageProcessorPanel() {
   const [status, setStatus] = useState<ProcessingStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const [running, setRunning] = useState(false);
   const [runHistory, setRunHistory] = useState<ProcessingStatus[]>([]);
+  const [processorError, setProcessorError] = useState<string | null>(null);
 
   /** Counts only — does not download or mirror images. */
   const fetchStatus = async () => {
     setLoading(true);
+    setProcessorError(null);
     try {
       const response = await fetch('/api/cron/process-images?stats=1', { method: 'GET' });
-      if (!response.ok) throw new Error('Failed to load stats');
-      const data: ProcessingStatus = await response.json();
+      const data = await parseFetchJson<ProcessingStatus & { error?: string }>(response, 'Stats');
+      if (!response.ok) {
+        throw new Error(data.error || `Stats failed (${response.status})`);
+      }
       setStatus(data);
+      toast.success('Counts refreshed');
     } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Status check failed';
+      setProcessorError(msg);
       console.error('Status check failed:', err);
+      toast.error(msg);
     } finally {
       setLoading(false);
     }
@@ -954,14 +983,34 @@ function ImageProcessorPanel() {
 
   const handleRunSakeBatch = async () => {
     setRunning(true);
+    setProcessorError(null);
+    const toastId = toast.loading('Running full sake job…', {
+      description: 'Audit, discover, and mirror can take 2–6 minutes. Keep this tab open.',
+      duration: 400_000,
+    });
     try {
       const response = await fetch('/api/cron/process-images', { method: 'POST' });
-      if (!response.ok) throw new Error('Failed to process');
-      const data: ProcessingStatus = await response.json();
+      const data = await parseFetchJson<ProcessingStatus & { error?: string; details?: string }>(
+        response,
+        'Sake job'
+      );
+      if (!response.ok) {
+        throw new Error(data.error || data.details || `Request failed (${response.status})`);
+      }
       setStatus(data);
       setRunHistory((prev) => [data, ...prev].slice(0, 10));
+      toast.success('Sake job finished', {
+        id: toastId,
+        description: `Mirrored ${data.sakeMirrored ?? 0}, discovered ${data.sakeDiscovered ?? 0}, audit cleared ${data.sakeAuditCleared ?? 0}`,
+      });
+      if (data.errors && data.errors.length > 0) {
+        toast.message('Warnings', { description: data.errors.slice(0, 3).join(' · ') });
+      }
     } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Processing failed';
+      setProcessorError(msg);
       console.error('Processing failed:', err);
+      toast.error(msg, { id: toastId });
     } finally {
       setRunning(false);
     }
@@ -969,14 +1018,25 @@ function ImageProcessorPanel() {
 
   const handleRunBreweryBatch = async () => {
     setRunning(true);
+    setProcessorError(null);
+    const toastId = toast.loading('Running brewery image job…', { duration: 120_000 });
     try {
       const response = await fetch('/api/cron/process-brewery-images', { method: 'POST' });
-      if (!response.ok) throw new Error('Failed to process breweries');
-      const data: ProcessingStatus = await response.json();
+      const data = await parseFetchJson<ProcessingStatus & { error?: string }>(response, 'Brewery job');
+      if (!response.ok) {
+        throw new Error(data.error || `Request failed (${response.status})`);
+      }
       setStatus(data);
       setRunHistory((prev) => [data, ...prev].slice(0, 10));
+      toast.success('Brewery job finished', {
+        id: toastId,
+        description: `Main ${data.breweryMainProcessed}, gallery ${data.galleryProcessed}`,
+      });
     } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Brewery processing failed';
+      setProcessorError(msg);
       console.error('Brewery processing failed:', err);
+      toast.error(msg, { id: toastId });
     } finally {
       setRunning(false);
     }
@@ -988,11 +1048,15 @@ function ImageProcessorPanel() {
 
   const handleRunMultipleSake = async (batches: number) => {
     setRunning(true);
-    for (let i = 0; i < batches; i++) {
-      try {
+    setProcessorError(null);
+    const toastId = toast.loading(`Running ${batches} sake jobs in a row…`, { duration: 600_000 });
+    try {
+      for (let i = 0; i < batches; i++) {
         const response = await fetch('/api/cron/process-images', { method: 'POST' });
-        if (!response.ok) break;
-        const data: ProcessingStatus = await response.json();
+        const data = await parseFetchJson<ProcessingStatus & { error?: string }>(response, 'Sake job');
+        if (!response.ok) {
+          throw new Error(data.error || `Batch ${i + 1} failed (${response.status})`);
+        }
         setStatus(data);
         setRunHistory((prev) => [data, ...prev].slice(0, 10));
 
@@ -1001,11 +1065,15 @@ function ImageProcessorPanel() {
         if (ext === 0 && miss === 0) {
           break;
         }
-      } catch {
-        break;
       }
+      toast.success('Multi-batch run finished', { id: toastId });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Multi-batch failed';
+      setProcessorError(msg);
+      toast.error(msg, { id: toastId });
+    } finally {
+      setRunning(false);
     }
-    setRunning(false);
   };
 
   const totalRemaining = status
@@ -1091,6 +1159,18 @@ function ImageProcessorPanel() {
           </div>
         </Card>
       </div>
+
+      {processorError ? (
+        <Card className="p-4 border-destructive/50 bg-destructive/5">
+          <div className="flex gap-3 text-sm">
+            <AlertCircle className="w-5 h-5 text-destructive shrink-0 mt-0.5" />
+            <div>
+              <p className="font-medium text-destructive">Image processor error</p>
+              <p className="text-muted-foreground mt-1">{processorError}</p>
+            </div>
+          </div>
+        </Card>
+      ) : null}
 
       {status &&
         ((status.remaining.sakeImages || 0) > 0 || (status.remaining.sakeMissingImage ?? 0) > 0) && (
