@@ -1,6 +1,21 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
 
+const NON_SAKE_URL_REGEXES = [
+  /johnnie|walker|jwalker|jw\s*black|jw\s*red/i,
+  /chivas|ballantine|macallan|glenfiddich|glenlivet|lagavulin|laphroaig|talisker/i,
+  /\bwhisk(e)?y\b|\bscotch\b|\bbourbon\b|\brye\s+whisk/i,
+  /\bvodka\b|\bgin\b|\brum\b|\btequila\b|\bmezcal\b|\bcognac\b|\bbrandy\b/i,
+  /\bwine\b|\bchampagne\b|\bprosecco\b|\bcabernet\b|\bmerlot\b|\bchardonnay\b/i,
+  /\bbeer\b|\blager\b|\bstout\b|\bipa\b|\bheineken\b|\bcorona\b|\bbudweiser\b/i,
+  /jack\s*daniels|jim\s*beam|hennessy|martell|remy\s*martin/i,
+];
+
+function looksLikeNonSakeUrl(url: string): boolean {
+  const lower = url.toLowerCase();
+  return NON_SAKE_URL_REGEXES.some((re) => re.test(lower));
+}
+
 interface SakeToImport {
   name: string;
   nameJapanese?: string;
@@ -160,6 +175,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // Process updates (add images to existing sakes)
       for (const sake of updates || []) {
         if (sake.existingId && sake.imageUrl) {
+          if (looksLikeNonSakeUrl(sake.imageUrl)) {
+            console.warn(`Skipping non-sake image URL for ${sake.name}: ${sake.imageUrl}`);
+            continue;
+          }
           let finalImageUrl = sake.imageUrl;
           try {
             finalImageUrl = await downloadAndStoreImage(supabase, sake.imageUrl, sake.name);
@@ -187,13 +206,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // Process new sakes
       for (const sake of newSakes || []) {
         let finalImageUrl: string | null = null;
-        if (sake.imageUrl) {
+        if (sake.imageUrl && !looksLikeNonSakeUrl(sake.imageUrl)) {
           try {
             finalImageUrl = await downloadAndStoreImage(supabase, sake.imageUrl, sake.name);
           } catch (downloadError) {
             console.error(`Image storage failed for ${sake.name}:`, downloadError);
             finalImageUrl = sake.imageUrl;
           }
+        } else if (sake.imageUrl) {
+          console.warn(`Skipping non-sake image URL for new sake ${sake.name}: ${sake.imageUrl}`);
         }
 
         const { error } = await supabase

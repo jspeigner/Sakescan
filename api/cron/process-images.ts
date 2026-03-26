@@ -345,6 +345,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         if (rateLimited || mirrorOpsRemaining <= 0) break;
 
         if (sake.image_url && !isSupabaseUrl(sake.image_url, supabaseUrl)) {
+          // Skip obvious non-sake URLs before even attempting to download
+          if (urlLooksLikeNonSakeProduct(sake.image_url)) {
+            await supabase
+              .from('sake')
+              .update({ image_url: null, updated_at: new Date().toISOString() })
+              .eq('id', sake.id);
+            skippedPlaceholders++;
+            console.log(`[process-images/mirror] cleared non-sake URL for ${sake.name}: ${sake.image_url}`);
+            mirrorOpsRemaining--;
+            continue;
+          }
+
           try {
             const result = await downloadAndStore(
               supabase,

@@ -237,11 +237,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       (url, index, self) => index === self.findIndex((u) => u === url)
     );
 
-    // Assign images in order (best effort).
+    // Assign images strictly in order — never wrap around (round-robin caused wrong images).
+    // If there are fewer images than sakes, leave the remaining sakes without an imageUrl.
+    // The image cron job (process-images) will discover and validate images for those later.
     sakes.forEach((sake, index) => {
-      const candidate = uniqueProductImages[index] || uniqueProductImages[index % Math.max(uniqueProductImages.length, 1)];
-      if (candidate) {
-        sake.imageUrl = candidate;
+      if (index < uniqueProductImages.length) {
+        sake.imageUrl = uniqueProductImages[index];
       }
     });
 

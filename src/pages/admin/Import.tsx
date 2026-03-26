@@ -22,7 +22,9 @@ import {
   CheckCheck,
   ImageIcon,
   Play,
-  Clock
+  Clock,
+  Trash2,
+  ShieldCheck
 } from "lucide-react";
 import { toast } from "@/components/ui/sonner";
 
@@ -78,7 +80,7 @@ type BreweryImportStep = 'idle' | 'checking' | 'needs-table' | 'loading' | 'prev
 const BATCH_SIZE = 20;
 
 export default function AdminImport() {
-  const [activeTab, setActiveTab] = useState<'sakes' | 'breweries' | 'images'>('breweries');
+  const [activeTab, setActiveTab] = useState<'sakes' | 'breweries' | 'images' | 'cleanup'>('breweries');
 
   return (
     <AdminLayout>
@@ -93,7 +95,7 @@ export default function AdminImport() {
         </div>
 
         <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as typeof activeTab)}>
-          <TabsList>
+          <TabsList className="flex-wrap h-auto gap-1">
             <TabsTrigger value="breweries" className="gap-2">
               <Building2 className="w-4 h-4" />
               Breweries
@@ -105,6 +107,10 @@ export default function AdminImport() {
             <TabsTrigger value="images" className="gap-2">
               <ImageIcon className="w-4 h-4" />
               Image Processor
+            </TabsTrigger>
+            <TabsTrigger value="cleanup" className="gap-2 text-destructive data-[state=active]:text-destructive">
+              <Trash2 className="w-4 h-4" />
+              Remove Wrong Images
             </TabsTrigger>
           </TabsList>
 
@@ -118,6 +124,10 @@ export default function AdminImport() {
 
           <TabsContent value="images" className="space-y-6">
             <ImageProcessorPanel />
+          </TabsContent>
+
+          <TabsContent value="cleanup" className="space-y-6">
+            <BadImageCleanupPanel />
           </TabsContent>
         </Tabs>
       </div>
@@ -905,6 +915,169 @@ function SakeImportPanel() {
   }
 
   return null;
+}
+
+// ================= BAD IMAGE CLEANUP =================
+
+interface CleanupResult {
+  success: boolean;
+  dryRun: boolean;
+  mode: string;
+  totalScanned: number;
+  urlBadFound: number;
+  visionBadFound: number;
+  urlCleared: number;
+  visionCleared: number;
+  totalCleared: number;
+  note: string;
+  skipped?: string[];
+}
+
+function BadImageCleanupPanel() {
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<CleanupResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const runCleanup = async (mode: 'url' | 'vision', dryRun = false) => {
+    setLoading(true);
+    setError(null);
+    setResult(null);
+    const label = dryRun ? 'Scanning' : 'Cleaning';
+    const toastId = toast.loading(`${label} bad images (${mode} mode)…`, { duration: 120_000 });
+    try {
+      const response = await fetch(`/api/admin-clear-bad-images?mode=${mode}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode, dryRun }),
+      });
+      const data = await response.json() as CleanupResult & { error?: string };
+      if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
+      setResult(data);
+      toast.success(dryRun ? 'Scan complete' : 'Cleanup complete', {
+        id: toastId,
+        description: data.note,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Cleanup failed';
+      setError(msg);
+      toast.error(msg, { id: toastId });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <Card className="p-6">
+        <div className="flex items-start gap-4">
+          <div className="w-12 h-12 rounded-full bg-destructive/10 flex items-center justify-center flex-shrink-0">
+            <Trash2 className="w-6 h-6 text-destructive" />
+          </div>
+          <div className="space-y-2 flex-1">
+            <h2 className="text-lg font-semibold">Remove Wrong Images</h2>
+            <p className="text-sm text-muted-foreground">
+              Scans your sake database for images that are clearly not Japanese sake — whisky bottles
+              (Johnnie Walker, Macallan, etc.), beer, wine, spirits, and other non-sake products.
+              Clears those image URLs so the automatic image processor can find correct ones.
+            </p>
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <ShieldCheck className="w-4 h-4 shrink-0 text-green-500" />
+              <span><strong>URL scan</strong>: free and instant — checks URLs for whisky/spirit brand names.</span>
+            </div>
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <ShieldCheck className="w-4 h-4 shrink-0 text-blue-500" />
+              <span><strong>Vision scan</strong>: uses OpenAI to visually check hosted images — slower but catches images with correct-looking URLs.</span>
+            </div>
+          </div>
+        </div>
+      </Card>
+
+      {error ? (
+        <Card className="p-4 border-destructive/50 bg-destructive/5">
+          <div className="flex gap-3 text-sm">
+            <AlertCircle className="w-5 h-5 text-destructive shrink-0 mt-0.5" />
+            <div>
+              <p className="font-medium text-destructive">Error</p>
+              <p className="text-muted-foreground mt-1">{error}</p>
+            </div>
+          </div>
+        </Card>
+      ) : null}
+
+      {result ? (
+        <Card className="p-6 space-y-4">
+          <div className="flex items-center gap-2">
+            <CheckCircle className="w-5 h-5 text-green-500" />
+            <h3 className="font-semibold">{result.dryRun ? 'Scan Results (Dry Run)' : 'Cleanup Results'}</h3>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            <div className="text-center p-3 bg-muted rounded-lg">
+              <p className="text-2xl font-bold">{result.totalScanned}</p>
+              <p className="text-xs text-muted-foreground">Scanned</p>
+            </div>
+            <div className="text-center p-3 bg-destructive/10 rounded-lg">
+              <p className="text-2xl font-bold text-destructive">{result.urlBadFound}</p>
+              <p className="text-xs text-muted-foreground">Bad URLs found</p>
+            </div>
+            <div className="text-center p-3 bg-amber-500/10 rounded-lg">
+              <p className="text-2xl font-bold text-amber-600">{result.visionBadFound}</p>
+              <p className="text-xs text-muted-foreground">Vision failures</p>
+            </div>
+            <div className="text-center p-3 bg-green-500/10 rounded-lg">
+              <p className="text-2xl font-bold text-green-600">{result.totalCleared}</p>
+              <p className="text-xs text-muted-foreground">{result.dryRun ? 'Would clear' : 'Cleared'}</p>
+            </div>
+          </div>
+          <p className="text-sm text-muted-foreground">{result.note}</p>
+          {result.skipped && result.skipped.length > 0 ? (
+            <div className="p-3 bg-muted rounded-lg">
+              <p className="text-xs font-medium mb-1">Skipped ({result.skipped.length}):</p>
+              <ul className="text-xs text-muted-foreground list-disc list-inside">
+                {result.skipped.map((s, i) => <li key={i}>{s}</li>)}
+              </ul>
+            </div>
+          ) : null}
+        </Card>
+      ) : null}
+
+      <div className="flex flex-wrap gap-3">
+        <Button
+          variant="outline"
+          onClick={() => runCleanup('url', true)}
+          disabled={loading}
+          className="gap-2"
+        >
+          {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+          Preview (URL scan, dry run)
+        </Button>
+        <Button
+          variant="destructive"
+          onClick={() => runCleanup('url', false)}
+          disabled={loading}
+          className="gap-2"
+        >
+          {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+          Clear Bad Images (URL scan)
+        </Button>
+        <Button
+          variant="outline"
+          onClick={() => runCleanup('vision', false)}
+          disabled={loading}
+          className="gap-2 border-blue-500/30 text-blue-600 hover:bg-blue-500/10"
+        >
+          {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
+          Clear Bad Images (Vision scan)
+        </Button>
+      </div>
+
+      <Card className="p-4 bg-muted/50">
+        <p className="text-sm text-muted-foreground">
+          After clearing bad images, use the <strong>Image Processor</strong> tab to discover and download
+          correct sake images automatically.
+        </p>
+      </Card>
+    </div>
+  );
 }
 
 // ================= IMAGE PROCESSOR =================
