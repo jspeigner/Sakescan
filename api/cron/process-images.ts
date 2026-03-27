@@ -164,7 +164,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let sakeExternalRowsFetched = 0;
     /** Single long runs hold more in memory (vision base64, buffers); chunked stays aggressive. */
     const discoverRowCapThisRun = chunked ? DISCOVER_ROW_CAP : Math.min(DISCOVER_ROW_CAP, 14);
-    const auditRowCapThisRun = chunked ? AUDIT_ROW_CAP : Math.min(AUDIT_ROW_CAP, 6);
+    // Audit (vision) takes 2-5s per row — skip entirely in chunked mode (7.5s budget) so mirror
+    // and discover always get to run. Audit only fires in single long-request mode.
+    const auditRowCapThisRun = chunked ? 0 : Math.min(AUDIT_ROW_CAP, 6);
     const mirrorOpsBudgetThisRun = chunked ? MIRROR_OPS_BUDGET : Math.min(MIRROR_OPS_BUDGET, 80);
     let mirrorOpsRemaining = mirrorOpsBudgetThisRun;
     let failed = 0;
