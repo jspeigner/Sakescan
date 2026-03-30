@@ -1462,38 +1462,53 @@ function ImageProcessorPanel() {
         </Card>
       )}
 
-      <div className="flex flex-wrap gap-3">
-        <Button onClick={handleRunSakeBatch} disabled={running || loading} className="gap-2">
-          {running ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
-          Run sake job
-        </Button>
-        <Button variant="outline" onClick={handleRunSakeBatchSingle} disabled={running || loading} className="gap-2">
-          {running ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
-          Single long request (Pro)
-        </Button>
-        <Button variant="outline" onClick={() => handleRunMultipleSake(5)} disabled={running || loading} className="gap-2">
-          {running ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
-          Run 5× in a row
-        </Button>
-        <Button variant="outline" onClick={() => handleRunMultipleSake(20)} disabled={running || loading} className="gap-2">
-          {running ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
-          Run 20× in a row
-        </Button>
-        <Button variant="secondary" onClick={handleRunBreweryBatch} disabled={running || loading} className="gap-2">
-          {running ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
-          Run brewery batch
-        </Button>
-        <Button variant="ghost" onClick={fetchStatus} disabled={loading || running} className="gap-2">
-          {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
-          Refresh counts
-        </Button>
+      <div className="space-y-3">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">Mirror external URLs → Storage</p>
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={handleRunSakeBatch} disabled={running || loading} className="gap-2">
+              {running ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+              Mirror 1 batch (~220 images)
+            </Button>
+            <Button variant="outline" onClick={() => handleRunMultipleSake(5)} disabled={running || loading} className="gap-2">
+              {running ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+              Mirror 5 batches (~1,100 images)
+            </Button>
+            <Button variant="outline" onClick={() => handleRunMultipleSake(20)} disabled={running || loading} className="gap-2">
+              {running ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+              Mirror 20 batches (~4,400 images)
+            </Button>
+          </div>
+        </div>
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">Find missing images (AI — uses Firecrawl + OpenAI)</p>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" onClick={handleRunSakeBatchSingle} disabled={running || loading} className="gap-2 border-blue-500/40 text-blue-600 hover:bg-blue-500/10">
+              {running ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+              Discover + Audit missing images (up to 14)
+            </Button>
+          </div>
+        </div>
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">Brewery images</p>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="secondary" onClick={handleRunBreweryBatch} disabled={running || loading} className="gap-2">
+              {running ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+              Mirror brewery images
+            </Button>
+            <Button variant="ghost" onClick={fetchStatus} disabled={loading || running} className="gap-2">
+              {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+              Refresh counts
+            </Button>
+          </div>
+        </div>
       </div>
 
       {status && (
         <Card className="p-4 space-y-3">
           <h3 className="font-medium">Last Run Result</h3>
           {status.statsOnly ? (
-            <p className="text-sm text-muted-foreground">Counts only — use &quot;Run sake job&quot; to audit, discover, and mirror.</p>
+            <p className="text-sm text-muted-foreground">Counts only — use the buttons below to mirror or discover images.</p>
           ) : status.job === 'sake' ? (
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-4 text-sm">
               <div>
