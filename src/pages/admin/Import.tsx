@@ -923,6 +923,9 @@ interface CleanupResult {
   success: boolean;
   dryRun: boolean;
   mode: string;
+  offset?: number;
+  nextOffset?: number;
+  hasMore?: boolean;
   totalScanned: number;
   urlBadFound: number;
   visionBadFound: number;
@@ -933,36 +936,93 @@ interface CleanupResult {
   skipped?: string[];
 }
 
+async function fetchCleanupJson(mode: string, dryRun: boolean, offset: number): Promise<CleanupResult> {
+  const response = await fetch(`/api/admin-clear-bad-images?mode=${mode}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mode, dryRun, offset }),
+  });
+  const raw = await response.text();
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith('{')) {
+    throw new Error(
+      response.status === 504 || response.status === 502
+        ? 'Request timed out — try again, the batch size has been reduced to fit within limits.'
+        : `Server error (${response.status}) — check Vercel logs for details.`
+    );
+  }
+  const data = JSON.parse(trimmed) as CleanupResult & { error?: string };
+  if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
+  return data;
+}
+
 function BadImageCleanupPanel() {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<CleanupResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [visionProgress, setVisionProgress] = useState<{ batches: number; cleared: number; scanned: number } | null>(null);
 
   const runCleanup = async (mode: 'url' | 'vision', dryRun = false) => {
     setLoading(true);
     setError(null);
     setResult(null);
+    setVisionProgress(null);
     const label = dryRun ? 'Scanning' : 'Cleaning';
-    const toastId = toast.loading(`${label} bad images (${mode} mode)…`, { duration: 120_000 });
+    const toastId = toast.loading(`${label} bad images (${mode} mode)…`, { duration: 300_000 });
+
     try {
-      const response = await fetch(`/api/admin-clear-bad-images?mode=${mode}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode, dryRun }),
-      });
-      const data = await response.json() as CleanupResult & { error?: string };
-      if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
-      setResult(data);
-      toast.success(dryRun ? 'Scan complete' : 'Cleanup complete', {
-        id: toastId,
-        description: data.note,
-      });
+      if (mode === 'vision') {
+        // Page through in small batches of 30 to avoid Vercel timeouts
+        let offset = 0;
+        let totalScanned = 0;
+        let totalCleared = 0;
+        let totalBad = 0;
+        let batches = 0;
+        let lastResult: CleanupResult | null = null;
+
+        while (true) {
+          const data = await fetchCleanupJson(mode, dryRun, offset);
+          totalScanned += data.totalScanned;
+          totalCleared += data.totalCleared;
+          totalBad += data.visionBadFound;
+          batches++;
+          lastResult = data;
+          setVisionProgress({ batches, cleared: totalCleared, scanned: totalScanned });
+          toast.loading(`Vision scan — batch ${batches} (${totalScanned} checked, ${totalCleared} cleared)…`, {
+            id: toastId,
+            duration: 300_000,
+          });
+          if (!data.hasMore) break;
+          offset = data.nextOffset ?? offset + data.totalScanned;
+        }
+
+        const summary: CleanupResult = {
+          ...(lastResult!),
+          totalScanned,
+          totalCleared,
+          visionBadFound: totalBad,
+          note: `Scanned ${totalScanned} images across ${batches} batches. Cleared ${totalCleared} non-sake image(s).`,
+        };
+        setResult(summary);
+        toast.success(dryRun ? 'Vision scan complete' : 'Vision cleanup complete', {
+          id: toastId,
+          description: summary.note,
+        });
+      } else {
+        const data = await fetchCleanupJson(mode, dryRun, 0);
+        setResult(data);
+        toast.success(dryRun ? 'Scan complete' : 'Cleanup complete', {
+          id: toastId,
+          description: data.note,
+        });
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Cleanup failed';
       setError(msg);
       toast.error(msg, { id: toastId });
     } finally {
       setLoading(false);
+      setVisionProgress(null);
     }
   };
 
@@ -991,6 +1051,20 @@ function BadImageCleanupPanel() {
           </div>
         </div>
       </Card>
+
+      {visionProgress ? (
+        <Card className="p-4 bg-blue-500/5 border-blue-500/20">
+          <div className="flex items-center gap-3">
+            <Loader2 className="w-5 h-5 text-blue-500 animate-spin shrink-0" />
+            <div>
+              <p className="text-sm font-medium">Vision scan in progress…</p>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Batch {visionProgress.batches} · {visionProgress.scanned} images checked · {visionProgress.cleared} cleared
+              </p>
+            </div>
+          </div>
+        </Card>
+      ) : null}
 
       {error ? (
         <Card className="p-4 border-destructive/50 bg-destructive/5">

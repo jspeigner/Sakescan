@@ -122,14 +122,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const mode = (req.query.mode as string) || req.body?.mode || 'url';
   const dryRun = req.body?.dryRun === true;
+  // Vision mode processes a small batch per call to stay within Vercel's timeout.
+  // Callers can pass an offset to page through the full table.
+  const offset = parseInt((req.body?.offset as string) || '0', 10) || 0;
+  const VISION_BATCH = 30;
+  const URL_LIMIT = 2000;
 
-  // Fetch all sakes with an image_url
+  // Fetch sakes with an image_url
   const { data: rows, error: fetchErr } = await supabase
     .from('sake')
     .select('id, name, image_url')
     .not('image_url', 'is', null)
     .neq('image_url', '')
-    .limit(2000);
+    .range(offset, offset + (mode === 'vision' ? VISION_BATCH - 1 : URL_LIMIT - 1));
 
   if (fetchErr) {
     return res.status(500).json({ error: fetchErr.message });
@@ -181,11 +186,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
   }
 
+  const scannedCount = (rows || []).length;
+  const nextOffset = offset + scannedCount;
+  const hasMore = mode === 'vision' && scannedCount === VISION_BATCH;
+
   return res.status(200).json({
     success: true,
     dryRun,
     mode,
-    totalScanned: (rows || []).length,
+    offset,
+    nextOffset,
+    hasMore,
+    totalScanned: scannedCount,
     urlBadFound: urlBadRows.length,
     visionBadFound: visionBadRows.length,
     urlCleared: dryRun ? 0 : urlCleared,
@@ -194,6 +206,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     skipped: skipped.length > 0 ? skipped.slice(0, 10) : undefined,
     note: dryRun
       ? 'Dry run — no changes made. Remove dryRun flag to apply.'
-      : `Cleared ${urlCleared + visionCleared} bad image(s). The cron job will discover correct images.`,
+      : `Cleared ${urlCleared + visionCleared} bad image(s) in this batch. The cron job will discover correct images.`,
   });
 }
