@@ -6,7 +6,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { supabase } from "@/lib/supabase";
 import type { Sake } from "@/lib/supabase-types";
 import { Loader2, Upload, X, Search } from "lucide-react";
 import { ImageSearchModal } from "./ImageSearchModal";
@@ -291,23 +290,32 @@ export function SakeModal({ open, onOpenChange, sake, onSaved }: SakeModalProps)
         storageUrlsToRemove.push(prevImage);
       }
 
-      let savedId: string;
-      if (sake) {
-        const { error } = await supabase.from("sake").update(payload).eq("id", sake.id);
-        if (error) throw error;
-        savedId = sake.id;
-      } else {
-        const { data: inserted, error } = await supabase
-          .from("sake")
-          .insert(payload)
-          .select("id")
-          .single();
-        if (error) throw error;
-        if (!inserted?.id) throw new Error("Insert did not return id");
-        savedId = inserted.id;
+      const token = session?.access_token;
+      if (!token) {
+        throw new Error("Admin session expired. Sign in again and retry save.");
       }
 
-      const token = session?.access_token;
+      const upsertRes = await fetch("/api/admin-upsert-sake", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          id: sake?.id,
+          payload,
+        }),
+      });
+
+      const upsertBody = (await upsertRes.json()) as { error?: string; id?: string };
+      if (!upsertRes.ok) {
+        throw new Error(upsertBody.error || `Save failed (${upsertRes.status})`);
+      }
+      if (!upsertBody.id) {
+        throw new Error("Save did not return id");
+      }
+      const savedId = upsertBody.id;
+
       if (token) {
         const syncRes = await fetch("/api/admin-sync-sake-images", {
           method: "POST",
@@ -355,7 +363,8 @@ export function SakeModal({ open, onOpenChange, sake, onSaved }: SakeModalProps)
       onOpenChange(false);
     } catch (error) {
       console.error('Error saving sake:', error);
-      alert('Failed to save sake');
+      const message = error instanceof Error ? error.message : 'Failed to save sake';
+      alert(message);
     } finally {
       setLoading(false);
     }

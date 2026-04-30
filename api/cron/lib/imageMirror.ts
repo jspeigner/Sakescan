@@ -3,7 +3,8 @@ import { createHash } from 'crypto';
 
 export const MIN_IMAGE_BYTES = 3000;
 /** Product shots rarely need more; large files risk OOM in serverless. */
-export const MAX_IMAGE_BYTES = 8_000_000;
+const parsedMaxImageBytes = Number.parseInt(process.env.IMAGE_MAX_BYTES || '25000000', 10);
+export const MAX_IMAGE_BYTES = Number.isFinite(parsedMaxImageBytes) ? parsedMaxImageBytes : 25_000_000;
 
 export function isSupabaseUrl(url: string, supabaseUrl: string): boolean {
   return url.includes(supabaseUrl.replace('https://', '')) || url.includes('supabase.co/storage');
@@ -71,7 +72,7 @@ export async function downloadAndStore(
   }
 
   if (buffer.byteLength > MAX_IMAGE_BYTES) {
-    throw new Error(`Too large (${buffer.byteLength} bytes)`);
+    throw new Error(`Too large (${buffer.byteLength} bytes > max ${MAX_IMAGE_BYTES})`);
   }
 
   const hash = createHash('md5').update(Buffer.from(buffer)).digest('hex');

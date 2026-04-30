@@ -14,6 +14,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Search, Loader2, MoreHorizontal, Eye, Pencil, Star, Camera, MapPin, Mail, Calendar, Trash2 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import type { User } from "@/lib/supabase-types";
+import { useAuth } from "@/hooks/use-auth";
 
 interface UserWithStats extends User {
   reviewCount?: number;
@@ -25,6 +26,7 @@ const PAGE_SIZE = 20;
 
 export default function AdminUsers() {
   const navigate = useNavigate();
+  const { session } = useAuth();
   const [users, setUsers] = useState<UserWithStats[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
@@ -162,25 +164,38 @@ export default function AdminUsers() {
 
     setSaving(true);
     try {
-      const { error } = await supabase
-        .from('users')
-        .update({
-          display_name: editForm.display_name || null,
-          email: editForm.email || null,
-          location: editForm.location || null,
-          avatar_url: editForm.avatar_url || null,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', selectedUser.id);
+      const token = session?.access_token;
+      if (!token) {
+        throw new Error("Admin session expired. Sign in again and retry save.");
+      }
 
-      if (error) throw error;
+      const payload = {
+        display_name: editForm.display_name || null,
+        email: editForm.email || null,
+        location: editForm.location || null,
+        avatar_url: editForm.avatar_url || null,
+        updated_at: new Date().toISOString(),
+      };
+      const response = await fetch('/api/admin-update-user', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ id: selectedUser.id, payload }),
+      });
+      const data = (await response.json()) as { error?: string };
+      if (!response.ok) {
+        throw new Error(data.error || `Save failed (${response.status})`);
+      }
 
       setModalOpen(false);
       setSelectedUser(null);
       fetchUsers();
     } catch (error) {
       console.error('Error updating user:', error);
-      alert('Failed to update user');
+      const message = error instanceof Error ? error.message : 'Failed to update user';
+      alert(message);
     } finally {
       setSaving(false);
     }
@@ -314,7 +329,7 @@ export default function AdminUsers() {
               </TableHeader>
               <TableBody>
                 {users.map((user) => (
-                  <TableRow key={user.id} className="cursor-pointer hover:bg-muted/50" onClick={() => handleViewUser(user)}>
+                  <TableRow key={user.id} className="cursor-pointer hover:bg-muted/50" onClick={() => handleEditUser(user)}>
                     <TableCell>
                       <div className="flex items-center gap-3">
                         <Avatar className="w-8 h-8">

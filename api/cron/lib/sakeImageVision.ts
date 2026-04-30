@@ -37,13 +37,15 @@ async function imageUrlToDataUrl(imageUrl: string): Promise<string | null> {
     });
     if (!res.ok) return null;
     const ct = res.headers.get('content-type') || 'image/jpeg';
-    if (ct.includes('text/html')) return null;
+    const mime = ct.split(';')[0].trim().toLowerCase();
+    // Avoid constructing data URLs with unsupported or generic MIME types.
+    // If the host reports non-image content, fall back to direct URL mode.
+    if (mime.includes('text/html') || !mime.startsWith('image/')) return null;
     const buf = Buffer.from(await res.arrayBuffer());
     /** Keep base64 + JSON under serverless heap; ~2.5MB raw ≈ safe on 1–3GB isolates. */
     if (buf.length < 500 || buf.length > 2_500_000) return null;
     const b64 = buf.toString('base64');
-    const mime = ct.split(';')[0].trim() || 'image/jpeg';
-    return `data:${mime};base64,${b64}`;
+    return `data:${mime || 'image/jpeg'};base64,${b64}`;
   } catch {
     return null;
   }

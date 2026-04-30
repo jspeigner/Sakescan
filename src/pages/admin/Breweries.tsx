@@ -28,11 +28,13 @@ import {
 import { supabase } from "@/lib/supabase";
 import type { Brewery } from "@/lib/supabase-types";
 import { useNavigate, Link } from "react-router-dom";
+import { useAuth } from "@/hooks/use-auth";
 
 const PAGE_SIZE = 20;
 
 export default function AdminBreweries() {
   const navigate = useNavigate();
+  const { session } = useAuth();
   const [breweries, setBreweries] = useState<Brewery[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
@@ -118,13 +120,33 @@ export default function AdminBreweries() {
     setModalOpen(true);
   };
 
+  const handleEditBrewery = (brewery: Brewery) => {
+    setSelectedBrewery(brewery);
+    setEditMode(true);
+    setEditForm({
+      name: brewery.name,
+      prefecture: brewery.prefecture || "",
+      region: brewery.region || "",
+      address: brewery.address || "",
+      phone: brewery.phone || "",
+      website: brewery.website || "",
+      email: brewery.email || "",
+      founded_year: brewery.founded_year?.toString() || "",
+      description: brewery.description || "",
+    });
+    setModalOpen(true);
+  };
+
   const handleSaveEdit = async () => {
     if (!selectedBrewery) return;
     setSaving(true);
     try {
-      const { error } = await supabase
-        .from('breweries')
-        .update({
+      const token = session?.access_token;
+      if (!token) {
+        throw new Error("Admin session expired. Sign in again and retry save.");
+      }
+
+      const payload = {
           name: editForm.name,
           prefecture: editForm.prefecture || null,
           region: editForm.region || null,
@@ -135,15 +157,27 @@ export default function AdminBreweries() {
           founded_year: editForm.founded_year ? parseInt(editForm.founded_year) : null,
           description: editForm.description || null,
           updated_at: new Date().toISOString(),
-        })
-        .eq('id', selectedBrewery.id);
+        };
 
-      if (error) throw error;
+      const response = await fetch('/api/admin-update-brewery', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ id: selectedBrewery.id, payload }),
+      });
+
+      const data = (await response.json()) as { error?: string };
+      if (!response.ok) {
+        throw new Error(data.error || `Save failed (${response.status})`);
+      }
       setModalOpen(false);
       fetchBreweries();
     } catch (error) {
       console.error('Error saving brewery:', error);
-      alert('Failed to save changes');
+      const message = error instanceof Error ? error.message : 'Failed to save changes';
+      alert(message);
     } finally {
       setSaving(false);
     }
@@ -239,7 +273,7 @@ export default function AdminBreweries() {
                   <TableRow
                     key={brewery.id}
                     className="cursor-pointer hover:bg-muted/50"
-                    onClick={() => handleViewBrewery(brewery)}
+                    onClick={() => handleEditBrewery(brewery)}
                   >
                     <TableCell>
                       <div className="flex items-center gap-3">
@@ -301,7 +335,7 @@ export default function AdminBreweries() {
                             <Eye className="w-4 h-4 mr-2" />
                             View Details
                           </DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => { handleViewBrewery(brewery); setTimeout(() => setEditMode(true), 100); }}>
+                          <DropdownMenuItem onClick={() => handleEditBrewery(brewery)}>
                             <Pencil className="w-4 h-4 mr-2" />
                             Edit
                           </DropdownMenuItem>

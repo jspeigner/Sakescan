@@ -177,6 +177,41 @@ export interface Database {
           updated_at?: string;
         };
       };
+      sake_image_attempts: {
+        Row: {
+          sake_id: string;
+          attempt_count: number;
+          success_count: number;
+          last_attempt_at: string | null;
+          last_success_at: string | null;
+          last_failure_reason: string | null;
+          next_retry_at: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          sake_id: string;
+          attempt_count?: number;
+          success_count?: number;
+          last_attempt_at?: string | null;
+          last_success_at?: string | null;
+          last_failure_reason?: string | null;
+          next_retry_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          sake_id?: string;
+          attempt_count?: number;
+          success_count?: number;
+          last_attempt_at?: string | null;
+          last_success_at?: string | null;
+          last_failure_reason?: string | null;
+          next_retry_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
     };
   };
 }

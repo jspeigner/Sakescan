@@ -13,6 +13,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Search, MoreHorizontal, Star, Loader2, Trash2, Eye, Pencil, Wine, User, X } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import { useAuth } from "@/hooks/use-auth";
 
 interface ReviewWithDetails {
   id: string;
@@ -37,6 +38,7 @@ const PAGE_SIZE = 20;
 
 export default function AdminReviews() {
   const navigate = useNavigate();
+  const { session } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const userFilter = searchParams.get('user') || '';
   const [userFilterName, setUserFilterName] = useState<string>('');
@@ -181,23 +183,36 @@ export default function AdminReviews() {
 
     setSaving(true);
     try {
-      const { error } = await supabase
-        .from('ratings')
-        .update({
-          rating: editRating,
-          review_text: editText || null,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', selectedReview.id);
+      const token = session?.access_token;
+      if (!token) {
+        throw new Error("Admin session expired. Sign in again and retry save.");
+      }
 
-      if (error) throw error;
+      const payload = {
+        rating: editRating,
+        review_text: editText || null,
+        updated_at: new Date().toISOString(),
+      };
+      const response = await fetch('/api/admin-update-review', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ id: selectedReview.id, payload }),
+      });
+      const data = (await response.json()) as { error?: string };
+      if (!response.ok) {
+        throw new Error(data.error || `Save failed (${response.status})`);
+      }
 
       setModalOpen(false);
       setSelectedReview(null);
       fetchReviews();
     } catch (error) {
       console.error('Error updating review:', error);
-      alert('Failed to update review');
+      const message = error instanceof Error ? error.message : 'Failed to update review';
+      alert(message);
     } finally {
       setSaving(false);
     }
@@ -366,7 +381,7 @@ export default function AdminReviews() {
               </TableHeader>
               <TableBody>
                 {reviews.map((review) => (
-                  <TableRow key={review.id} className="cursor-pointer hover:bg-muted/50" onClick={() => handleViewReview(review)}>
+                  <TableRow key={review.id} className="cursor-pointer hover:bg-muted/50" onClick={() => handleEditReview(review)}>
                     <TableCell>
                       <div className="min-w-0">
                         <p className="font-medium truncate">{review.sake?.name || 'Unknown Sake'}</p>

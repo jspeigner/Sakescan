@@ -212,7 +212,11 @@ export default function AdminSakes() {
               </TableHeader>
               <TableBody>
                 {sakes.map((sake) => (
-                  <TableRow key={sake.id}>
+                  <TableRow
+                    key={sake.id}
+                    className="cursor-pointer"
+                    onClick={() => handleEdit(sake)}
+                  >
                     <TableCell>
                       {sake.image_url ? (
                         <img
@@ -251,17 +255,29 @@ export default function AdminSakes() {
                     <TableCell>
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="icon">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={(e) => e.stopPropagation()}
+                          >
                             <MoreHorizontal className="w-4 h-4" />
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
-                          <DropdownMenuItem onClick={() => handleEdit(sake)}>
+                          <DropdownMenuItem
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleEdit(sake);
+                            }}
+                          >
                             <Pencil className="w-4 h-4 mr-2" />
                             Edit
                           </DropdownMenuItem>
                           <DropdownMenuItem
-                            onClick={() => handleDelete(sake)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void handleDelete(sake);
+                            }}
                             className="text-destructive"
                           >
                             <Trash2 className="w-4 h-4 mr-2" />
