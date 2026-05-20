@@ -44,7 +44,11 @@ export async function downloadAndStore(
         'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
       Accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
       'Accept-Language': 'en-US,en;q=0.9,ja;q=0.8',
-      Referer: imageUrl.includes('sakenomy') ? 'https://sakenomy.jp/' : 'https://japansake.or.jp/',
+      Referer: imageUrl.includes('sakenomy')
+        ? 'https://sakenomy.jp/'
+        : imageUrl.includes('sakurasaketen') || imageUrl.includes('website-files.com')
+          ? 'https://export.sakurasaketen.com/'
+          : 'https://japansake.or.jp/',
     },
     redirect: 'follow',
   });

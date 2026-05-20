@@ -32,13 +32,17 @@ function matchesExisting(
 ): boolean {
   const scrapedName = normalizeName(scraped.name);
   const existingName = normalizeName(existing.name);
+  const scrapedJapanese = scraped.nameJapanese ? normalizeName(scraped.nameJapanese) : '';
+  const existingJapanese = existing.name_japanese ? normalizeName(existing.name_japanese) : '';
+  const japaneseMatch =
+    scrapedJapanese.length > 0 &&
+    existingJapanese.length > 0 &&
+    (existingJapanese.includes(scrapedJapanese) || scrapedJapanese.includes(existingJapanese));
+
   const nameMatch =
+    japaneseMatch ||
     existingName.includes(scrapedName) ||
-    scrapedName.includes(existingName) ||
-    (scraped.nameJapanese &&
-      existing.name_japanese &&
-      (existing.name_japanese.includes(scraped.nameJapanese) ||
-        scraped.nameJapanese.includes(existing.name_japanese)));
+    scrapedName.includes(existingName);
 
   const breweryMatch =
     scraped.brewery &&
