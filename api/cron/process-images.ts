@@ -12,20 +12,20 @@ import { validateJapaneseSakeProductPhoto } from './lib/sakeImageVision.js';
 /** Mirror external image_url into Storage (per run). */
 const MIRROR_OPS_BUDGET = 220;
 /** Attempt to fill missing image_url (Firecrawl + vision + upload). */
-const DISCOVER_ROW_CAP = 28;
-const DISCOVER_CANDIDATES_MAX = 5;
+const DISCOVER_ROW_CAP = 40;
+const DISCOVER_CANDIDATES_MAX = 4;
 /** Spot-check hosted images; clear when vision says not sake. */
 const AUDIT_ROW_CAP = 10;
 const DELAY_MS = 80;
-const DELAY_MS_DISCOVER = 120;
+const DELAY_MS_DISCOVER = 80;
 
 /** Hobby plan ~10s hard limit; stay under so we return JSON before the platform kills the isolate. */
 const CHUNK_WALL_MS = 7500;
 /** Discover mode is slower (Firecrawl + vision), so allow a longer chunk budget. */
 const DISCOVER_CHUNK_WALL_MS = 25000;
-const DISCOVER_CHUNK_WALL_MS_ACCELERATED = 35000;
-const DISCOVER_POOL_LIMIT = 1200;
-const DISCOVER_BACKOFF_BASE_MS = 30 * 60 * 1000; // 30 minutes
+const DISCOVER_CHUNK_WALL_MS_ACCELERATED = 55000;
+const DISCOVER_POOL_LIMIT = 2000;
+const DISCOVER_BACKOFF_BASE_MS = 15 * 60 * 1000; // 15 minutes
 const DISCOVER_BACKOFF_MAX_MS = 72 * 60 * 60 * 1000; // 72 hours
 
 type SakeRow = {
@@ -245,11 +245,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // discover batch for cron-safe missing-image backfill.
     const discoverRowCapThisRun = discoverChunkMode
       ? acceleratedDiscover
-        ? Math.min(DISCOVER_ROW_CAP, 6)
-        : Math.min(DISCOVER_ROW_CAP, 2)
+        ? Math.min(DISCOVER_ROW_CAP, 16)
+        : Math.min(DISCOVER_ROW_CAP, 6)
       : chunked
         ? 0
-        : Math.min(DISCOVER_ROW_CAP, 14);
+        : Math.min(DISCOVER_ROW_CAP, 24);
     const auditRowCapThisRun = chunked ? 0 : Math.min(AUDIT_ROW_CAP, 6);
     const mirrorOpsBudgetThisRun = discoverChunkMode ? 0 : chunked ? MIRROR_OPS_BUDGET : Math.min(MIRROR_OPS_BUDGET, 80);
     let mirrorOpsRemaining = mirrorOpsBudgetThisRun;
