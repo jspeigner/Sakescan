@@ -34,6 +34,7 @@ const JUNK_URL_REGEXES = [
   /\.svg(\?|$)/i,
   /youtube\.|ytimg\.|facebook\.|fbcdn|instagram\.|cdninstagram|tiktok|pinterest\.|pinimg\./i,
   /wikipedia\.org\/static|wikimedia\.org\/.*\/thumb\/.*\/\d+px-/i,
+  /mmajunkie|espn\.|bleacherreport|sports\.|usatoday\.com\/wp-content/i,
 ];
 
 /** URL/title hints that the asset is probably not Japanese sake. */
@@ -143,7 +144,8 @@ export function buildSakeImageSearchQuery(
 function buildSakeImageSearchQueries(
   name: string,
   nameJapanese?: string | null,
-  brewery?: string | null
+  brewery?: string | null,
+  maxQueries = 5
 ): string[] {
   const baseName = name.trim();
   const jpName = (nameJapanese ?? '').trim();
@@ -161,7 +163,28 @@ function buildSakeImageSearchQueries(
   pushUnique(`${baseName} nihonshu bottle label`);
   pushUnique(`${baseName} sake bottle product`);
 
-  return queries.slice(0, 5);
+  return queries.slice(0, maxQueries);
+}
+
+/** Drop weak Bing/Google hits before expensive vision checks. */
+export function prefilterDiscoverCandidates(
+  images: SearchImageRow[],
+  name: string,
+  nameJapanese: string | undefined,
+  brewery: string | undefined,
+  options?: { minRelevance?: number; maxCandidates?: number }
+): SearchImageRow[] {
+  const minRel = options?.minRelevance ?? 2;
+  const maxCandidates = options?.maxCandidates ?? 12;
+  const tokens = searchTokens(name, nameJapanese, brewery);
+  const scored = images
+    .map((img) => ({
+      img,
+      score: relevanceScore(img.url, img.title, tokens) + sourcePriority(img.source),
+    }))
+    .filter((x) => relevanceScore(x.img.url, x.img.title, tokens) >= minRel)
+    .sort((a, b) => b.score - a.score);
+  return scored.slice(0, maxCandidates).map((x) => x.img);
 }
 
 /** Reject obvious non-sake URLs before vision (cheap guard). */
@@ -170,7 +193,7 @@ export function urlLooksLikeNonSakeProduct(url: string): boolean {
   return NON_SAKE_PRODUCT_REGEXES.some((re) => re.test(h));
 }
 
-async function firecrawlScrape(
+async function firecrawlScrapeV1(
   apiKey: string,
   body: Record<string, unknown>
 ): Promise<{ html?: string; markdown?: string; _error?: string } | null> {
@@ -185,13 +208,115 @@ async function firecrawlScrape(
     });
     if (!res.ok) {
       const errText = await res.text();
-      return { _error: `HTTP ${res.status}: ${errText.slice(0, 180)}` };
+      return { _error: `v1 HTTP ${res.status}: ${errText.slice(0, 180)}` };
     }
     const json = (await res.json()) as { data?: { html?: string; markdown?: string } };
-    return json.data ?? null;
+    return json.data ?? { _error: 'v1 empty data' };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    return { _error: `Network error: ${msg.slice(0, 180)}` };
+    return { _error: `v1 network: ${msg.slice(0, 180)}` };
+  }
+}
+
+async function firecrawlScrapeV2(
+  apiKey: string,
+  url: string
+): Promise<{ html?: string; _error?: string } | null> {
+  try {
+    const res = await fetch('https://api.firecrawl.dev/v2/scrape', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        url,
+        formats: ['html'],
+        onlyMainContent: false,
+        maxAge: 0,
+      }),
+    });
+    if (!res.ok) {
+      const errText = await res.text();
+      return { _error: `v2 HTTP ${res.status}: ${errText.slice(0, 180)}` };
+    }
+    const json = (await res.json()) as {
+      data?: { html?: string };
+      html?: string;
+    };
+    const html = json.data?.html ?? json.html;
+    return html ? { html } : { _error: 'v2 empty html' };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { _error: `v2 network: ${msg.slice(0, 180)}` };
+  }
+}
+
+async function firecrawlScrape(
+  apiKey: string,
+  body: Record<string, unknown>
+): Promise<{ html?: string; markdown?: string; _error?: string } | null> {
+  const v1 = await firecrawlScrapeV1(apiKey, body);
+  if (v1?.html) return v1;
+
+  const targetUrl = typeof body.url === 'string' ? body.url : '';
+  if (targetUrl) {
+    const v2 = await firecrawlScrapeV2(apiKey, targetUrl);
+    if (v2?.html) return { html: v2.html, markdown: undefined };
+    const err = [v1?._error, v2?._error].filter(Boolean).join(' | ');
+    return { _error: err || 'Firecrawl v1/v2 returned no html' };
+  }
+  return v1;
+}
+
+function extractImageUrlsFromGoogleHtml(htmlContent: string): string[] {
+  const patterns = [
+    /"ou":"(https?:\/\/[^"\\]+)"/g,
+    /"ou":"(https?:\\\/\\\/[^"\\]+)"/g,
+    /\["(https:\/\/[^"]+\.(?:jpg|jpeg|png|webp)[^"]*?)"/gi,
+    /data-src="(https:\/\/[^"]+\.(?:jpg|jpeg|png|webp)[^"]*)"/gi,
+    /imgurl=(https?:[^&"'\\]+)/gi,
+    /"(https:\/\/[^"]+\.(?:jpg|jpeg|png|webp)(?:\?[^"]*)?)"/gi,
+  ];
+
+  const foundUrls = new Set<string>();
+  for (const pattern of patterns) {
+    const matches = [...htmlContent.matchAll(pattern)];
+    matches.forEach((match: RegExpMatchArray) => {
+      let url = match[1];
+      if (!url) return;
+      url = url.replace(/\\u003d/g, '=').replace(/\\u0026/g, '&').replace(/\\\//g, '/');
+      if (!url.startsWith('http')) return;
+      if (url.includes('google.com') || url.includes('gstatic.com') || url.includes('googleusercontent.com/logos')) {
+        return;
+      }
+      foundUrls.add(url);
+    });
+  }
+  return [...foundUrls];
+}
+
+async function scrapeGoogleImagesDirect(searchQuery: string): Promise<SearchImageRow[]> {
+  const googleImagesUrl = `https://www.google.com/search?q=${encodeURIComponent(searchQuery)}&tbm=isch`;
+  try {
+    const res = await fetch(googleImagesUrl, {
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        Accept: 'text/html,application/xhtml+xml',
+        'Accept-Language': 'en-US,en;q=0.9,ja;q=0.8',
+      },
+      redirect: 'follow',
+    });
+    if (!res.ok) return [];
+    const html = await res.text();
+    return extractImageUrlsFromGoogleHtml(html).slice(0, 24).map((url) => ({
+      url,
+      source: 'Google Images',
+      title: searchQuery,
+    }));
+  } catch {
+    return [];
   }
 }
 
@@ -206,33 +331,25 @@ async function scrapeGoogleImages(
     onlyMainContent: false,
     maxAge: 0,
   });
-  if (!data?.html) return { rows: [], error: data?._error || 'No HTML from Firecrawl scrape' };
-
-  const htmlContent = data.html;
-  const patterns = [
-    /"ou":"(https?:\/\/[^"]+)"/g,
-    /\["(https:\/\/[^"]+\.(?:jpg|jpeg|png|webp))",[0-9]+,[0-9]+\]/g,
-    /data-src="(https:\/\/[^"]+\.(?:jpg|jpeg|png|webp))"/gi,
-  ];
-
-  const foundUrls = new Set<string>();
-  for (const pattern of patterns) {
-    const matches = [...htmlContent.matchAll(pattern)];
-    matches.forEach((match: RegExpMatchArray) => {
-      const url = match[1];
-      if (url && !url.includes('google.com') && !url.includes('gstatic') && url.startsWith('http')) {
-        foundUrls.add(url);
-      }
-    });
+  if (data?.html) {
+    const urls = extractImageUrlsFromGoogleHtml(data.html);
+    if (urls.length > 0) {
+      return {
+        rows: urls.slice(0, 24).map((url) => ({
+          url,
+          source: 'Google Images',
+          title: searchQuery,
+        })),
+      };
+    }
   }
 
-  return {
-    rows: [...foundUrls].slice(0, 24).map((url) => ({
-      url,
-      source: 'Google Images',
-      title: searchQuery,
-    })),
-  };
+  const directRows = await scrapeGoogleImagesDirect(searchQuery);
+  if (directRows.length > 0) {
+    return { rows: directRows };
+  }
+
+  return { rows: [], error: data?._error || 'No Google image URLs (Firecrawl + direct)' };
 }
 
 function decodeHtmlEntities(input: string): string {
@@ -281,13 +398,22 @@ async function scrapeBingImages(searchQuery: string): Promise<SearchImageRow[]> 
   }));
 }
 
+export type SakeImageSearchMode = 'google-only' | 'google-only-fast' | 'full';
+
 export async function searchSakeImageCandidates(
   firecrawlApiKey: string,
   params: { name: string; nameJapanese?: string | null; brewery?: string | null },
-  mode: 'google-only' | 'full'
+  mode: SakeImageSearchMode
 ): Promise<{ images: SearchImageRow[]; sakeData?: SakeSearchMeta; debug: SakeSearchDebug }> {
   const { name, nameJapanese, brewery } = params;
-  const searchQueries = buildSakeImageSearchQueries(name, nameJapanese ?? undefined, brewery ?? undefined);
+  const fastMode = mode === 'google-only-fast';
+  const searchQueries = buildSakeImageSearchQueries(
+    name,
+    nameJapanese ?? undefined,
+    brewery ?? undefined,
+    fastMode ? 2 : 5
+  );
+  const candidatePoolTarget = fastMode ? 36 : 80;
   const results: SearchImageRow[] = [];
   let sakeData: SakeSearchMeta | undefined;
   const debug: SakeSearchDebug = {
@@ -442,15 +568,16 @@ export async function searchSakeImageCandidates(
     if (googleResult.error) {
       debug.firecrawlErrors.push(`googleImages (${searchQuery.slice(0, 40)}): ${googleResult.error}`);
     }
-    try {
-      const bingRows = await scrapeBingImages(searchQuery);
-      results.push(...bingRows);
-      debug.sourceCounts.bing += bingRows.length;
-    } catch (e) {
-      console.error('Bing images scrape error:', e);
+    if (results.length < 8 || !fastMode) {
+      try {
+        const bingRows = await scrapeBingImages(searchQuery);
+        results.push(...bingRows);
+        debug.sourceCounts.bing += bingRows.length;
+      } catch (e) {
+        console.error('Bing images scrape error:', e);
+      }
     }
-    // Avoid over-fetching once we already have a healthy candidate pool.
-    if (results.length >= 80) break;
+    if (results.length >= candidatePoolTarget) break;
   }
 
   const uniqueImages = results.filter(

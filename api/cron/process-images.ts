@@ -6,18 +6,32 @@ import {
   sleep,
   supabaseProjectHost,
 } from './lib/imageMirror.js';
-import { searchSakeImageCandidates, urlLooksLikeNonSakeProduct } from './lib/sakeImageDiscovery.js';
-import { validateJapaneseSakeProductPhoto } from './lib/sakeImageVision.js';
+import {
+  prefilterDiscoverCandidates,
+  searchSakeImageCandidates,
+  urlLooksLikeNonSakeProduct,
+} from './lib/sakeImageDiscovery.js';
+import { sakeVisionPasses, validateJapaneseSakeProductPhoto } from './lib/sakeImageVision.js';
+import {
+  getWineEngineConfig,
+  wineEngineAddByUrl,
+  wineEngineCount,
+  wineEngineRejectsCandidate,
+  wineEngineSearchByUrl,
+} from './lib/wineEngine.js';
 
 /** Mirror external image_url into Storage (per run). */
 const MIRROR_OPS_BUDGET = 220;
 /** Attempt to fill missing image_url (Firecrawl + vision + upload). */
 const DISCOVER_ROW_CAP = 40;
 const DISCOVER_CANDIDATES_MAX = 4;
+const DISCOVER_CANDIDATES_MAX_ACCELERATED = 3;
+const ATTEMPT_HISTORY_BATCH_SIZE = 80;
 /** Spot-check hosted images; clear when vision says not sake. */
 const AUDIT_ROW_CAP = 10;
 const DELAY_MS = 80;
 const DELAY_MS_DISCOVER = 80;
+const DELAY_MS_DISCOVER_ACCELERATED = 35;
 
 /** Hobby plan ~10s hard limit; stay under so we return JSON before the platform kills the isolate. */
 const CHUNK_WALL_MS = 7500;
@@ -135,6 +149,47 @@ async function downloadAndStoreWithRetry(
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }
 
+async function loadAttemptHistoryBySakeIds(
+  supabase: ReturnType<typeof createClient>,
+  sakeIds: string[]
+): Promise<{
+  map: Map<string, SakeImageAttemptRow>;
+  readErrors: number;
+  errorSamples: string[];
+  batches: number;
+}> {
+  const map = new Map<string, SakeImageAttemptRow>();
+  const errorSamples: string[] = [];
+  let readErrors = 0;
+  let batches = 0;
+
+  for (let i = 0; i < sakeIds.length; i += ATTEMPT_HISTORY_BATCH_SIZE) {
+    batches++;
+    const chunk = sakeIds.slice(i, i + ATTEMPT_HISTORY_BATCH_SIZE);
+    const { data, error } = await supabase
+      .from('sake_image_attempts')
+      .select('sake_id, attempt_count, success_count, next_retry_at')
+      .in('sake_id', chunk);
+
+    if (error) {
+      readErrors++;
+      if (errorSamples.length < 5) errorSamples.push(error.message.slice(0, 120));
+      continue;
+    }
+
+    (data || []).forEach((row) => {
+      map.set(row.sake_id, {
+        sake_id: row.sake_id,
+        attempt_count: row.attempt_count ?? 0,
+        success_count: row.success_count ?? 0,
+        next_retry_at: row.next_retry_at ?? null,
+      });
+    });
+  }
+
+  return { map, readErrors, errorSamples, batches };
+}
+
 function computeNextRetryAt(attemptCount: number, noCandidates: boolean): string {
   const multiplier = noCandidates ? 2 : 1;
   const backoffMs = Math.min(
@@ -232,6 +287,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         env: {
           discoverEnabled: Boolean(firecrawlKey && openaiKey),
           auditEnabled: Boolean(openaiKey),
+          wineEngineEnabled: Boolean(getWineEngineConfig()),
         },
         timestamp: new Date().toISOString(),
       });
@@ -294,7 +350,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         placedRows: 0,
         retryAttempts: 0,
         attemptHistoryReadErrors: 0,
+        attemptHistoryBatches: 0,
         attemptHistoryWriteErrors: 0,
+        prefilterDropped: 0,
+        wineEngineChecks: 0,
+        wineEngineRejected: 0,
+        wineEngineConfirmed: 0,
+        wineEngineIndexed: 0,
         perRowErrors: 0,
         rowErrorSamples: [] as string[],
         downloadErrorSamples: [] as string[],
@@ -369,6 +431,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     // --- DISCOVER: null / empty image_url ---
+    const wineEngineCfg = getWineEngineConfig();
+    let wineEngineCollectionCount = 0;
+    if (wineEngineCfg) {
+      try {
+        wineEngineCollectionCount = await wineEngineCount(wineEngineCfg);
+      } catch {
+        wineEngineCollectionCount = 0;
+      }
+    }
+    const wineEngineActive = Boolean(wineEngineCfg && wineEngineCollectionCount > 0);
+
     if (firecrawlKey && openaiKey && !rateLimited && !hitTimeBudget) {
       const { data: missingPool } = await supabase
         .from('sake')
@@ -381,28 +454,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const missingRows = (missingPool || []) as SakeRow[];
       shuffleInPlace(missingRows);
       diagnostics.discover.randomizedPoolRows = missingRows.length;
-      const attemptBySakeId = new Map<string, SakeImageAttemptRow>();
-      if (missingRows.length > 0) {
-        const { data: attemptRows, error: attemptReadError } = await supabase
-          .from('sake_image_attempts')
-          .select('sake_id, attempt_count, success_count, next_retry_at')
-          .in(
-            'sake_id',
-            missingRows.map((r) => r.id)
-          );
-        if (attemptReadError) {
-          diagnostics.discover.attemptHistoryReadErrors++;
-          errors.push(`attempt-history read: ${attemptReadError.message.slice(0, 120)}`);
-        } else {
-          (attemptRows || []).forEach((row) => {
-            attemptBySakeId.set(row.sake_id, {
-              sake_id: row.sake_id,
-              attempt_count: row.attempt_count ?? 0,
-              success_count: row.success_count ?? 0,
-              next_retry_at: row.next_retry_at ?? null,
-            });
-          });
-        }
+      const attemptHistoryLoad = await loadAttemptHistoryBySakeIds(
+        supabase,
+        missingRows.map((r) => r.id)
+      );
+      const attemptBySakeId = attemptHistoryLoad.map;
+      diagnostics.discover.attemptHistoryBatches = attemptHistoryLoad.batches;
+      if (attemptHistoryLoad.readErrors > 0) {
+        diagnostics.discover.attemptHistoryReadErrors += attemptHistoryLoad.readErrors;
+        attemptHistoryLoad.errorSamples.forEach((m) =>
+          errors.push(`attempt-history read: ${m}`)
+        );
       }
 
       const nowMs = Date.now();
@@ -435,16 +497,35 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         let timedOutDuringRow = false;
 
         try {
-          const { images, debug } = await searchSakeImageCandidates(
+          const discoverDelayMs = acceleratedDiscover ? DELAY_MS_DISCOVER_ACCELERATED : DELAY_MS_DISCOVER;
+          const discoverCandidatesMax = acceleratedDiscover
+            ? DISCOVER_CANDIDATES_MAX_ACCELERATED
+            : DISCOVER_CANDIDATES_MAX;
+          const searchMode = acceleratedDiscover ? 'google-only-fast' : 'google-only';
+
+          const { images: rawImages, debug } = await searchSakeImageCandidates(
             firecrawlKey,
             {
               name: row.name,
               nameJapanese: row.name_japanese,
               brewery: row.brewery,
             },
-            'google-only'
+            searchMode
           );
-          await sleep(DELAY_MS_DISCOVER);
+          const images = prefilterDiscoverCandidates(
+            rawImages,
+            row.name,
+            row.name_japanese ?? undefined,
+            row.brewery,
+            {
+              minRelevance: acceleratedDiscover ? 3 : 2,
+              maxCandidates: discoverCandidatesMax + 4,
+            }
+          );
+          diagnostics.discover.prefilterDropped += Math.max(0, rawImages.length - images.length);
+          if (!acceleratedDiscover) {
+            await sleep(discoverDelayMs);
+          }
           sawCandidates = images.length > 0;
           diagnostics.discover.candidateUrlsSeen += images.length;
           diagnostics.discover.sourceCandidates.google += debug.sourceCounts.google;
@@ -462,7 +543,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             diagnostics.discover.rowsWithNoCandidates++;
           }
 
-          for (const img of images.slice(0, DISCOVER_CANDIDATES_MAX)) {
+          for (const img of images.slice(0, discoverCandidatesMax)) {
             if (shouldStopChunk()) {
               hitTimeBudget = true;
               timedOutDuringRow = true;
@@ -476,15 +557,33 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               continue;
             }
 
+            if (wineEngineActive && wineEngineCfg) {
+              try {
+                diagnostics.discover.wineEngineChecks++;
+                const weSearch = await wineEngineSearchByUrl(wineEngineCfg, img.url, { limit: 1 });
+                if (wineEngineRejectsCandidate(weSearch, row.id)) {
+                  diagnostics.discover.wineEngineRejected++;
+                  failureReason = 'wineengine_matched_other_sake';
+                  continue;
+                }
+                const matchedId = weSearch.result?.[0]?.metadata?.image_id;
+                if (matchedId === row.id && (weSearch.result?.[0]?.score_text ?? 0) >= 55) {
+                  diagnostics.discover.wineEngineConfirmed++;
+                }
+              } catch {
+                /* WineEngine optional — continue with vision */
+              }
+            }
+
             try {
               diagnostics.discover.visionChecks++;
               const v = await validateJapaneseSakeProductPhoto(openaiKey, img.url, {
                 sakeName: row.name,
                 brewery: row.brewery,
               });
-              await sleep(DELAY_MS_DISCOVER);
+              await sleep(discoverDelayMs);
 
-              if (!v.isJapaneseSakeProductPhoto || v.confidence === 'low') {
+              if (!sakeVisionPasses(v, { allowMedium: acceleratedDiscover })) {
                 diagnostics.discover.visionRejected++;
                 failureReason = 'vision_rejected';
                 continue;
@@ -524,6 +623,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               diagnostics.discover.placedRows++;
               placed = true;
               failureReason = '';
+              if (wineEngineCfg) {
+                wineEngineAddByUrl(wineEngineCfg, { sakeId: row.id, imageUrl: result.url })
+                  .then(() => {
+                    diagnostics.discover.wineEngineIndexed++;
+                  })
+                  .catch(() => undefined);
+              }
               break;
             } catch (inner) {
               failed++;
@@ -831,6 +937,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         breweryMainImages: brewRem.breweryMainImages,
         breweryGalleryImages: brewRem.breweryGalleryImages,
       },
+      wineEngine: wineEngineCfg
+        ? { collectionCount: wineEngineCollectionCount, activeInDiscover: wineEngineActive }
+        : undefined,
       sakeQueue: {
         externalRowsFetched: sakeExternalRowsFetched,
         note: 'Audit → discover (missing) → mirror external URLs. Discover needs FIRECRAWL + OPENAI.',

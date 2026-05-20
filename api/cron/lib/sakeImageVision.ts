@@ -111,3 +111,14 @@ Set isJapaneseSakeProductPhoto to FALSE for: Scotch/whisky/whiskey (e.g. Johnnie
   }
   return parsed;
 }
+
+/** Whether vision result is good enough to store (cron can allow medium in accelerated mode). */
+export function sakeVisionPasses(
+  result: SakeVisionResult,
+  options?: { allowMedium?: boolean }
+): boolean {
+  if (!result.isJapaneseSakeProductPhoto) return false;
+  if (result.confidence === 'low') return false;
+  if (options?.allowMedium) return true;
+  return result.confidence === 'high';
+}
