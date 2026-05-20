@@ -8,18 +8,21 @@
       "maxDuration": 300,
       "memory": 3008
     },
+    "api/cron/backfill-orchestrator.ts": {
+      "maxDuration": 300,
+      "memory": 3008
+    },
+    "api/cron/import-sakura-batch.ts": {
+      "maxDuration": 120
+    },
     "api/cron/process-brewery-images.ts": {
       "maxDuration": 120
     }
   },
   "crons": [
     {
-      "path": "/api/cron/process-images?chunk=1",
-      "schedule": "0 */4 * * *"
-    },
-    {
-      "path": "/api/cron/process-images?chunk=1&mode=discover&speed=accelerated",
-      "schedule": "*/5 * * * *"
+      "path": "/api/cron/backfill-orchestrator",
+      "schedule": "*/10 * * * *"
     },
     {
       "path": "/api/cron/process-brewery-images",

@@ -299,10 +299,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let sakeExternalRowsFetched = 0;
     // Chunked mode defaults to mirror-only. Optional `mode=discover` enables a small
     // discover batch for cron-safe missing-image backfill.
+    const rowCapParam = Array.isArray(q.rowCap) ? q.rowCap[0] : q.rowCap;
+    const rowCapOverride = parseInt(rowCapParam || '', 10);
+    const hasRowCapOverride = Number.isFinite(rowCapOverride) && rowCapOverride > 0;
+
     const discoverRowCapThisRun = discoverChunkMode
-      ? acceleratedDiscover
-        ? Math.min(DISCOVER_ROW_CAP, 16)
-        : Math.min(DISCOVER_ROW_CAP, 6)
+      ? hasRowCapOverride
+        ? Math.min(DISCOVER_ROW_CAP, rowCapOverride)
+        : acceleratedDiscover
+          ? Math.min(DISCOVER_ROW_CAP, 16)
+          : Math.min(DISCOVER_ROW_CAP, 6)
       : chunked
         ? 0
         : Math.min(DISCOVER_ROW_CAP, 24);

@@ -212,6 +212,49 @@ export interface Database {
           updated_at?: string;
         };
       };
+      backfill_state: {
+        Row: {
+          key: string;
+          value: Record<string, unknown>;
+          updated_at: string;
+        };
+        Insert: {
+          key: string;
+          value?: Record<string, unknown>;
+          updated_at?: string;
+        };
+        Update: {
+          key?: string;
+          value?: Record<string, unknown>;
+          updated_at?: string;
+        };
+      };
+      backfill_run_log: {
+        Row: {
+          id: string;
+          job: string;
+          status: string;
+          stats: Record<string, unknown>;
+          errors: string[] | Record<string, unknown>[];
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          job: string;
+          status: string;
+          stats?: Record<string, unknown>;
+          errors?: string[] | Record<string, unknown>[];
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          job?: string;
+          status?: string;
+          stats?: Record<string, unknown>;
+          errors?: string[] | Record<string, unknown>[];
+          created_at?: string;
+        };
+      };
     };
   };
 }

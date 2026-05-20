@@ -1,54 +1,14 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-
-interface ScrapedSake {
-  name: string;
-  nameJapanese?: string;
-  brewery?: string;
-  type?: string;
-  prefecture?: string;
-  imageUrl?: string;
-  taste?: string;
-  foodPairing?: string[];
-}
+import { scrapeSakuraListing } from './cron/lib/scrapeSakuraCore.js';
 
 interface ScrapeResult {
-  sakes: ScrapedSake[];
+  sakes: Awaited<ReturnType<typeof scrapeSakuraListing>>['sakes'];
   totalFound: number;
   page: number;
   hasMore: boolean;
 }
 
-function decodeEscapedUrl(url: string): string {
-  return url
-    .replace(/\\u002F/g, '/')
-    .replace(/\\\//g, '/')
-    .replace(/&amp;/g, '&')
-    .trim();
-}
-
-function isLikelyProductImage(url: string): boolean {
-  const lower = url.toLowerCase();
-  const looksLikeImage =
-    /\.(jpg|jpeg|png|webp|avif)(\?|$)/i.test(lower) ||
-    lower.includes('/images/') ||
-    lower.includes('/uploads/') ||
-    lower.includes('cdn') ||
-    lower.includes('cloudfront');
-
-  const excluded =
-    lower.includes('logo') ||
-    lower.includes('icon') ||
-    lower.includes('arrow') ||
-    lower.includes('close') ||
-    lower.includes('favicon') ||
-    lower.includes('sprite') ||
-    lower.endsWith('.svg');
-
-  return looksLikeImage && !excluded;
-}
-
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  // Only allow POST
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
@@ -56,206 +16,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const { page = 1, category, prefecture } = req.body;
 
   const firecrawlApiKey = process.env.FIRECRAWL_API_KEY;
-  
+
   if (!firecrawlApiKey) {
     return res.status(500).json({ error: 'Firecrawl API key not configured' });
   }
 
   try {
-    // Build URL with optional filters
-    let url = 'https://export.sakurasaketen.com/sake';
-    const params = new URLSearchParams();
-    
-    if (category) {
-      params.append('Select by Sake Category', category);
-    }
-    if (prefecture) {
-      params.append('Select by Prefecture', prefecture);
-    }
-    
-    if (params.toString()) {
-      url += '?' + params.toString();
-    }
-
-    console.log('Scraping URL:', url);
-
-    // Scrape the sake listing page
-    const response = await fetch('https://api.firecrawl.dev/v1/scrape', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${firecrawlApiKey}`,
-      },
-      body: JSON.stringify({
-        url,
-        formats: ['markdown', 'html'],
-        onlyMainContent: true,
-        waitFor: 3000, // Wait for dynamic content to load
-      }),
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('Firecrawl error:', errorText);
-      return res.status(500).json({ error: 'Failed to scrape page', details: errorText });
-    }
-
-    const data = await response.json();
-    const html = data.data?.html || '';
-    const markdown = data.data?.markdown || '';
-
-    // Parse sake items from the HTML
-    const sakes: ScrapedSake[] = [];
-
-    // The site structure shows sake cards with Japanese name, English name, brewery, and prefecture
-    // Pattern: Japanese name followed by English name, brewery, and prefecture
-    
-    // Try to extract from markdown which is cleaner
-    // Format seems to be: JapaneseName\nEnglishName\nBrewery\-Prefecture
-    const sakeBlocks = markdown.split(/(?=Modern-|Classic-)/g);
-    
-    for (const block of sakeBlocks) {
-      // Skip if too short
-      if (block.length < 20) continue;
-      
-      // Extract sake type/category
-      const matrixMatch = block.match(/(Modern|Classic)-(Light|Medium|Full|Rich)/i);
-      
-      // Look for sake names - English names are typically in ALL CAPS or Title Case
-      const lines = block.split('\n').filter((line: string) => line.trim());
-      
-      let englishName = '';
-      let japaneseName = '';
-      let brewery = '';
-      let prefecture = '';
-      
-      for (const line of lines) {
-        const trimmed = line.trim();
-        
-        // Skip matrix labels
-        if (/^(Modern|Classic)-(Light|Medium|Full|Rich)/i.test(trimmed)) continue;
-        
-        // Skip common UI elements
-        if (trimmed.includes('arrow') || trimmed.includes('icon') || trimmed.includes('close')) continue;
-        
-        // Check for brewery-prefecture pattern (e.g., "Yonetsuru Shuzo\-Yamagata")
-        const breweryMatch = trimmed.match(/^([A-Za-z\s]+(?:Shuzo|Brewery|Sake|Brewing|酒造)?)\s*\\?-\s*([A-Za-z]+)$/i);
-        if (breweryMatch) {
-          brewery = breweryMatch[1].trim();
-          prefecture = breweryMatch[2].trim();
-          continue;
-        }
-        
-        // Check for Japanese characters (likely Japanese name)
-        if (/[\u3040-\u309f\u30a0-\u30ff\u4e00-\u9faf]/.test(trimmed) && !japaneseName) {
-          japaneseName = trimmed;
-          continue;
-        }
-        
-        // Check for English name (ALL CAPS or starts with capital, reasonable length)
-        if (/^[A-Z][A-Za-z\s"'()-]+$/.test(trimmed) && trimmed.length > 3 && trimmed.length < 100 && !englishName) {
-          // Skip if it's a category name
-          if (!/^(Junmai|Ginjo|Daiginjo|Honjozo|Fruity|Light|Bold|Fresh|Sweet|Rich|Meaty|White|Seafood|Spicy)/i.test(trimmed)) {
-            englishName = trimmed;
-          }
-        }
-      }
-      
-      // Only add if we found a name
-      if (englishName || japaneseName) {
-        const sake: ScrapedSake = {
-          name: englishName || japaneseName,
-          nameJapanese: japaneseName || undefined,
-          brewery: brewery || undefined,
-          prefecture: prefecture || undefined,
-          type: matrixMatch ? undefined : undefined, // We'll extract type separately
-        };
-        
-        // Try to determine sake type from the block
-        const typeMatch = block.match(/(Junmai Daiginjo|Junmai Ginjo|Tokubetsu Junmai|Junmai|Daiginjo|Ginjo|Tokubetsu Honjozo|Honjozo)/i);
-        if (typeMatch) {
-          sake.type = typeMatch[1];
-        }
-        
-        // Extract taste profile
-        const tasteMatch = block.match(/(Fruity & Aromatic|Light & Dry|Bold & Aged|Fresh & Vivid|Sweet|Rich & Savory)/i);
-        if (tasteMatch) {
-          sake.taste = tasteMatch[1];
-        }
-        
-        // Extract food pairing
-        const foodMatches = block.match(/(Meaty Food|White Meats and Salty Food|Seafood|Spicy Food|Sweet Food)/gi);
-        if (foodMatches) {
-          sake.foodPairing = [...new Set(foodMatches.map((item) => String(item)))];
-        }
-        
-        sakes.push(sake);
-      }
-    }
-
-    // Extract image URLs from multiple patterns.
-    const candidateUrls = new Set<string>();
-
-    const directUrlRegex = /https?:\/\/[^"'\\s)]+/gi;
-    const srcAttrRegex = /(?:src|data-src|data-image|data-original|poster)=["']([^"']+)["']/gi;
-    const srcSetRegex = /srcset=["']([^"']+)["']/gi;
-    const jsonUrlRegex = /"url"\s*:\s*"([^"]+)"/gi;
-
-    const directMatches = html.match(directUrlRegex) || [];
-    directMatches.forEach((raw) => candidateUrls.add(decodeEscapedUrl(raw)));
-
-    for (const match of html.matchAll(srcAttrRegex)) {
-      if (match[1]) {
-        candidateUrls.add(decodeEscapedUrl(match[1]));
-      }
-    }
-
-    for (const match of html.matchAll(srcSetRegex)) {
-      if (!match[1]) continue;
-      const srcSetParts = match[1].split(',').map((part) => part.trim().split(' ')[0]);
-      srcSetParts.forEach((part) => candidateUrls.add(decodeEscapedUrl(part)));
-    }
-
-    for (const match of html.matchAll(jsonUrlRegex)) {
-      if (match[1]) {
-        candidateUrls.add(decodeEscapedUrl(match[1]));
-      }
-    }
-
-    const productImages = Array.from(candidateUrls)
-      .map((url) => {
-        if (url.startsWith('//')) return `https:${url}`;
-        if (url.startsWith('/')) return `https://export.sakurasaketen.com${url}`;
-        return url;
-      })
-      .filter((url) => url.startsWith('http'))
-      .filter((url) => isLikelyProductImage(url))
-      .filter((url) => !url.includes('google') && !url.includes('gstatic'));
-
-    // Deduplicate while preserving order
-    const uniqueProductImages = productImages.filter(
-      (url, index, self) => index === self.findIndex((u) => u === url)
-    );
-
-    // Assign images strictly in order — never wrap around (round-robin caused wrong images).
-    // If there are fewer images than sakes, leave the remaining sakes without an imageUrl.
-    // The image cron job (process-images) will discover and validate images for those later.
-    sakes.forEach((sake, index) => {
-      if (index < uniqueProductImages.length) {
-        sake.imageUrl = uniqueProductImages[index];
-      }
-    });
-
-    // Deduplicate sakes by name
-    const uniqueSakes = sakes.filter((sake, index, self) =>
-      index === self.findIndex((s) => s.name === sake.name)
-    );
+    const { sakes } = await scrapeSakuraListing(firecrawlApiKey, { category, prefecture });
 
     const result: ScrapeResult = {
-      sakes: uniqueSakes,
-      totalFound: uniqueSakes.length,
+      sakes,
+      totalFound: sakes.length,
       page: page,
-      hasMore: false, // Single page for now
+      hasMore: false,
     };
 
     return res.status(200).json(result);
