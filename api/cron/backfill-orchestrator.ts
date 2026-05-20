@@ -12,6 +12,7 @@ import { runSakuraImportBatch } from './lib/importSakuraBatch.js';
 import { enrichSakeMetadataBatch } from './lib/sakeMetadataEnrich.js';
 import { runWineEngineSyncBatch } from './lib/wineEngineSyncBatch.js';
 import { getWineEngineConfig } from './lib/wineEngine.js';
+import processImagesHandler from './process-images.js';
 
 const RUN_BUDGET_MS = 54_000;
 const DISCOVER_HEALTH_KEY = 'discover_health';
@@ -25,35 +26,54 @@ type PhaseResult = {
   errors?: string[];
 };
 
-function cronBaseUrl(): string | null {
-  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
-  const backend = process.env.VITE_BACKEND_URL;
-  if (backend?.startsWith('http')) return backend.replace(/\/$/, '');
-  return null;
-}
-
+/** Run process-images in-process (avoids Vercel Deployment Protection on self-fetch). */
 async function invokeProcessImages(
   query: Record<string, string>
 ): Promise<{ ok: boolean; json?: Record<string, unknown>; error?: string }> {
-  const base = cronBaseUrl();
-  if (!base) {
-    return { ok: false, error: 'No VERCEL_URL or VITE_BACKEND_URL for internal cron invoke' };
-  }
+  let statusCode = 200;
+  let json: Record<string, unknown> = {};
+  let headersSent = false;
 
-  const params = new URLSearchParams({ chunk: '1', ...query });
-  const url = `${base}/api/cron/process-images?${params.toString()}`;
+  const chain = {
+    status(code: number) {
+      statusCode = code;
+      return chain;
+    },
+    json(data: unknown) {
+      json =
+        data && typeof data === 'object' && !Array.isArray(data)
+          ? (data as Record<string, unknown>)
+          : { data };
+      headersSent = true;
+      return chain;
+    },
+  };
+
+  const req = {
+    method: 'GET',
+    query: { chunk: '1', ...query },
+  } as VercelRequest;
+
+  const res = {
+    ...chain,
+    get headersSent() {
+      return headersSent;
+    },
+    set headersSent(value: boolean) {
+      headersSent = value;
+    },
+  } as VercelResponse;
 
   try {
-    const res = await fetch(url, { method: 'GET' });
-    const text = await res.text();
-    let json: Record<string, unknown> = {};
-    try {
-      json = JSON.parse(text) as Record<string, unknown>;
-    } catch {
-      return { ok: false, error: `Invalid JSON (${res.status}): ${text.slice(0, 200)}` };
-    }
-    if (!res.ok) {
-      return { ok: false, json, error: `HTTP ${res.status}` };
+    await processImagesHandler(req, res);
+    if (statusCode >= 400) {
+      const errMsg =
+        typeof json.error === 'string'
+          ? json.error
+          : typeof json.details === 'string'
+            ? json.details
+            : `HTTP ${statusCode}`;
+      return { ok: false, json, error: errMsg };
     }
     return { ok: true, json };
   } catch (e) {

@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { downloadAndStore } from './imageMirror.js';
+import { downloadAndStoreWithRetry } from './imageMirror.js';
 import {
   getBackfillState,
   setBackfillState,
@@ -120,7 +120,7 @@ export async function runSakuraImportBatch(
 
           if (!match.image_url && scraped.imageUrl) {
             try {
-              const stored = await downloadAndStore(
+              const stored = await downloadAndStoreWithRetry(
                 supabase,
                 scraped.imageUrl,
                 'sake-images',
@@ -168,7 +168,7 @@ export async function runSakuraImportBatch(
           let imageUrl: string | null = null;
           if (scraped.imageUrl) {
             try {
-              const stored = await downloadAndStore(
+              const stored = await downloadAndStoreWithRetry(
                 supabase,
                 scraped.imageUrl,
                 'sake-images',

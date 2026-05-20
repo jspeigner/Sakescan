@@ -112,3 +112,48 @@ export async function downloadAndStore(
   const { data } = supabase.storage.from('sake-images').getPublicUrl(filePath);
   return { url: data.publicUrl };
 }
+
+function isTransientDownloadError(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes('fetch failed') ||
+    normalized.includes('network') ||
+    normalized.includes('econnreset') ||
+    normalized.includes('etimedout') ||
+    normalized.includes('timeout') ||
+    normalized.includes('http 429') ||
+    normalized.includes('http 5')
+  );
+}
+
+export async function downloadAndStoreWithRetry(
+  supabase: ReturnType<typeof createClient>,
+  imageUrl: string,
+  folder: string,
+  name: string,
+  seenHashes: Set<string>,
+  knownPlaceholderHashes: Set<string>,
+  retryCount = 2
+): Promise<DownloadResult> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= retryCount; attempt++) {
+    try {
+      return await downloadAndStore(
+        supabase,
+        imageUrl,
+        folder,
+        name,
+        seenHashes,
+        knownPlaceholderHashes
+      );
+    } catch (err) {
+      lastErr = err;
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!isTransientDownloadError(msg) || attempt === retryCount) {
+        throw err;
+      }
+      await sleep(250 * (attempt + 1));
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+}
