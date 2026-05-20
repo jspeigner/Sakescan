@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { createClient } from '@supabase/supabase-js';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
 const NON_SAKE_URL_REGEXES = [
   /johnnie|walker|jwalker|jw\s*black|jw\s*red/i,
@@ -28,7 +28,7 @@ interface SakeToImport {
 }
 
 async function downloadAndStoreImage(
-  supabase: ReturnType<typeof createClient>,
+  supabase: SupabaseClient,
   imageUrl: string,
   sakeName: string
 ): Promise<string> {

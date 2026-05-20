@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { createClient } from '@supabase/supabase-js';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
 interface BreweryInput {
   name: string;
@@ -21,7 +21,7 @@ interface BreweryInput {
 }
 
 async function downloadAndStoreImage(
-  supabase: ReturnType<typeof createClient>,
+  supabase: SupabaseClient,
   imageUrl: string,
   breweryName: string
 ): Promise<string> {

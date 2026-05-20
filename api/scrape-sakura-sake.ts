@@ -186,7 +186,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         // Extract food pairing
         const foodMatches = block.match(/(Meaty Food|White Meats and Salty Food|Seafood|Spicy Food|Sweet Food)/gi);
         if (foodMatches) {
-          sake.foodPairing = [...new Set(foodMatches)];
+          sake.foodPairing = [...new Set(foodMatches.map((item) => String(item)))];
         }
         
         sakes.push(sake);
