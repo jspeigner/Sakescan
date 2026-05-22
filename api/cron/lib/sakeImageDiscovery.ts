@@ -70,11 +70,11 @@ function relevanceScore(url: string, title: string | undefined, tokens: string[]
 }
 
 function sourcePriority(source: string): number {
+  if (source === 'Sakura Sake Shop') return 52;
+  if (source === 'Umami Mart') return 50;
+  if (source === 'Sake Times') return 48;
   if (source === 'Google Images') return 48;
   if (source === 'Bing Images') return 46;
-  if (source === 'Sakura Sake Shop') return 28;
-  if (source === 'Umami Mart') return 28;
-  if (source === 'Sake Times') return 24;
   return 15;
 }
 
@@ -113,8 +113,8 @@ export function filterAndRankImages(
       img.source === 'Umami Mart' ||
       img.source === 'Sake Times'
     ) {
-      const urlRel = relevanceScore(img.url, undefined, tokens);
-      if (tokens.length > 0 && urlRel < 3) return false;
+      const urlRel = relevanceScore(img.url, img.title, tokens);
+      if (tokens.length > 0 && urlRel < 1) return false;
     }
 
     return true;

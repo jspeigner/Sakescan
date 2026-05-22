@@ -572,7 +572,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             diagnostics.discover.rowsWithNoCandidates++;
           }
 
-          for (const img of images.slice(0, discoverCandidatesMax)) {
+          for (const img of [
+            ...images.filter((candidate) => isTrustedRetailerSource(candidate.source)),
+            ...images.filter((candidate) => !isTrustedRetailerSource(candidate.source)),
+          ].slice(0, discoverCandidatesMax)) {
             if (shouldStopChunk()) {
               hitTimeBudget = true;
               timedOutDuringRow = true;
