@@ -400,6 +400,13 @@ async function scrapeBingImages(searchQuery: string): Promise<SearchImageRow[]> 
 
 export type SakeImageSearchMode = 'google-only' | 'google-only-fast' | 'full';
 
+const TRUSTED_RETAILER_SOURCES = new Set(['Sakura Sake Shop', 'Umami Mart', 'Sake Times']);
+
+/** Curated retailer sources — vision optional; download still validates the asset. */
+export function isTrustedRetailerSource(source: string): boolean {
+  return TRUSTED_RETAILER_SOURCES.has(source);
+}
+
 export async function searchSakeImageCandidates(
   firecrawlApiKey: string,
   params: { name: string; nameJapanese?: string | null; brewery?: string | null },

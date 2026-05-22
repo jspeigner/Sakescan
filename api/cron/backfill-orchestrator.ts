@@ -14,7 +14,7 @@ import { runWineEngineSyncBatch } from './lib/wineEngineSyncBatch.js';
 import { getWineEngineConfig } from './lib/wineEngine.js';
 import processImagesHandler from './process-images.js';
 
-const RUN_BUDGET_MS = 54_000;
+const RUN_BUDGET_MS = 120_000;
 const DISCOVER_HEALTH_KEY = 'discover_health';
 const LAST_RUN_KEY = 'orchestrator_last_run';
 
@@ -246,11 +246,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Phase 3: image discover (delegated)
   if (!shouldStop() && firecrawlKey && openaiKey) {
     const t0 = Date.now();
+    const lowYield = discoverHealth.lowYieldStreak >= 2;
     const discoverQuery: Record<string, string> = {
       mode: 'discover',
-      speed: adaptiveDiscover ? 'accelerated' : 'accelerated',
+      budgetMs: lowYield || adaptiveDiscover ? '45000' : '50000',
     };
-    if (adaptiveDiscover) discoverQuery.rowCap = '20';
+    if (lowYield || adaptiveDiscover) {
+      discoverQuery.search = 'full';
+      discoverQuery.speed = 'normal';
+      discoverQuery.rowCap = adaptiveDiscover ? '8' : '6';
+    } else {
+      discoverQuery.speed = 'accelerated';
+    }
 
     const inv = await invokeProcessImages(discoverQuery);
     const discoverJson = inv.json;

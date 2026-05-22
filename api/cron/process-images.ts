@@ -7,8 +7,10 @@ import {
   supabaseProjectHost,
 } from './lib/imageMirror.js';
 import {
+  isTrustedRetailerSource,
   prefilterDiscoverCandidates,
   searchSakeImageCandidates,
+  type SakeImageSearchMode,
   urlLooksLikeNonSakeProduct,
 } from './lib/sakeImageDiscovery.js';
 import { sakeVisionPasses, validateJapaneseSakeProductPhoto } from './lib/sakeImageVision.js';
@@ -237,15 +239,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       (Array.isArray(q.chunk) && (q.chunk[0] === '1' || q.chunk[0] === 'true'));
     const modeParam = Array.isArray(q.mode) ? q.mode[0] : q.mode;
     const speedParam = Array.isArray(q.speed) ? q.speed[0] : q.speed;
+    const searchParam = Array.isArray(q.search) ? q.search[0] : q.search;
     const discoverSpeed = (speedParam || 'normal').toLowerCase();
     const chunkMode = (modeParam || 'mirror').toLowerCase();
     const discoverChunkMode = chunked && chunkMode === 'discover';
     const acceleratedDiscover = discoverChunkMode && discoverSpeed === 'accelerated';
-    const chunkWallMs = discoverChunkMode
-      ? acceleratedDiscover
-        ? DISCOVER_CHUNK_WALL_MS_ACCELERATED
-        : DISCOVER_CHUNK_WALL_MS
-      : CHUNK_WALL_MS;
+    const discoverSearchMode: SakeImageSearchMode =
+      searchParam === 'full' ? 'full' : acceleratedDiscover ? 'google-only-fast' : 'google-only';
+    const budgetMsParam = parseInt(Array.isArray(q.budgetMs) ? q.budgetMs[0] : q.budgetMs || '', 10);
+    const chunkWallMsOverride =
+      Number.isFinite(budgetMsParam) && budgetMsParam > 0 ? budgetMsParam : null;
+    const chunkWallMs =
+      chunkWallMsOverride ??
+      (discoverChunkMode
+        ? acceleratedDiscover
+          ? DISCOVER_CHUNK_WALL_MS_ACCELERATED
+          : DISCOVER_CHUNK_WALL_MS
+        : CHUNK_WALL_MS);
     const chunkDeadlineMs = chunked ? Date.now() + chunkWallMs : Number.POSITIVE_INFINITY;
     const shouldStopChunk = (): boolean => Date.now() >= chunkDeadlineMs;
     let hitTimeBudget = false;
@@ -507,9 +517,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           const discoverCandidatesMax = acceleratedDiscover
             ? DISCOVER_CANDIDATES_MAX_ACCELERATED
             : DISCOVER_CANDIDATES_MAX;
-          const searchMode = acceleratedDiscover ? 'google-only-fast' : 'google-only';
+          const searchMode = discoverSearchMode;
 
-          const { images: rawImages, debug } = await searchSakeImageCandidates(
+          let { images: rawImages, debug } = await searchSakeImageCandidates(
             firecrawlKey,
             {
               name: row.name,
@@ -518,13 +528,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             },
             searchMode
           );
+          if (rawImages.length === 0 && searchMode !== 'full') {
+            const fallback = await searchSakeImageCandidates(
+              firecrawlKey,
+              {
+                name: row.name,
+                nameJapanese: row.name_japanese,
+                brewery: row.brewery,
+              },
+              'full'
+            );
+            rawImages = fallback.images;
+            debug = fallback.debug;
+          }
           const images = prefilterDiscoverCandidates(
             rawImages,
             row.name,
             row.name_japanese ?? undefined,
             row.brewery,
             {
-              minRelevance: acceleratedDiscover ? 3 : 2,
+              minRelevance: 2,
               maxCandidates: discoverCandidatesMax + 4,
             }
           );
@@ -582,17 +605,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             }
 
             try {
-              diagnostics.discover.visionChecks++;
-              const v = await validateJapaneseSakeProductPhoto(openaiKey, img.url, {
-                sakeName: row.name,
-                brewery: row.brewery,
-              });
-              await sleep(discoverDelayMs);
+              const trustedSource = isTrustedRetailerSource(img.source);
+              if (!trustedSource) {
+                diagnostics.discover.visionChecks++;
+                const v = await validateJapaneseSakeProductPhoto(openaiKey, img.url, {
+                  sakeName: row.name,
+                  brewery: row.brewery,
+                });
+                await sleep(discoverDelayMs);
 
-              if (!sakeVisionPasses(v, { allowMedium: acceleratedDiscover })) {
-                diagnostics.discover.visionRejected++;
-                failureReason = 'vision_rejected';
-                continue;
+                if (!sakeVisionPasses(v, { allowMedium: acceleratedDiscover || discoverSearchMode === 'full' })) {
+                  diagnostics.discover.visionRejected++;
+                  failureReason = 'vision_rejected';
+                  continue;
+                }
               }
 
               diagnostics.discover.downloadAttempts++;
