@@ -95,6 +95,13 @@ export function filterAndRankImages(
     if (JUNK_URL_REGEXES.some((re) => re.test(img.url))) return false;
     const nonHay = haystackForNonSakeCheck(img.url, img.title);
     if (NON_SAKE_PRODUCT_REGEXES.some((re) => re.test(nonHay))) return false;
+
+    if (isTrustedRetailerSource(img.source)) {
+      const u = img.url.toLowerCase();
+      if (u.includes('logo') && !u.includes('bottle') && !u.includes('product')) return false;
+      return true;
+    }
+
     const u = img.url.toLowerCase();
     if (u.includes('logo') && !u.includes('bottle') && !u.includes('product')) return false;
 
@@ -106,15 +113,6 @@ export function filterAndRankImages(
       if (tokens.length === 0) return rel >= 1;
       if (tokens.length === 1) return rel >= 1;
       return rel >= 2;
-    }
-
-    if (
-      img.source === 'Sakura Sake Shop' ||
-      img.source === 'Umami Mart' ||
-      img.source === 'Sake Times'
-    ) {
-      const urlRel = relevanceScore(img.url, img.title, tokens);
-      if (tokens.length > 0 && urlRel < 1) return false;
     }
 
     return true;
@@ -181,9 +179,16 @@ export function prefilterDiscoverCandidates(
     .map((img) => ({
       img,
       score: relevanceScore(img.url, img.title, tokens) + sourcePriority(img.source),
+      trusted: isTrustedRetailerSource(img.source),
     }))
-    .filter((x) => relevanceScore(x.img.url, x.img.title, tokens) >= minRel)
-    .sort((a, b) => b.score - a.score);
+    .filter(
+      (x) =>
+        x.trusted || relevanceScore(x.img.url, x.img.title, tokens) >= minRel
+    )
+    .sort((a, b) => {
+      if (a.trusted !== b.trusted) return a.trusted ? -1 : 1;
+      return b.score - a.score;
+    });
   return scored.slice(0, maxCandidates).map((x) => x.img);
 }
 
