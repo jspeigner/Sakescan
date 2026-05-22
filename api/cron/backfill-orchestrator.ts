@@ -249,15 +249,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const lowYield = discoverHealth.lowYieldStreak >= 2;
     const discoverQuery: Record<string, string> = {
       mode: 'discover',
-      budgetMs: lowYield || adaptiveDiscover ? '45000' : '50000',
+      search: 'full',
+      speed: lowYield || adaptiveDiscover ? 'normal' : 'accelerated',
+      budgetMs: '45000',
+      rowCap: adaptiveDiscover ? '8' : lowYield ? '6' : '10',
     };
-    if (lowYield || adaptiveDiscover) {
-      discoverQuery.search = 'full';
-      discoverQuery.speed = 'normal';
-      discoverQuery.rowCap = adaptiveDiscover ? '8' : '6';
-    } else {
-      discoverQuery.speed = 'accelerated';
-    }
 
     const inv = await invokeProcessImages(discoverQuery);
     const discoverJson = inv.json;
