@@ -2,6 +2,9 @@
  * TinEye WineEngine client for SakeScan collection search / sync.
  * Credentials: WINEENGINE_USERNAME, WINEENGINE_PASSWORD (never commit).
  * Optional: WINEENGINE_BASE_URL (default https://wineengine.tineye.com/sakescan)
+ *
+ * Disabled by default (API quota). Set WINEENGINE_ENABLED=true on Vercel to re-enable
+ * once TinEye quota is restored.
  */
 
 export type WineEngineMatch = {
@@ -32,7 +35,13 @@ export type WineEngineConfig = {
   password: string;
 };
 
+export function isWineEngineEnabled(): boolean {
+  return process.env.WINEENGINE_ENABLED === 'true';
+}
+
 export function getWineEngineConfig(): WineEngineConfig | null {
+  if (!isWineEngineEnabled()) return null;
+
   const username = process.env.WINEENGINE_USERNAME;
   const password = process.env.WINEENGINE_PASSWORD;
   if (!username || !password) return null;

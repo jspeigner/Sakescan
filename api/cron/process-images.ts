@@ -447,6 +447,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     // --- DISCOVER: null / empty image_url ---
+    // WineEngine skipped unless WINEENGINE_ENABLED=true (see getWineEngineConfig).
     const wineEngineCfg = getWineEngineConfig();
     let wineEngineCollectionCount = 0;
     if (wineEngineCfg) {

@@ -313,8 +313,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (inv.error) runErrors.push(`mirror: ${inv.error}`);
   }
 
-  // Phase 5: WineEngine sync
-  if (!shouldStop()) {
+  // Phase 5: WineEngine sync (skipped unless WINEENGINE_ENABLED=true)
+  if (!shouldStop() && getWineEngineConfig()) {
     const t0 = Date.now();
     try {
       const we = await runWineEngineSyncBatch(supabase, supabaseUrl, {
@@ -383,7 +383,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       missingImage: gaps.missingImage > 0 ? 'continue discover cron' : 'images caught up',
       missingDescription: gaps.missingDescription > 0 ? 'metadata enrich continues' : 'descriptions caught up',
       externalImages: gaps.externalImages > 0 ? 'mirror continues' : 'mirror caught up',
-      wineEngine: getWineEngineConfig() ? 'offset cursor in backfill_state' : 'set WINEENGINE credentials',
+      wineEngine: getWineEngineConfig()
+        ? 'offset cursor in backfill_state'
+        : 'disabled — set WINEENGINE_ENABLED=true when quota restored',
     },
     errors: runErrors.length ? runErrors.slice(0, 15) : undefined,
     timestamp: new Date().toISOString(),

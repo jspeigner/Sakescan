@@ -19,7 +19,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (!cfg) {
     return res.status(500).json({
       error: 'WineEngine not configured',
-      hint: 'Set WINEENGINE_USERNAME and WINEENGINE_PASSWORD on Vercel.',
+      hint: 'Set WINEENGINE_ENABLED=true plus WINEENGINE_USERNAME and WINEENGINE_PASSWORD on Vercel.',
     });
   }
 
