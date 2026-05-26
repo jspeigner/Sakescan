@@ -97,12 +97,30 @@ export async function runSakuraImportBatch(
   const seenHashes = new Set<string>();
   const knownPlaceholderHashes = new Set<string>();
 
-  const { data: existingSakes, error: fetchError } = await supabase
-    .from('sake')
-    .select('id, name, name_japanese, brewery, image_url, description, type, prefecture')
-    .limit(5000);
+  type ExistingSakeRow = {
+    id: string;
+    name: string;
+    name_japanese: string | null;
+    brewery: string;
+    image_url: string | null;
+    description: string | null;
+    type: string | null;
+    prefecture: string | null;
+  };
 
-  if (fetchError) throw new Error(fetchError.message);
+  const existingSakes: ExistingSakeRow[] = [];
+  const existingPageSize = 5000;
+  for (let offset = 0; ; offset += existingPageSize) {
+    const { data, error: fetchError } = await supabase
+      .from('sake')
+      .select('id, name, name_japanese, brewery, image_url, description, type, prefecture')
+      .range(offset, offset + existingPageSize - 1);
+
+    if (fetchError) throw new Error(fetchError.message);
+    if (!data?.length) break;
+    existingSakes.push(...(data as ExistingSakeRow[]));
+    if (data.length < existingPageSize) break;
+  }
 
   let filterIndex = state.filterIndex % SAKURA_FILTER_ROTATION.length;
 
