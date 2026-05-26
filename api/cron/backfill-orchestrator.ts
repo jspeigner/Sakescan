@@ -14,7 +14,8 @@ import { runWineEngineSyncBatch } from './lib/wineEngineSyncBatch.js';
 import { getWineEngineConfig } from './lib/wineEngine.js';
 import processImagesHandler from './process-images.js';
 
-const RUN_BUDGET_MS = 120_000;
+const RUN_BUDGET_MS = 180_000;
+const DISCOVER_BUDGET_RESERVE_MS = 18_000;
 const DISCOVER_HEALTH_KEY = 'discover_health';
 const LAST_RUN_KEY = 'orchestrator_last_run';
 
@@ -247,12 +248,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (!shouldStop() && firecrawlKey && openaiKey) {
     const t0 = Date.now();
     const lowYield = discoverHealth.lowYieldStreak >= 2;
+    const remainingForDiscover = Math.max(0, deadline - Date.now() - DISCOVER_BUDGET_RESERVE_MS);
+    const discoverBudgetMs = Math.min(95_000, Math.max(40_000, remainingForDiscover));
     const discoverQuery: Record<string, string> = {
       mode: 'discover',
       search: 'full',
       speed: lowYield || adaptiveDiscover ? 'normal' : 'accelerated',
-      budgetMs: '45000',
-      rowCap: adaptiveDiscover ? '8' : lowYield ? '6' : '10',
+      budgetMs: String(discoverBudgetMs),
+      rowCap: adaptiveDiscover ? '10' : lowYield ? '8' : '14',
     };
 
     const inv = await invokeProcessImages(discoverQuery);
@@ -269,9 +272,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     if (typeof attempts === 'number' && attempts > 0) {
       discoverHealth = recordDiscoverYield(discoverHealth, attempts, placed as number);
-      await setBackfillState(supabase, DISCOVER_HEALTH_KEY, discoverHealth);
+      try {
+        await setBackfillState(supabase, DISCOVER_HEALTH_KEY, discoverHealth);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        runErrors.push(`discover health: ${msg.slice(0, 120)}`);
+      }
     }
 
+    const discoverErrors = [
+      ...(inv.error ? [inv.error] : []),
+      ...(((discoverJson?.errors as string[] | undefined) ?? []).slice(0, 4)),
+    ];
     phases.push({
       phase: 'images-discover',
       status: inv.ok ? 'ok' : 'failed',
@@ -282,8 +294,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         sakeDiscovered: discoverJson?.sakeDiscovered,
         discoverHealth: health,
         stopReason: discoverJson?.stopReason,
+        discoverBudgetMs,
+        chunkBudgetMs: discoverJson?.chunkBudgetMs,
+        attemptHistoryReadErrors: (
+          discoverJson?.diagnostics as { discover?: { attemptHistoryReadErrors?: number } } | undefined
+        )?.discover?.attemptHistoryReadErrors,
       },
-      errors: inv.error ? [inv.error] : undefined,
+      errors: discoverErrors.length ? discoverErrors : undefined,
     });
     if (inv.error) runErrors.push(`discover: ${inv.error}`);
   } else if (!firecrawlKey || !openaiKey) {
@@ -355,11 +372,29 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     adaptiveDiscover,
     discoverHealth,
     gaps,
-    phases: phases.map((p) => ({ phase: p.phase, status: p.status, durationMs: p.durationMs })),
+    phases: phases.map((p) => ({
+      phase: p.phase,
+      status: p.status,
+      durationMs: p.durationMs,
+      errors: p.errors?.slice(0, 3),
+    })),
+    errors: runErrors.slice(0, 8),
     timestamp: new Date().toISOString(),
   };
 
-  await setBackfillState(supabase, LAST_RUN_KEY, heartbeat);
+  try {
+    await setBackfillState(supabase, LAST_RUN_KEY, heartbeat);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    runErrors.push(`heartbeat state: ${msg.slice(0, 120)}`);
+    console.warn(`[backfill-orchestrator] heartbeat state write failed: ${msg}`);
+  }
+  try {
+    await setBackfillState(supabase, DISCOVER_HEALTH_KEY, discoverHealth);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.warn(`[backfill-orchestrator] discover health state write failed: ${msg}`);
+  }
   await logBackfillRun(supabase, {
     job: 'backfill-orchestrator',
     status: runStatus,

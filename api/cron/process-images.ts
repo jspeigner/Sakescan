@@ -988,6 +988,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               yield: discoverYield,
               candidateUrlsSeen: diagnostics.discover.candidateUrlsSeen,
               visionChecks: diagnostics.discover.visionChecks,
+              attemptHistoryReadErrors: diagnostics.discover.attemptHistoryReadErrors,
+              firecrawlErrors: diagnostics.discover.firecrawlErrors,
               lowYieldAlert: discoverLowYieldAlert,
               noCandidatesAlert: discoverNoCandidatesAlert,
             }

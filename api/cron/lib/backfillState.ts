@@ -75,11 +75,12 @@ export function recordDiscoverYield(
 ): DiscoverHealthState {
   const yieldRatio = attempts > 0 ? placed / attempts : 0;
   const yields = [...prior.yields, yieldRatio].slice(-5);
-  const lowYield = attempts >= 4 && yieldRatio < 0.1;
+  // Orchestrator discover batches are small (often 1–3 rows); don't require 4+ attempts per run.
+  const lowYield = attempts >= 2 && yieldRatio < 0.2;
   const lowYieldStreak = lowYield ? prior.lowYieldStreak + 1 : 0;
   return { yields, lowYieldStreak };
 }
 
 export function shouldUseAdaptiveDiscover(health: DiscoverHealthState): boolean {
-  return health.lowYieldStreak >= 5;
+  return health.lowYieldStreak >= 3;
 }
