@@ -27,6 +27,34 @@ export type SakeSearchDebug = {
   firecrawlErrors: string[];
 };
 
+/** Per-invocation bypass after Firecrawl quota/rate-limit (429) — use direct Google scrape only. */
+let firecrawlBypassActive = false;
+
+export function resetFirecrawlBypassForInvocation(): void {
+  firecrawlBypassActive = false;
+}
+
+export function isFirecrawlBypassActive(): boolean {
+  return firecrawlBypassActive;
+}
+
+function isFirecrawlQuotaError(status: number, message: string): boolean {
+  if (status === 429) return true;
+  const lower = message.toLowerCase();
+  return (
+    lower.includes('quota') ||
+    lower.includes('rate limit') ||
+    lower.includes('rate-limit') ||
+    lower.includes('limit exceeded')
+  );
+}
+
+function noteFirecrawlQuotaError(status: number, message: string): void {
+  if (isFirecrawlQuotaError(status, message)) {
+    firecrawlBypassActive = true;
+  }
+}
+
 const JUNK_URL_REGEXES = [
   /shutterstock|gettyimages|istockphoto|dreamstime|alamy|123rf|depositphotos/i,
   /avatar|gravatar|favicon|emoji|sprite|profile[_-]?pic/i,
@@ -213,6 +241,7 @@ async function firecrawlScrapeV1(
     });
     if (!res.ok) {
       const errText = await res.text();
+      noteFirecrawlQuotaError(res.status, errText);
       return { _error: `v1 HTTP ${res.status}: ${errText.slice(0, 180)}` };
     }
     const json = (await res.json()) as { data?: { html?: string; markdown?: string } };
@@ -243,6 +272,7 @@ async function firecrawlScrapeV2(
     });
     if (!res.ok) {
       const errText = await res.text();
+      noteFirecrawlQuotaError(res.status, errText);
       return { _error: `v2 HTTP ${res.status}: ${errText.slice(0, 180)}` };
     }
     const json = (await res.json()) as {
@@ -261,8 +291,16 @@ async function firecrawlScrape(
   apiKey: string,
   body: Record<string, unknown>
 ): Promise<{ html?: string; markdown?: string; _error?: string } | null> {
+  if (firecrawlBypassActive) {
+    return { _error: 'Firecrawl bypass active (quota/rate limit)' };
+  }
+
   const v1 = await firecrawlScrapeV1(apiKey, body);
   if (v1?.html) return v1;
+
+  if (firecrawlBypassActive) {
+    return { _error: v1?._error || 'Firecrawl bypass active (quota/rate limit)' };
+  }
 
   const targetUrl = typeof body.url === 'string' ? body.url : '';
   if (targetUrl) {
@@ -329,6 +367,14 @@ async function scrapeGoogleImages(
   firecrawlApiKey: string,
   searchQuery: string
 ): Promise<{ rows: SearchImageRow[]; error?: string }> {
+  if (firecrawlBypassActive) {
+    const directRows = await scrapeGoogleImagesDirect(searchQuery);
+    if (directRows.length > 0) {
+      return { rows: directRows };
+    }
+    return { rows: [], error: 'Firecrawl bypass active; direct Google returned no URLs' };
+  }
+
   const googleImagesUrl = `https://www.google.com/search?q=${encodeURIComponent(searchQuery)}&tbm=isch`;
   const data = await firecrawlScrape(firecrawlApiKey, {
     url: googleImagesUrl,
@@ -433,7 +479,7 @@ export async function searchSakeImageCandidates(
     firecrawlErrors: [],
   };
 
-  if (mode === 'full') {
+  if (mode === 'full' && !firecrawlBypassActive) {
     const sakuraSakeUrl = `https://export.sakurasaketen.com/sake?Keyword=${encodeURIComponent(name)}`;
     try {
       const sakuraData = await firecrawlScrape(firecrawlApiKey, {

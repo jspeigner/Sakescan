@@ -12,12 +12,51 @@ import { runSakuraImportBatch } from './lib/importSakuraBatch.js';
 import { enrichSakeMetadataBatch } from './lib/sakeMetadataEnrich.js';
 import { runWineEngineSyncBatch } from './lib/wineEngineSyncBatch.js';
 import { getWineEngineConfig } from './lib/wineEngine.js';
+import { isFirecrawlBypassActive } from './lib/sakeImageDiscovery.js';
 import processImagesHandler from './process-images.js';
 
 const RUN_BUDGET_MS = 180_000;
 const DISCOVER_BUDGET_RESERVE_MS = 18_000;
 const DISCOVER_HEALTH_KEY = 'discover_health';
 const LAST_RUN_KEY = 'orchestrator_last_run';
+const FIRECRAWL_ERROR_RECOMMEND_THRESHOLD = 5;
+
+function envFlag(name: string): boolean {
+  const v = process.env[name]?.trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes';
+}
+
+function readSkipFlags() {
+  const firecrawlQuotaExceeded = envFlag('FIRECRAWL_QUOTA_EXCEEDED');
+  return {
+    sakura: envFlag('BACKFILL_SKIP_SAKURA'),
+    discover: envFlag('BACKFILL_SKIP_DISCOVER') || firecrawlQuotaExceeded,
+    metadataSakura: envFlag('BACKFILL_SKIP_METADATA_SAKURA'),
+    firecrawlQuotaExceeded,
+  };
+}
+
+function firecrawlErrorsFromPhaseStats(stats: Record<string, unknown> | undefined): number {
+  if (!stats) return 0;
+  const health = stats.discoverHealth as { firecrawlErrors?: number } | undefined;
+  if (typeof health?.firecrawlErrors === 'number') return health.firecrawlErrors;
+  const diagnostics = stats.diagnostics as { discover?: { firecrawlErrors?: number } } | undefined;
+  return diagnostics?.discover?.firecrawlErrors ?? 0;
+}
+
+function firecrawlErrorsFromLastRun(lastRun: Record<string, unknown>): number {
+  const phases = lastRun.phases as Array<{ phase?: string; stats?: Record<string, unknown> }> | undefined;
+  const discover = phases?.find((p) => p.phase === 'images-discover');
+  return firecrawlErrorsFromPhaseStats(discover?.stats);
+}
+
+function firecrawlErrorsFromOrchestratorLog(
+  log: { stats?: Record<string, unknown> } | null | undefined
+): number {
+  const phases = log?.stats?.phases as Array<{ phase?: string; stats?: Record<string, unknown> }> | undefined;
+  const discover = phases?.find((p) => p.phase === 'images-discover');
+  return firecrawlErrorsFromPhaseStats(discover?.stats);
+}
 
 type PhaseResult = {
   phase: string;
@@ -140,6 +179,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const supabase = createClient(supabaseUrl, supabaseServiceKey);
   const firecrawlKey = process.env.FIRECRAWL_API_KEY;
   const openaiKey = process.env.OPENAI_API_KEY;
+  const skipFlags = readSkipFlags();
 
   if (statsOnly) {
     const gaps = await countBackfillGaps(supabase);
@@ -155,6 +195,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .order('created_at', { ascending: false })
       .limit(8);
 
+    const lastOrchestratorLog = (recentLogs ?? []).find((l) => l.job === 'backfill-orchestrator');
+    const lastDiscoverFirecrawlErrors =
+      firecrawlErrorsFromOrchestratorLog(lastOrchestratorLog) || firecrawlErrorsFromLastRun(lastRun);
+    const discoverQuotaRecommendation =
+      !skipFlags.discover && lastDiscoverFirecrawlErrors >= FIRECRAWL_ERROR_RECOMMEND_THRESHOLD
+        ? `Last discover run logged ${lastDiscoverFirecrawlErrors} Firecrawl errors. Set BACKFILL_SKIP_DISCOVER=1 or FIRECRAWL_QUOTA_EXCEEDED=1 on Vercel until quota is restored.`
+        : undefined;
+
     return res.status(200).json({
       success: true,
       statsOnly: true,
@@ -166,6 +214,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         firecrawl: Boolean(firecrawlKey),
         openai: Boolean(openaiKey),
         wineEngine: Boolean(getWineEngineConfig()),
+        skipFlags,
+        firecrawlBypassActive: isFirecrawlBypassActive(),
+        lastDiscoverFirecrawlErrors,
+        discoverQuotaRecommendation,
       },
       timestamp: new Date().toISOString(),
     });
@@ -182,9 +234,29 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     lowYieldStreak: 0,
   });
   const adaptiveDiscover = shouldUseAdaptiveDiscover(discoverHealth);
+  let discoverQuotaRecommendation: string | undefined;
+
+  const { data: priorOrchestratorLogs } = await supabase
+    .from('backfill_run_log')
+    .select('job, stats')
+    .eq('job', 'backfill-orchestrator')
+    .order('created_at', { ascending: false })
+    .limit(1);
+  const prevDiscoverFirecrawlErrors = firecrawlErrorsFromOrchestratorLog(priorOrchestratorLogs?.[0]);
+  if (!skipFlags.discover && prevDiscoverFirecrawlErrors >= FIRECRAWL_ERROR_RECOMMEND_THRESHOLD) {
+    discoverQuotaRecommendation = `Previous discover run logged ${prevDiscoverFirecrawlErrors} Firecrawl errors. Set BACKFILL_SKIP_DISCOVER=1 or FIRECRAWL_QUOTA_EXCEEDED=1 on Vercel until quota is restored.`;
+    console.warn(`[backfill-orchestrator] ${discoverQuotaRecommendation}`);
+  }
 
   // Phase 1: Sakura batch import (optional, 1 page per tick)
-  if (firecrawlKey && !shouldStop()) {
+  if (skipFlags.sakura) {
+    phases.push({
+      phase: 'sakura-import',
+      status: 'skipped',
+      durationMs: 0,
+      errors: ['BACKFILL_SKIP_SAKURA=1'],
+    });
+  } else if (firecrawlKey && !shouldStop()) {
     const t0 = Date.now();
     try {
       const sakura = await runSakuraImportBatch(supabase, supabaseUrl, firecrawlKey, {
@@ -220,7 +292,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     try {
       const meta = await enrichSakeMetadataBatch(supabase, {
         batchSize: adaptiveDiscover ? 35 : 28,
-        firecrawlKey: firecrawlKey || undefined,
+        firecrawlKey: skipFlags.metadataSakura ? undefined : firecrawlKey || undefined,
         openaiKey: openaiKey || undefined,
       });
       phases.push({
@@ -245,7 +317,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   // Phase 3: image discover (delegated)
-  if (!shouldStop() && firecrawlKey && openaiKey) {
+  if (skipFlags.discover) {
+    const skipReason = skipFlags.firecrawlQuotaExceeded
+      ? 'FIRECRAWL_QUOTA_EXCEEDED=1'
+      : 'BACKFILL_SKIP_DISCOVER=1';
+    phases.push({
+      phase: 'images-discover',
+      status: 'skipped',
+      durationMs: 0,
+      errors: [skipReason],
+    });
+  } else if (!shouldStop() && firecrawlKey && openaiKey) {
     const t0 = Date.now();
     const lowYield = discoverHealth.lowYieldStreak >= 2;
     const remainingForDiscover = Math.max(0, deadline - Date.now() - DISCOVER_BUDGET_RESERVE_MS);
@@ -261,7 +343,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const inv = await invokeProcessImages(discoverQuery);
     const discoverJson = inv.json;
     const health = discoverJson?.discoverHealth as
-      | { attempts?: number; placed?: number; yield?: number }
+      | { attempts?: number; placed?: number; yield?: number; firecrawlErrors?: number }
       | undefined;
     const attempts = health?.attempts ?? (discoverJson?.diagnostics as { discover?: { attemptedRows?: number } })?.discover?.attemptedRows ?? 0;
     const placed =
@@ -293,6 +375,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         lowYieldStreak: discoverHealth.lowYieldStreak,
         sakeDiscovered: discoverJson?.sakeDiscovered,
         discoverHealth: health,
+        firecrawlBypassActive: discoverJson?.firecrawlBypassActive,
         stopReason: discoverJson?.stopReason,
         discoverBudgetMs,
         chunkBudgetMs: discoverJson?.chunkBudgetMs,
@@ -371,6 +454,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     durationMs,
     adaptiveDiscover,
     discoverHealth,
+    skipFlags,
+    firecrawlBypassActive: isFirecrawlBypassActive(),
+    discoverQuotaRecommendation,
     gaps,
     phases: phases.map((p) => ({
       phase: p.phase,
@@ -412,6 +498,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     budgetMs: RUN_BUDGET_MS,
     adaptiveDiscover,
     discoverHealth,
+    skipFlags,
+    firecrawlBypassActive: isFirecrawlBypassActive(),
+    discoverQuotaRecommendation,
     gaps,
     phases,
     nextActions: {

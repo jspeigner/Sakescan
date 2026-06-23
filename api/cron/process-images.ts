@@ -7,8 +7,10 @@ import {
   supabaseProjectHost,
 } from './lib/imageMirror.js';
 import {
+  isFirecrawlBypassActive,
   isTrustedRetailerSource,
   prefilterDiscoverCandidates,
+  resetFirecrawlBypassForInvocation,
   searchSakeImageCandidates,
   type SakeImageSearchMode,
   urlLooksLikeNonSakeProduct,
@@ -460,6 +462,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const wineEngineActive = Boolean(wineEngineCfg && wineEngineCollectionCount > 0);
 
     if (firecrawlKey && openaiKey && !rateLimited && !hitTimeBudget) {
+      resetFirecrawlBypassForInvocation();
       const { data: missingPool } = await supabase
         .from('sake')
         .select('id, name, name_japanese, brewery, image_url')
@@ -994,6 +997,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               noCandidatesAlert: discoverNoCandidatesAlert,
             }
           : undefined,
+      firecrawlBypassActive: discoverAttempts > 0 ? isFirecrawlBypassActive() : undefined,
       diagnostics,
       errors: errors.length > 0 ? errors.slice(0, 15) : undefined,
       timestamp: new Date().toISOString(),
