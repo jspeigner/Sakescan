@@ -49,11 +49,6 @@ export function SEO({
     name: "SakeScan",
     operatingSystem: "iOS",
     applicationCategory: "LifestyleApplication",
-    aggregateRating: {
-      "@type": "AggregateRating",
-      ratingValue: "4.9",
-      ratingCount: "25000",
-    },
     offers: {
       "@type": "Offer",
       price: "0",

@@ -1,0 +1,73 @@
+# SakeScan
+
+> SakeScan is an AI-powered sake identification and discovery app. Scan any sake label to instantly identify the bottle, read tasting notes, find food pairings, and explore a database of 50,000+ sakes from breweries across Japan and worldwide.
+
+## About
+
+SakeScan helps sake enthusiasts and beginners alike navigate the world of Japanese sake. The iOS app uses image recognition to read sake labels (including Japanese text), match them to a comprehensive database, and deliver personalized recommendations based on your taste preferences.
+
+Website: https://www.sakescan.com
+Contact: https://www.sakescan.com/contact
+
+## Core Pages
+
+- Home: https://www.sakescan.com/
+- Explore Sake Database: https://www.sakescan.com/explore
+- Blog: https://www.sakescan.com/blog
+- City Sake Guides: https://www.sakescan.com/guides
+- About: https://www.sakescan.com/about
+- Contact: https://www.sakescan.com/contact
+- Careers: https://www.sakescan.com/careers
+- Privacy Policy: https://www.sakescan.com/privacy
+- Terms of Service: https://www.sakescan.com/terms
+
+## Product
+
+- Name: SakeScan
+- Platform: iOS
+- Category: Sake identification, ratings, and discovery
+- Key features:
+  - AI label scanning — photograph any sake bottle to identify it instantly
+  - 50,000+ sake database with brewery info, rice polishing ratios, and classifications
+  - Tasting notes, food pairings, and serving temperature recommendations
+  - Personal ratings and tasting journal
+  - Explore and search by type (Junmai, Ginjo, Daiginjo, etc.), region, and brewery
+- Individual sake pages: https://www.sakescan.com/sake/{slug}
+- Brewery pages: https://www.sakescan.com/brewery/{slug}
+
+## Blog Highlights
+
+### Beginners
+- The Ultimate Guide to Sake for Beginners: https://www.sakescan.com/blog/sake-for-beginners
+- How Is Sake Made?: https://www.sakescan.com/blog/how-is-sake-made
+- The History of Sake: https://www.sakescan.com/blog/history-of-sake
+- Sake Etiquette: https://www.sakescan.com/blog/sake-etiquette
+
+### Sake Types
+- Sake Types Explained: https://www.sakescan.com/blog/types-of-sake
+- What Is Junmai Sake?: https://www.sakescan.com/blog/what-is-junmai-sake
+- What Is Daiginjo Sake?: https://www.sakescan.com/blog/what-is-daiginjo-sake
+- Honjozo vs Junmai: https://www.sakescan.com/blog/honjozo-vs-junmai
+
+### Apps & Technology
+- Best Sake Apps for 2026: https://www.sakescan.com/blog/best-sake-apps-2026
+- SakeScan vs Vivino: https://www.sakescan.com/blog/sakescan-vs-vivino
+- Sake Scanner App Guide: https://www.sakescan.com/blog/sake-scanner-app-guide
+- SakeScan App Review: https://www.sakescan.com/blog/sakescan-review
+
+## City Guides
+
+- New York City: https://www.sakescan.com/guides/new-york-city
+- Los Angeles: https://www.sakescan.com/guides/los-angeles
+- San Francisco: https://www.sakescan.com/guides/san-francisco
+- Chicago: https://www.sakescan.com/guides/chicago
+- Seattle: https://www.sakescan.com/guides/seattle
+- Houston: https://www.sakescan.com/guides/houston
+- Miami: https://www.sakescan.com/guides/miami
+- Portland: https://www.sakescan.com/guides/portland
+- Boston: https://www.sakescan.com/guides/boston
+- Washington DC: https://www.sakescan.com/guides/washington-dc
+
+## Sitemap
+
+https://www.sakescan.com/sitemap.xml

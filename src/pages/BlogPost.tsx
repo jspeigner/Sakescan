@@ -20,7 +20,7 @@ export default function BlogPost() {
   const related = post ? getRelatedPosts(post) : [];
 
   const tocItems = useMemo<TocItem[]>(() => {
-    if (!slug) return [];
+    if (!slug || typeof document === "undefined") return [];
     const el = document.getElementById("blog-content");
     if (!el) return [];
     const headings = el.querySelectorAll("h2, h3");

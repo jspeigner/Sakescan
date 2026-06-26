@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Star, Droplets, Thermometer, Wine, Wheat, MapPin, Loader2 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import type { Sake } from "@/lib/supabase-types";
+import { fetchSakeBySlug } from "@/lib/sake-slug";
 import NotFound from "./NotFound";
 import { withImageCacheBust } from "@/lib/image-url";
 
@@ -20,16 +21,10 @@ export default function SakeDetail() {
   const { data: sake, isLoading } = useQuery({
     queryKey: ["sake-detail", idFragment],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from("sake")
-        .select("*")
-        .like("id", `${idFragment}%`)
-        .limit(1)
-        .single();
-      if (error) throw error;
-      return data as Sake;
+      if (!slug) throw new Error("Missing slug");
+      return fetchSakeBySlug(slug);
     },
-    enabled: !!idFragment,
+    enabled: !!idFragment && !!slug,
   });
 
   const { data: relatedSakes } = useQuery({
