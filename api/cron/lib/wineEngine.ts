@@ -3,8 +3,8 @@
  * Credentials: WINEENGINE_USERNAME, WINEENGINE_PASSWORD (never commit).
  * Optional: WINEENGINE_BASE_URL (default https://wineengine.tineye.com/sakescan)
  *
- * Disabled by default (API quota). Set WINEENGINE_ENABLED=true on Vercel to re-enable
- * once TinEye quota is restored.
+ * Enabled when credentials are present unless WINEENGINE_ENABLED=false.
+ * Set WINEENGINE_ENABLED=false to pause sync/identify without removing secrets.
  */
 
 export type WineEngineMatch = {
@@ -36,7 +36,11 @@ export type WineEngineConfig = {
 };
 
 export function isWineEngineEnabled(): boolean {
-  return process.env.WINEENGINE_ENABLED === 'true';
+  const v = process.env.WINEENGINE_ENABLED?.trim().toLowerCase();
+  if (v === 'false' || v === '0' || v === 'no') return false;
+  if (v === 'true' || v === '1' || v === 'yes') return true;
+  // Default on when credentials exist (re-enabled for scan confirm / sync).
+  return Boolean(process.env.WINEENGINE_USERNAME && process.env.WINEENGINE_PASSWORD);
 }
 
 export function getWineEngineConfig(): WineEngineConfig | null {

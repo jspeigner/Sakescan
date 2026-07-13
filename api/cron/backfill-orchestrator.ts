@@ -10,6 +10,9 @@ import {
 } from './lib/backfillState.js';
 import { runSakuraImportBatch } from './lib/importSakuraBatch.js';
 import { enrichSakeMetadataBatch } from './lib/sakeMetadataEnrich.js';
+import { enrichSakeSpecsBatch } from './lib/sakeSpecEnrich.js';
+import { promoteScanImagesBatch } from './lib/promoteScanImages.js';
+import { discoverBreweryImagesBatch } from './lib/discoverBreweryImages.js';
 import { runWineEngineSyncBatch } from './lib/wineEngineSyncBatch.js';
 import { getWineEngineConfig } from './lib/wineEngine.js';
 import { isFirecrawlBypassActive } from './lib/sakeImageDiscovery.js';
@@ -167,6 +170,8 @@ async function countBackfillGaps(supabase: ReturnType<typeof createClient>): Pro
   missingImage: number;
   missingDescription: number;
   externalImages: number;
+  imageSourceMix: { retailer: number; user_scan: number; web_discover: number; admin: number; unset: number };
+  imageQualityMix: { t1: number; t2: number; t3: number };
 }> {
   const { count: nullImg } = await supabase
     .from('sake')
@@ -192,10 +197,30 @@ async function countBackfillGaps(supabase: ReturnType<typeof createClient>): Pro
   externalQ = externalQ.not('image_url', 'ilike', '%supabase.co%');
   const { count: externalImages } = await externalQ;
 
+  const countWhere = async (column: string, value: string | null) => {
+    let q = supabase.from('sake').select('id', { count: 'exact', head: true });
+    q = value === null ? q.is(column, null) : q.eq(column, value);
+    const { count } = await q;
+    return count ?? 0;
+  };
+
+  const [retailer, user_scan, web_discover, admin, unset, t1, t2, t3] = await Promise.all([
+    countWhere('image_source', 'retailer'),
+    countWhere('image_source', 'user_scan'),
+    countWhere('image_source', 'web_discover'),
+    countWhere('image_source', 'admin'),
+    countWhere('image_source', null),
+    countWhere('image_quality', 't1'),
+    countWhere('image_quality', 't2'),
+    countWhere('image_quality', 't3'),
+  ]);
+
   return {
     missingImage: (nullImg ?? 0) + (emptyImg ?? 0),
     missingDescription: missingDesc ?? 0,
     externalImages: externalImages ?? 0,
+    imageSourceMix: { retailer, user_scan, web_discover, admin, unset },
+    imageQualityMix: { t1, t2, t3 },
   };
 }
 
@@ -319,23 +344,62 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     console.warn(`[backfill-orchestrator] ${openaiQuotaRecommendation}`);
   }
 
-  // Phase 1: Sakura batch import (optional, 1 page per tick)
-  if (skipFlags.sakura || (prioritizeDiscover && initialGaps.missingImage > 12_000)) {
+  // Phase 0: promote matched user scans → catalog (T2) — highest leverage gap fill
+  if (envFlag('BACKFILL_SKIP_PROMOTE_SCANS')) {
+    phases.push({
+      phase: 'promote-scan-images',
+      status: 'skipped',
+      durationMs: 0,
+      errors: ['BACKFILL_SKIP_PROMOTE_SCANS=1'],
+    });
+  } else if (!shouldStop()) {
+    const t0 = Date.now();
+    try {
+      const promote = await promoteScanImagesBatch(supabase, {
+        batchSize: prioritizeDiscover ? 30 : 22,
+        openaiKey: openaiKey || undefined,
+        requireOptIn: false,
+      });
+      phases.push({
+        phase: 'promote-scan-images',
+        status: promote.errors.length > 0 && promote.promoted === 0 ? 'failed' : promote.errors.length ? 'partial' : 'ok',
+        durationMs: Date.now() - t0,
+        stats: {
+          candidates: promote.candidates,
+          attempted: promote.attempted,
+          promoted: promote.promoted,
+          skippedVision: promote.skippedVision,
+          skippedWineEngine: promote.skippedWineEngine,
+          skippedExisting: promote.skippedExisting,
+        },
+        errors: promote.errors.length ? promote.errors.slice(0, 6) : undefined,
+      });
+      if (promote.errors.length) runErrors.push(...promote.errors.slice(0, 3));
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      phases.push({
+        phase: 'promote-scan-images',
+        status: 'failed',
+        durationMs: Date.now() - t0,
+        errors: [msg],
+      });
+      runErrors.push(`promote: ${msg.slice(0, 120)}`);
+    }
+  }
+
+  // Phase 1: Sakura retailer import — never starve when images are missing (only explicit skip)
+  if (skipFlags.sakura) {
     phases.push({
       phase: 'sakura-import',
       status: 'skipped',
       durationMs: 0,
-      errors: [
-        skipFlags.sakura
-          ? 'BACKFILL_SKIP_SAKURA=1'
-          : `prioritize discover (${initialGaps.missingImage} missing images)`,
-      ],
+      errors: ['BACKFILL_SKIP_SAKURA=1'],
     });
   } else if (firecrawlKey && !shouldStop()) {
     const t0 = Date.now();
     try {
       const sakura = await runSakuraImportBatch(supabase, supabaseUrl, firecrawlKey, {
-        pagesPerRun: prioritizeDiscover ? 1 : 1,
+        pagesPerRun: 1,
       });
       phases.push({
         phase: 'sakura-import',
@@ -361,7 +425,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     phases.push({ phase: 'sakura-import', status: 'skipped', durationMs: 0, errors: ['FIRECRAWL_API_KEY missing'] });
   }
 
-  // Phase 2: metadata enrich
+  // Phase 2: metadata enrich (descriptions only when missing)
   if (!shouldStop()) {
     const t0 = Date.now();
     try {
@@ -388,6 +452,34 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const msg = e instanceof Error ? e.message : String(e);
       phases.push({ phase: 'metadata', status: 'failed', durationMs: Date.now() - t0, errors: [msg] });
       runErrors.push(`metadata: ${msg.slice(0, 120)}`);
+    }
+  }
+
+  // Phase 2b: sparse spec enrich (polishing / ABV / rice / SMV)
+  if (!shouldStop() && !envFlag('BACKFILL_SKIP_SPEC_ENRICH')) {
+    const t0 = Date.now();
+    try {
+      const specs = await enrichSakeSpecsBatch(supabase, {
+        batchSize: 40,
+        firecrawlKey: skipFlags.metadataSakura ? undefined : firecrawlKey || undefined,
+      });
+      phases.push({
+        phase: 'spec-enrich',
+        status: specs.errors.length > 0 && specs.updated === 0 ? 'failed' : specs.errors.length ? 'partial' : 'ok',
+        durationMs: Date.now() - t0,
+        stats: {
+          attempted: specs.attempted,
+          updated: specs.updated,
+          fromDescription: specs.fromDescription,
+          fromSakura: specs.fromSakura,
+        },
+        errors: specs.errors.length ? specs.errors.slice(0, 6) : undefined,
+      });
+      if (specs.errors.length) runErrors.push(...specs.errors.slice(0, 2));
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      phases.push({ phase: 'spec-enrich', status: 'failed', durationMs: Date.now() - t0, errors: [msg] });
+      runErrors.push(`spec-enrich: ${msg.slice(0, 120)}`);
     }
   }
 
@@ -502,7 +594,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (inv.error) runErrors.push(`mirror: ${inv.error}`);
   }
 
-  // Phase 5: WineEngine sync (skipped unless WINEENGINE_ENABLED=true)
+  // Phase 5: WineEngine sync (enabled when credentials present unless WINEENGINE_ENABLED=false)
   if (!shouldStop() && getWineEngineConfig()) {
     const t0 = Date.now();
     try {
@@ -528,6 +620,37 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const msg = e instanceof Error ? e.message : String(e);
       phases.push({ phase: 'wineengine-sync', status: 'failed', durationMs: Date.now() - t0, errors: [msg] });
       runErrors.push(`wineengine: ${msg.slice(0, 120)}`);
+    }
+  } else if (!getWineEngineConfig()) {
+    phases.push({
+      phase: 'wineengine-sync',
+      status: 'skipped',
+      durationMs: 0,
+      errors: ['WineEngine disabled or credentials missing (set WINEENGINE_USERNAME/PASSWORD; use WINEENGINE_ENABLED=false to pause)'],
+    });
+  }
+
+  // Phase 6: brewery image discover (gallery promote + website og:image)
+  if (!shouldStop() && !envFlag('BACKFILL_SKIP_BREWERY_DISCOVER')) {
+    const t0 = Date.now();
+    try {
+      const brew = await discoverBreweryImagesBatch(supabase, { batchSize: 10 });
+      phases.push({
+        phase: 'brewery-discover',
+        status: brew.errors.length > 0 && brew.fromGallery + brew.fromWebsite === 0 ? 'partial' : 'ok',
+        durationMs: Date.now() - t0,
+        stats: {
+          attempted: brew.attempted,
+          fromGallery: brew.fromGallery,
+          fromWebsite: brew.fromWebsite,
+        },
+        errors: brew.errors.length ? brew.errors.slice(0, 6) : undefined,
+      });
+      if (brew.errors.length) runErrors.push(...brew.errors.slice(0, 2));
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      phases.push({ phase: 'brewery-discover', status: 'failed', durationMs: Date.now() - t0, errors: [msg] });
+      runErrors.push(`brewery-discover: ${msg.slice(0, 120)}`);
     }
   }
 
@@ -604,7 +727,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       externalImages: gaps.externalImages > 0 ? 'mirror continues' : 'mirror caught up',
       wineEngine: getWineEngineConfig()
         ? 'offset cursor in backfill_state'
-        : 'disabled — set WINEENGINE_ENABLED=true when quota restored',
+        : 'disabled — credentials missing or WINEENGINE_ENABLED=false',
+      promoteScans: 'runs every orchestrator tick',
+      breweryImages: 'discover + daily mirror cron',
     },
     errors: runErrors.length ? runErrors.slice(0, 15) : undefined,
     timestamp: new Date().toISOString(),

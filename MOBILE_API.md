@@ -36,6 +36,9 @@ Use the Supabase client SDK for your platform (iOS/Android/Flutter). The anon ke
 | filtration_method   | text    | `袋吊り` (e.g. bag-hang drip)    |
 | base_ingredients    | text    | Additional ingredients            |
 | image_url           | text    | URL to product photo (label or bottle) |
+| image_source        | text    | `retailer` \| `user_scan` \| `web_discover` \| `admin` |
+| image_quality       | text    | `t1` (retailer) \| `t2` (user scan) \| `t3` (web) — higher replaces lower |
+| image_verified_at   | timestamp | Last vision/WineEngine check         |
 | gallery_images      | jsonb   | `["url1", "url2"]` extra photos  |
 | external_id         | text    | Source ID (e.g. `TST0000047374`) |
 | average_rating      | number  | `4.2` (out of 5)                 |
@@ -104,7 +107,57 @@ Use the Supabase client SDK for your platform (iOS/Android/Flutter). The anon ke
 | scanned_image_url| text    | Photo the user scanned   |
 | ocr_raw_text     | text    | Text extracted from scan |
 | matched          | boolean | Whether a match was found|
+| catalog_share_opt_in | boolean | User opted in to share photo for catalog fill (default false) |
 | created_at       | timestamp |                        |
+
+---
+
+## Catalog image contribution (opt-in)
+
+When a scan matches a sake that is missing a catalog photo (or only has a weak web image), prompt:
+
+> Help improve SakeScan — share this photo for the catalog?
+
+### Rules
+
+1. Only after a **successful match** (`matched=true`, `sake_id` set, `scanned_image_url` present).
+2. User must explicitly opt in (`catalog_share_opt_in=true`).
+3. Backend copies the scan photo into Storage and sets `sake.image_url` with provenance **T2** (`image_source=user_scan`, `image_quality=t2`).
+4. If a **T1** retailer product shot is found later, it **replaces** the user-scan catalog image. Scan history is kept.
+5. Existing saved history photos may also be harvested by cron without a new prompt (privacy copy already covers saved scans).
+
+### API: `POST /api/contribute-scan-image`
+
+Auth: `Authorization: Bearer <supabase_access_token>`
+
+```json
+{
+  "scanId": "<uuid>",
+  "catalogShareOptIn": true,
+  "promoteNow": true
+}
+```
+
+Response includes updated `catalogImage` (`image_url`, `image_quality`, `image_source`) and optional `promote` stats.
+
+### iOS flow (coordinate)
+
+1. After match success, if catalog `image_url` is null **or** `image_quality` is `t2`/`t3`/`null`, show share prompt.
+2. On accept: call `POST /api/contribute-scan-image` with the scan id.
+3. On decline: leave `catalog_share_opt_in` false; do not upload for catalog.
+4. Storage prefix for contributions (when uploading separately): `scan-contributions/` under `sake-images` bucket — prefer the contribute API so opt-in + promote stay atomic.
+
+### Direct Supabase update (optional)
+
+```javascript
+await supabase
+  .from('scans')
+  .update({ catalog_share_opt_in: true })
+  .eq('id', scanId)
+  .eq('user_id', userId)
+```
+
+Cron `/api/cron/promote-scan-images` (also run by the backfill orchestrator) promotes opted-in / matched scans into missing catalog images.
 
 ---
 

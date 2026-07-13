@@ -50,9 +50,11 @@ export async function runWineEngineSyncBatch(
 
   let query = supabase
     .from('sake')
-    .select('id, name, image_url')
+    .select('id, name, image_url, image_quality')
     .not('image_url', 'is', null)
     .neq('image_url', '')
+    // Prefer retailer T1 (and legacy rows without quality) for collection accuracy
+    .or('image_quality.is.null,image_quality.eq.t1')
     .order('updated_at', { ascending: true });
 
   if (projectHost) {

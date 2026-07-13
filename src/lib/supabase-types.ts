@@ -53,6 +53,10 @@ export interface Database {
           smv: number | null;
           acidity: number | null;
           image_url: string | null;
+          image_source: string | null;
+          image_quality: string | null;
+          image_verified_at: string | null;
+          image_contributor_scan_id: string | null;
           average_rating: number | null;
           total_ratings: number;
           yeasts: string | null;
@@ -80,6 +84,10 @@ export interface Database {
           smv?: number | null;
           acidity?: number | null;
           image_url?: string | null;
+          image_source?: string | null;
+          image_quality?: string | null;
+          image_verified_at?: string | null;
+          image_contributor_scan_id?: string | null;
           average_rating?: number | null;
           total_ratings?: number;
           yeasts?: string | null;
@@ -107,6 +115,10 @@ export interface Database {
           smv?: number | null;
           acidity?: number | null;
           image_url?: string | null;
+          image_source?: string | null;
+          image_quality?: string | null;
+          image_verified_at?: string | null;
+          image_contributor_scan_id?: string | null;
           average_rating?: number | null;
           total_ratings?: number;
           yeasts?: string | null;
@@ -127,6 +139,7 @@ export interface Database {
           scanned_image_url: string | null;
           ocr_raw_text: string | null;
           matched: boolean;
+          catalog_share_opt_in: boolean | null;
           created_at: string;
         };
         Insert: {
@@ -136,6 +149,7 @@ export interface Database {
           scanned_image_url?: string | null;
           ocr_raw_text?: string | null;
           matched?: boolean;
+          catalog_share_opt_in?: boolean | null;
           created_at?: string;
         };
         Update: {
@@ -145,6 +159,7 @@ export interface Database {
           scanned_image_url?: string | null;
           ocr_raw_text?: string | null;
           matched?: boolean;
+          catalog_share_opt_in?: boolean | null;
           created_at?: string;
         };
       };

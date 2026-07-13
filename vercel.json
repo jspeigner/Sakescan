@@ -25,6 +25,9 @@
     "api/cron/import-sakura-batch.ts": {
       "maxDuration": 120
     },
+    "api/cron/promote-scan-images.ts": {
+      "maxDuration": 120
+    },
     "api/cron/process-brewery-images.ts": {
       "maxDuration": 120
     }

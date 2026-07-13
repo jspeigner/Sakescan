@@ -18,14 +18,18 @@ import {
 } from './lib/sakeImageDiscovery.js';
 import { sakeVisionPasses, validateJapaneseSakeProductPhoto, isOpenAIQuotaError, isOpenAIVisionQuotaExceeded, resetOpenAIVisionQuotaForInvocation } from './lib/sakeImageVision.js';
 import {
+  provenanceForTrustedRetailer,
+  provenanceForWebDiscover,
+  sakeImageUpdatePayload,
+  shouldReplaceImage,
+} from './lib/imageProvenance.js';
+import {
   getWineEngineConfig,
   wineEngineAddByUrl,
   wineEngineCount,
   wineEngineRejectsCandidate,
   wineEngineSearchByUrl,
 } from './lib/wineEngine.js';
-
-/** Mirror external image_url into Storage (per run). */
 const MIRROR_OPS_BUDGET = 220;
 /** Attempt to fill missing image_url (Firecrawl + vision + upload). */
 const DISCOVER_ROW_CAP = 40;
@@ -55,6 +59,7 @@ type SakeRow = {
   name_japanese: string | null;
   brewery: string;
   image_url: string | null;
+  image_quality?: string | null;
 };
 
 type SakeImageAttemptRow = {
@@ -528,14 +533,43 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
       const { data: missingPool } = await supabase
         .from('sake')
-        .select('id, name, name_japanese, brewery, image_url')
-        .or('image_url.is.null,image_url.eq.')
+        .select('id, name, name_japanese, brewery, image_url, image_quality')
+        .or('image_url.is.null,image_url.eq.,image_quality.eq.t2,image_quality.eq.t3')
         .order('updated_at', { ascending: true })
         .limit(DISCOVER_POOL_LIMIT);
       diagnostics.discover.poolRows = (missingPool || []).length;
 
+      // Prefer hot sakes (recently scanned) when filling gaps.
+      let hotIds = new Set<string>();
+      try {
+        const { data: recentScans } = await supabase
+          .from('scans')
+          .select('sake_id')
+          .eq('matched', true)
+          .not('sake_id', 'is', null)
+          .order('created_at', { ascending: false })
+          .limit(400);
+        (recentScans || []).forEach((s) => {
+          if (s.sake_id) hotIds.add(s.sake_id);
+        });
+      } catch {
+        hotIds = new Set();
+      }
+
       const missingRows = (missingPool || []) as SakeRow[];
-      shuffleInPlace(missingRows);
+      const hotBand: SakeRow[] = [];
+      const restBand: SakeRow[] = [];
+      for (const row of missingRows) {
+        if (hotIds.has(row.id)) hotBand.push(row);
+        else restBand.push(row);
+      }
+      const preferMissing = (a: SakeRow, b: SakeRow) => Number(!b.image_url) - Number(!a.image_url);
+      hotBand.sort(preferMissing);
+      restBand.sort(preferMissing);
+      shuffleInPlace(hotBand);
+      shuffleInPlace(restBand);
+      missingRows.length = 0;
+      missingRows.push(...hotBand, ...restBand);
       diagnostics.discover.randomizedPoolRows = missingRows.length;
       const attemptHistoryLoad = await loadAttemptHistoryBySakeIds(
         supabase,
@@ -704,6 +738,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
             try {
               const trustedSource = isTrustedRetailerSource(img.source) || isTrustedImageUrl(img.url);
+              const incomingQuality = trustedSource ? 't1' : 't3';
+              if (!shouldReplaceImage(row.image_quality, row.image_url, incomingQuality)) {
+                failureReason = 'weaker_than_existing';
+                continue;
+              }
+
               if (!trustedSource) {
                 if (isOpenAIVisionQuotaExceeded()) {
                   continue;
@@ -758,7 +798,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
               await supabase
                 .from('sake')
-                .update({ image_url: result.url, updated_at: new Date().toISOString() })
+                .update(
+                  sakeImageUpdatePayload(
+                    result.url,
+                    trustedSource ? provenanceForTrustedRetailer() : provenanceForWebDiscover()
+                  )
+                )
                 .eq('id', row.id);
               sakeDiscovered++;
               diagnostics.discover.placedRows++;

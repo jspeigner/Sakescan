@@ -34,11 +34,12 @@ skip = env.get("skipFlags") or last.get("skipFlags") or {}
 backoff_cleared = last.get("environmentalBackoffCleared", 0)
 
 discover = {}
+promote = {}
 for log in logs:
     if log.get("job") != "backfill-orchestrator":
         continue
     for phase in (log.get("stats") or {}).get("phases") or []:
-        if phase.get("phase") == "images-discover":
+        if phase.get("phase") == "images-discover" and not discover:
             stats = phase.get("stats") or {}
             discover = stats.get("discoverHealth") or {}
             discover["_sakeDiscovered"] = stats.get("sakeDiscovered")
@@ -46,14 +47,18 @@ for log in logs:
             discover["_backoffCleared"] = stats.get("environmentalBackoffCleared")
             discover["_stopReason"] = stats.get("stopReason")
             discover["_timestamp"] = log.get("created_at")
-            break
-    if discover:
+        if phase.get("phase") == "promote-scan-images" and not promote:
+            promote = phase.get("stats") or {}
+            promote["_status"] = phase.get("status")
+            promote["_timestamp"] = log.get("created_at")
+    if discover and promote:
         break
 
 placed = discover.get("placed", 0)
 vision = discover.get("visionChecks", 0)
 yield_rate = discover.get("yield")
 firecrawl_err = discover.get("firecrawlErrors", 0)
+promote_count = promote.get("promoted", 0)
 openai_rec = env.get("openaiQuotaRecommendation")
 discover_rec = env.get("discoverQuotaRecommendation")
 last_status = last.get("status")
@@ -68,14 +73,14 @@ if env.get("lastDiscoverOpenaiQuotaExceeded"):
     alerts.append("OpenAI vision quota exceeded on last discover run")
 if env.get("lastDiscoverFirecrawlErrors", 0) >= 8:
     alerts.append(f"High Firecrawl errors ({env.get('lastDiscoverFirecrawlErrors')})")
-if streak >= 20 and (yield_rate or 0) == 0:
+if streak >= 20 and (yield_rate or 0) == 0 and promote_count == 0:
     alerts.append(f"Low-yield streak {streak} with zero recent yield — import may be stalled")
 if last_status and last_status != "ok":
     alerts.append(f"Last orchestrator status: {last_status}")
 if errors:
     alerts.append(f"Last run errors: {errors}")
 
-healthy = not alerts and (placed > 0 or (yield_rate or 0) > 0 or streak < 20)
+healthy = not alerts and (placed > 0 or promote_count > 0 or (yield_rate or 0) > 0 or streak < 20)
 
 out = {
     "healthy": healthy,
@@ -91,6 +96,13 @@ out = {
         "stopReason": discover.get("_stopReason"),
         "runAt": discover.get("_timestamp"),
     },
+    "latestPromote": {
+        "promoted": promote_count,
+        "attempted": promote.get("attempted"),
+        "skippedExisting": promote.get("skippedExisting"),
+        "status": promote.get("_status"),
+        "runAt": promote.get("_timestamp"),
+    },
     "skipFlags": skip,
     "environmentalBackoffCleared": backoff_cleared,
     "openaiQuotaRecommendation": openai_rec,
@@ -101,6 +113,7 @@ out = {
         "adaptiveDiscover": last.get("adaptiveDiscover"),
         "prioritizeDiscover": last.get("prioritizeDiscover"),
         "firecrawlBypassActive": env.get("firecrawlBypassActive"),
+        "scanPromoteActive": promote_count > 0,
     },
 }
 print(json.dumps(out, indent=2))

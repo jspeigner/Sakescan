@@ -6,6 +6,11 @@ import {
   type SakuraImportState,
 } from './backfillState.js';
 import {
+  provenanceForTrustedRetailer,
+  sakeImageUpdatePayload,
+  shouldReplaceImage,
+} from './imageProvenance.js';
+import {
   SAKURA_FILTER_ROTATION,
   scrapeSakuraListing,
   type ScrapedSake,
@@ -103,6 +108,7 @@ export async function runSakuraImportBatch(
     name_japanese: string | null;
     brewery: string;
     image_url: string | null;
+    image_quality: string | null;
     description: string | null;
     type: string | null;
     prefecture: string | null;
@@ -113,7 +119,7 @@ export async function runSakuraImportBatch(
   for (let offset = 0; ; offset += existingPageSize) {
     const { data, error: fetchError } = await supabase
       .from('sake')
-      .select('id, name, name_japanese, brewery, image_url, description, type, prefecture')
+      .select('id, name, name_japanese, brewery, image_url, image_quality, description, type, prefecture')
       .range(offset, offset + existingPageSize - 1);
 
     if (fetchError) throw new Error(fetchError.message);
@@ -135,12 +141,15 @@ export async function runSakuraImportBatch(
 
         if (match) {
           matched++;
-          const patch: Record<string, string | null> = {
+          const patch: Record<string, unknown> = {
             updated_at: new Date().toISOString(),
           };
           let changed = false;
 
-          if (!match.image_url && scraped.imageUrl) {
+          if (
+            scraped.imageUrl &&
+            shouldReplaceImage(match.image_quality, match.image_url, 't1')
+          ) {
             try {
               const stored = await downloadAndStoreWithRetry(
                 supabase,
@@ -151,9 +160,11 @@ export async function runSakuraImportBatch(
                 knownPlaceholderHashes
               );
               if (!stored.skippedPlaceholder && !stored.rateLimited) {
-                patch.image_url = stored.url;
+                Object.assign(patch, sakeImageUpdatePayload(stored.url, provenanceForTrustedRetailer()));
                 imageStored++;
                 changed = true;
+                match.image_url = stored.url;
+                match.image_quality = 't1';
               }
             } catch (e) {
               const msg = e instanceof Error ? e.message : String(e);
@@ -207,7 +218,7 @@ export async function runSakuraImportBatch(
             }
           }
 
-          const { error: insErr } = await supabase.from('sake').insert({
+          const insertRow: Record<string, unknown> = {
             name: scraped.name,
             name_japanese: scraped.nameJapanese ?? null,
             brewery: scraped.brewery,
@@ -216,7 +227,12 @@ export async function runSakuraImportBatch(
             description: buildDescriptionFromScraped(scraped),
             image_url: imageUrl,
             total_ratings: 0,
-          });
+          };
+          if (imageUrl) {
+            Object.assign(insertRow, sakeImageUpdatePayload(imageUrl, provenanceForTrustedRetailer()));
+          }
+
+          const { error: insErr } = await supabase.from('sake').insert(insertRow);
 
           if (insErr) errors.push(`insert ${scraped.name}: ${insErr.message.slice(0, 80)}`);
           else inserted++;

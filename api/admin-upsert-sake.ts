@@ -1,5 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
+import { provenanceForAdmin, sakeImageUpdatePayload } from './cron/lib/imageProvenance.js';
 
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'jspeigner@gmail.com';
 
@@ -60,10 +61,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const admin = createClient(supabaseUrl, supabaseServiceKey);
 
+  const row: Record<string, unknown> = { ...payload };
+  if (payload.image_url) {
+    Object.assign(row, sakeImageUpdatePayload(payload.image_url, provenanceForAdmin()));
+  }
+
   if (body?.id) {
     const { data, error } = await admin
       .from('sake')
-      .update(payload)
+      .update(row)
       .eq('id', body.id)
       .select('id')
       .single();
@@ -80,7 +86,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const { data, error } = await admin
     .from('sake')
-    .insert(payload)
+    .insert(row)
     .select('id')
     .single();
 
