@@ -65,3 +65,17 @@ The admin dashboard is connected to the shared Supabase backend:
 - View and search users
 - View and delete reviews
 - Upload images to Supabase Storage
+
+## Image import health monitoring
+
+Cron backfill stats: `https://www.sakescan.com/api/cron/backfill-orchestrator?stats=1`
+
+Run locally:
+
+```bash
+./scripts/check-image-import-health.sh
+```
+
+**Recommended:** create a Cursor Automation (daily cron) with this prompt:
+
+> Check SakeScan image import health: run `./scripts/check-image-import-health.sh` (or curl the stats URL above). Review `missingImage`, `lowYieldStreak`, `skipFlags`, `visionChecks`, and any quota recommendations. If import is stalled (high low-yield streak, zero placements, or skip flags blocking discover), investigate `api/cron/` logs and fix blockers. Report a brief status to the user.
