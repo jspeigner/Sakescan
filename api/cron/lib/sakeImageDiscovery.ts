@@ -449,9 +449,106 @@ async function scrapeBingImages(searchQuery: string): Promise<SearchImageRow[]> 
   }));
 }
 
-export type SakeImageSearchMode = 'google-only' | 'google-only-fast' | 'full';
+export type SakeImageSearchMode = 'google-only' | 'google-only-fast' | 'trusted-first' | 'full';
 
 const TRUSTED_RETAILER_SOURCES = new Set(['Sakura Sake Shop', 'Umami Mart', 'Sake Times']);
+
+const BROWSER_HEADERS = {
+  'User-Agent':
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  Accept: 'text/html,application/xhtml+xml',
+  'Accept-Language': 'en-US,en;q=0.9,ja;q=0.8',
+};
+
+async function fetchHtmlDirect(url: string): Promise<string | null> {
+  try {
+    const res = await fetch(url, { headers: BROWSER_HEADERS, redirect: 'follow' });
+    if (!res.ok) return null;
+    return await res.text();
+  } catch {
+    return null;
+  }
+}
+
+function extractProductImagesFromHtml(
+  html: string,
+  filter: (url: string) => boolean,
+  limit = 5
+): string[] {
+  const imgRegex = /https:\/\/[^"'\s]+\.(?:jpg|jpeg|png|webp)(?:\?[^"'\s]*)?/gi;
+  const matches = html.match(imgRegex) || [];
+  return matches.filter(filter).slice(0, limit);
+}
+
+/** Fast direct HTTP scrape of Sakura/Umami/Sake Times — no Firecrawl. */
+export async function searchTrustedRetailerCandidatesDirect(
+  params: { name: string; nameJapanese?: string | null; brewery?: string | null }
+): Promise<{ images: SearchImageRow[]; debug: Pick<SakeSearchDebug, 'sourceCounts'> }> {
+  const { name, nameJapanese } = params;
+  const results: SearchImageRow[] = [];
+  const debug: Pick<SakeSearchDebug, 'sourceCounts'> = {
+    sourceCounts: { google: 0, bing: 0, sakura: 0, umami: 0, sakeTimes: 0 },
+  };
+
+  const sakuraUrl = `https://export.sakurasaketen.com/sake?Keyword=${encodeURIComponent(name)}`;
+  const sakuraHtml = await fetchHtmlDirect(sakuraUrl);
+  if (sakuraHtml) {
+    const productImages = extractProductImagesFromHtml(
+      sakuraHtml,
+      (url) =>
+        !url.includes('logo') &&
+        !url.includes('icon') &&
+        !url.includes('badge') &&
+        !url.includes('arrow') &&
+        !url.includes('close') &&
+        (url.includes('uploads') || url.includes('cdn') || url.includes('sake')),
+      5
+    );
+    productImages.forEach((url) => results.push({ url, source: 'Sakura Sake Shop' }));
+    debug.sourceCounts.sakura += productImages.length;
+  }
+
+  const umamiUrl = `https://umamimart.com/search?q=${encodeURIComponent(name + ' sake')}&type=product`;
+  const umamiHtml = await fetchHtmlDirect(umamiUrl);
+  if (umamiHtml) {
+    const shopifyRegex =
+      /https:\/\/[^"'\s]+cdn\.shopify\.com[^"'\s]+\.(?:jpg|jpeg|png|webp)(?:\?[^"'\s]*)?/gi;
+    const imageMatches = umamiHtml.match(shopifyRegex) || [];
+    const productImages = imageMatches
+      .filter(
+        (url) =>
+          url.includes('products') &&
+          !url.includes('logo') &&
+          !url.includes('icon') &&
+          !url.includes('badge') &&
+          !url.includes('collection')
+      )
+      .map((url) => url.replace(/_\d+x\d*\./, '_800x.'))
+      .slice(0, 4);
+    productImages.forEach((url) => results.push({ url, source: 'Umami Mart' }));
+    debug.sourceCounts.umami += productImages.length;
+  }
+
+  if (nameJapanese) {
+    const sakeTimesUrl = `https://en.sake-times.com/?s=${encodeURIComponent(nameJapanese)}`;
+    const sakeTimesHtml = await fetchHtmlDirect(sakeTimesUrl);
+    if (sakeTimesHtml) {
+      const sakeImages = extractProductImagesFromHtml(
+        sakeTimesHtml,
+        (url) =>
+          !url.includes('logo') &&
+          !url.includes('icon') &&
+          !url.includes('avatar') &&
+          url.includes('sake'),
+        3
+      );
+      sakeImages.forEach((url) => results.push({ url, source: 'Sake Times' }));
+      debug.sourceCounts.sakeTimes += sakeImages.length;
+    }
+  }
+
+  return { images: results, debug };
+}
 
 /** Curated retailer sources — vision optional; download still validates the asset. */
 export function isTrustedRetailerSource(source: string): boolean {
@@ -464,7 +561,7 @@ export async function searchSakeImageCandidates(
   mode: SakeImageSearchMode
 ): Promise<{ images: SearchImageRow[]; sakeData?: SakeSearchMeta; debug: SakeSearchDebug }> {
   const { name, nameJapanese, brewery } = params;
-  const fastMode = mode === 'google-only-fast';
+  const fastMode = mode === 'google-only-fast' || mode === 'trusted-first';
   const searchQueries = buildSakeImageSearchQueries(
     name,
     nameJapanese ?? undefined,
@@ -478,6 +575,13 @@ export async function searchSakeImageCandidates(
     sourceCounts: { google: 0, bing: 0, sakura: 0, umami: 0, sakeTimes: 0 },
     firecrawlErrors: [],
   };
+
+  // Always try trusted retailers first (direct HTTP — fast, no vision needed).
+  const trustedDirect = await searchTrustedRetailerCandidatesDirect(params);
+  results.push(...trustedDirect.images);
+  debug.sourceCounts.sakura += trustedDirect.debug.sourceCounts.sakura;
+  debug.sourceCounts.umami += trustedDirect.debug.sourceCounts.umami;
+  debug.sourceCounts.sakeTimes += trustedDirect.debug.sourceCounts.sakeTimes;
 
   if (mode === 'full' && !firecrawlBypassActive) {
     const sakuraSakeUrl = `https://export.sakurasaketen.com/sake?Keyword=${encodeURIComponent(name)}`;
@@ -619,23 +723,27 @@ export async function searchSakeImageCandidates(
     }
   }
 
-  for (const searchQuery of searchQueries) {
-    const googleResult = await scrapeGoogleImages(firecrawlApiKey, searchQuery);
-    results.push(...googleResult.rows);
-    debug.sourceCounts.google += googleResult.rows.length;
-    if (googleResult.error) {
-      debug.firecrawlErrors.push(`googleImages (${searchQuery.slice(0, 40)}): ${googleResult.error}`);
-    }
-    if (results.length < 8 || !fastMode) {
-      try {
-        const bingRows = await scrapeBingImages(searchQuery);
-        results.push(...bingRows);
-        debug.sourceCounts.bing += bingRows.length;
-      } catch (e) {
-        console.error('Bing images scrape error:', e);
+  const skipWebSearch = mode === 'trusted-first' && results.length >= 2;
+
+  if (!skipWebSearch) {
+    for (const searchQuery of searchQueries) {
+      const googleResult = await scrapeGoogleImages(firecrawlApiKey, searchQuery);
+      results.push(...googleResult.rows);
+      debug.sourceCounts.google += googleResult.rows.length;
+      if (googleResult.error) {
+        debug.firecrawlErrors.push(`googleImages (${searchQuery.slice(0, 40)}): ${googleResult.error}`);
       }
+      if (results.length < 8 || !fastMode) {
+        try {
+          const bingRows = await scrapeBingImages(searchQuery);
+          results.push(...bingRows);
+          debug.sourceCounts.bing += bingRows.length;
+        } catch (e) {
+          console.error('Bing images scrape error:', e);
+        }
+      }
+      if (results.length >= candidatePoolTarget) break;
     }
-    if (results.length >= candidatePoolTarget) break;
   }
 
   const uniqueImages = results.filter(

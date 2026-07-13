@@ -16,10 +16,11 @@ import { isFirecrawlBypassActive } from './lib/sakeImageDiscovery.js';
 import processImagesHandler from './process-images.js';
 
 const RUN_BUDGET_MS = 180_000;
-const DISCOVER_BUDGET_RESERVE_MS = 18_000;
+const DISCOVER_BUDGET_RESERVE_MS = 8_000;
 const DISCOVER_HEALTH_KEY = 'discover_health';
 const LAST_RUN_KEY = 'orchestrator_last_run';
 const FIRECRAWL_ERROR_RECOMMEND_THRESHOLD = 5;
+const LARGE_MISSING_IMAGE_THRESHOLD = 10_000;
 
 function envFlag(name: string): boolean {
   const v = process.env[name]?.trim().toLowerCase();
@@ -78,6 +79,24 @@ function firecrawlErrorsFromOrchestratorLog(
   const phases = log?.stats?.phases as Array<{ phase?: string; stats?: Record<string, unknown> }> | undefined;
   const discover = phases?.find((p) => p.phase === 'images-discover');
   return firecrawlErrorsFromPhaseStats(discover?.stats);
+}
+
+async function resetEnvironmentalBackoffOnStartup(
+  supabase: ReturnType<typeof createClient>
+): Promise<number> {
+  const now = new Date().toISOString();
+  const patterns = ['openai', 'quota', 'time_budget'];
+  let cleared = 0;
+  for (const pattern of patterns) {
+    const { data, error } = await supabase
+      .from('sake_image_attempts')
+      .update({ next_retry_at: null, updated_at: now })
+      .ilike('last_failure_reason', `%${pattern}%`)
+      .gt('next_retry_at', now)
+      .select('sake_id');
+    if (!error && data) cleared += data.length;
+  }
+  return cleared;
 }
 
 type PhaseResult = {
@@ -256,6 +275,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const deadline = runStarted + RUN_BUDGET_MS;
   const shouldStop = (): boolean => Date.now() >= deadline;
 
+  const initialGaps = await countBackfillGaps(supabase);
+  const prioritizeDiscover = initialGaps.missingImage >= LARGE_MISSING_IMAGE_THRESHOLD;
+
+  let environmentalBackoffCleared = 0;
+  try {
+    environmentalBackoffCleared = await resetEnvironmentalBackoffOnStartup(supabase);
+    if (environmentalBackoffCleared > 0) {
+      console.log(
+        `[backfill-orchestrator] cleared environmental backoff for ${environmentalBackoffCleared} rows`
+      );
+    }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.warn(`[backfill-orchestrator] backoff reset failed: ${msg}`);
+  }
+
   const phases: PhaseResult[] = [];
   const runErrors: string[] = [];
   let discoverHealth = await getBackfillState<DiscoverHealthState>(supabase, DISCOVER_HEALTH_KEY, {
@@ -285,18 +320,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   // Phase 1: Sakura batch import (optional, 1 page per tick)
-  if (skipFlags.sakura) {
+  if (skipFlags.sakura || (prioritizeDiscover && initialGaps.missingImage > 12_000)) {
     phases.push({
       phase: 'sakura-import',
       status: 'skipped',
       durationMs: 0,
-      errors: ['BACKFILL_SKIP_SAKURA=1'],
+      errors: [
+        skipFlags.sakura
+          ? 'BACKFILL_SKIP_SAKURA=1'
+          : `prioritize discover (${initialGaps.missingImage} missing images)`,
+      ],
     });
   } else if (firecrawlKey && !shouldStop()) {
     const t0 = Date.now();
     try {
       const sakura = await runSakuraImportBatch(supabase, supabaseUrl, firecrawlKey, {
-        pagesPerRun: 1,
+        pagesPerRun: prioritizeDiscover ? 1 : 1,
       });
       phases.push({
         phase: 'sakura-import',
@@ -365,15 +404,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
   } else if (!shouldStop() && firecrawlKey && openaiKey) {
     const t0 = Date.now();
-    const lowYield = discoverHealth.lowYieldStreak >= 2;
+    const openaiRecovered = !prevDiscoverOpenaiQuotaExceeded;
     const remainingForDiscover = Math.max(0, deadline - Date.now() - DISCOVER_BUDGET_RESERVE_MS);
-    const discoverBudgetMs = Math.min(95_000, Math.max(40_000, remainingForDiscover));
+    const discoverBudgetMs = Math.min(
+      110_000,
+      Math.max(prioritizeDiscover ? 70_000 : 45_000, remainingForDiscover)
+    );
     const discoverQuery: Record<string, string> = {
       mode: 'discover',
-      search: 'full',
-      speed: lowYield || adaptiveDiscover ? 'normal' : 'accelerated',
+      search: 'trusted-first',
+      speed: openaiRecovered ? 'accelerated' : 'normal',
       budgetMs: String(discoverBudgetMs),
-      rowCap: adaptiveDiscover ? '10' : lowYield ? '8' : '14',
+      rowCap: prioritizeDiscover ? '16' : openaiRecovered ? '14' : '8',
     };
 
     const inv = await invokeProcessImages(discoverQuery);
@@ -411,6 +453,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         lowYieldStreak: discoverHealth.lowYieldStreak,
         sakeDiscovered: discoverJson?.sakeDiscovered,
         discoverHealth: health,
+        environmentalBackoffCleared,
         openaiVisionQuotaExceeded:
           discoverJson?.openaiVisionQuotaExceeded === true ||
           (health as { openaiVisionQuotaExceeded?: boolean } | undefined)?.openaiVisionQuotaExceeded === true,
@@ -499,6 +542,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     status: runStatus,
     durationMs,
     adaptiveDiscover,
+    prioritizeDiscover,
+    environmentalBackoffCleared,
     discoverHealth,
     skipFlags,
     firecrawlBypassActive: isFirecrawlBypassActive(),
@@ -544,6 +589,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     durationMs,
     budgetMs: RUN_BUDGET_MS,
     adaptiveDiscover,
+    prioritizeDiscover,
+    environmentalBackoffCleared,
     discoverHealth,
     skipFlags,
     firecrawlBypassActive: isFirecrawlBypassActive(),

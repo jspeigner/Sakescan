@@ -29,7 +29,8 @@ const MIRROR_OPS_BUDGET = 220;
 /** Attempt to fill missing image_url (Firecrawl + vision + upload). */
 const DISCOVER_ROW_CAP = 40;
 const DISCOVER_CANDIDATES_MAX = 4;
-const DISCOVER_CANDIDATES_MAX_ACCELERATED = 3;
+const DISCOVER_CANDIDATES_MAX_ACCELERATED = 2;
+const DISCOVER_CANDIDATES_MAX_TRUSTED = 3;
 const ATTEMPT_HISTORY_BATCH_SIZE = 80;
 /** Spot-check hosted images; clear when vision says not sake. */
 const AUDIT_ROW_CAP = 10;
@@ -209,7 +210,7 @@ function isEnvironmentalDiscoverFailure(reason: string): boolean {
 function computeNextRetryAt(attemptCount: number, noCandidates: boolean, failureReason?: string): string {
   if (failureReason && isEnvironmentalDiscoverFailure(failureReason)) {
     // Quota/timeouts are environmental — retry soon instead of multi-hour backoff.
-    return new Date(Date.now() + 10 * 60 * 1000).toISOString();
+    return new Date(Date.now() + 5 * 60 * 1000).toISOString();
   }
   const multiplier = noCandidates ? 2 : 1;
   const backoffMs = Math.min(
@@ -217,6 +218,29 @@ function computeNextRetryAt(attemptCount: number, noCandidates: boolean, failure
     DISCOVER_BACKOFF_BASE_MS * Math.pow(2, Math.max(0, attemptCount - 1)) * multiplier
   );
   return new Date(Date.now() + backoffMs).toISOString();
+}
+
+const ENVIRONMENTAL_BACKOFF_REASONS = [
+  'openai_quota',
+  'openai vision http 429',
+  'time_budget_reached',
+  'openai_quota_exceeded',
+];
+
+/** One-time hygiene: unblock rows stuck on quota/timeout backoff when services recover. */
+async function resetEnvironmentalBackoff(supabase: ReturnType<typeof createClient>): Promise<number> {
+  const now = new Date().toISOString();
+  let cleared = 0;
+  for (const pattern of ENVIRONMENTAL_BACKOFF_REASONS) {
+    const { data, error } = await supabase
+      .from('sake_image_attempts')
+      .update({ next_retry_at: null, updated_at: now })
+      .ilike('last_failure_reason', `%${pattern}%`)
+      .gt('next_retry_at', now)
+      .select('sake_id');
+    if (!error && data) cleared += data.length;
+  }
+  return cleared;
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -263,7 +287,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const discoverChunkMode = chunked && chunkMode === 'discover';
     const acceleratedDiscover = discoverChunkMode && discoverSpeed === 'accelerated';
     const discoverSearchMode: SakeImageSearchMode =
-      searchParam === 'full' ? 'full' : acceleratedDiscover ? 'google-only-fast' : 'google-only';
+      searchParam === 'full'
+        ? 'full'
+        : searchParam === 'trusted-first'
+          ? 'trusted-first'
+          : acceleratedDiscover
+            ? 'trusted-first'
+            : 'google-only';
     const budgetMsParam = parseInt(Array.isArray(q.budgetMs) ? q.budgetMs[0] : q.budgetMs || '', 10);
     const chunkWallMsOverride =
       Number.isFinite(budgetMsParam) && budgetMsParam > 0 ? budgetMsParam : null;
@@ -335,8 +365,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       ? hasRowCapOverride
         ? Math.min(DISCOVER_ROW_CAP, rowCapOverride)
         : acceleratedDiscover
-          ? Math.min(DISCOVER_ROW_CAP, 16)
-          : Math.min(DISCOVER_ROW_CAP, 6)
+          ? Math.min(DISCOVER_ROW_CAP, 20)
+          : Math.min(DISCOVER_ROW_CAP, 8)
       : chunked
         ? 0
         : Math.min(DISCOVER_ROW_CAP, 24);
@@ -388,6 +418,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         attemptHistoryBatches: 0,
         attemptHistoryWriteErrors: 0,
         prefilterDropped: 0,
+        environmentalBackoffCleared: 0,
         wineEngineChecks: 0,
         wineEngineRejected: 0,
         wineEngineConfirmed: 0,
@@ -481,6 +512,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (firecrawlKey && openaiKey && !rateLimited && !hitTimeBudget) {
       resetFirecrawlBypassForInvocation();
       resetOpenAIVisionQuotaForInvocation();
+      if (discoverChunkMode) {
+        try {
+          const cleared = await resetEnvironmentalBackoff(supabase);
+          diagnostics.discover.environmentalBackoffCleared = cleared;
+          if (cleared > 0) {
+            console.log(`[process-images/discover] cleared environmental backoff for ${cleared} rows`);
+          }
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          pushSample(diagnostics.discover.rowErrorSamples, `backoff reset: ${msg.slice(0, 120)}`);
+        }
+      }
       const { data: missingPool } = await supabase
         .from('sake')
         .select('id, name, name_japanese, brewery, image_url')
@@ -554,7 +597,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             },
             searchMode
           );
-          if (rawImages.length === 0 && searchMode !== 'full') {
+          // Full fallback is slow (~30s/row). Only use when not accelerated and trusted-first found nothing.
+          if (
+            rawImages.length === 0 &&
+            searchMode !== 'full' &&
+            !acceleratedDiscover
+          ) {
             const fallback = await searchSakeImageCandidates(
               firecrawlKey,
               {
@@ -563,6 +611,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 brewery: row.brewery,
               },
               'full'
+            );
+            rawImages = fallback.images;
+            debug = fallback.debug;
+          } else if (rawImages.length === 0 && acceleratedDiscover && searchMode === 'trusted-first') {
+            const fallback = await searchSakeImageCandidates(
+              firecrawlKey,
+              {
+                name: row.name,
+                nameJapanese: row.name_japanese,
+                brewery: row.brewery,
+              },
+              'google-only-fast'
             );
             rawImages = fallback.images;
             debug = fallback.debug;
@@ -601,7 +661,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           const trustedCandidates = images.filter((candidate) => isTrustedRetailerSource(candidate.source));
           const otherCandidates = images.filter((candidate) => !isTrustedRetailerSource(candidate.source));
           const candidateQueue = [
-            ...trustedCandidates.slice(0, discoverCandidatesMax),
+            ...trustedCandidates.slice(0, DISCOVER_CANDIDATES_MAX_TRUSTED),
             ...(isOpenAIVisionQuotaExceeded()
               ? []
               : otherCandidates.slice(0, discoverCandidatesMax)),
@@ -714,9 +774,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 }
                 continue;
               }
+              const innerMsg = inner instanceof Error ? inner.message : String(inner);
+              // Vision download failures (HTTP 400) are bad candidates — try next URL, don't fail the row.
+              if (
+                innerMsg.includes('OpenAI vision HTTP 400') ||
+                innerMsg.includes('Error while downloading')
+              ) {
+                diagnostics.discover.visionRejected++;
+                failureReason = 'vision_download_failed';
+                pushSample(
+                  diagnostics.discover.downloadErrorSamples,
+                  `${row.name}: ${innerMsg.slice(0, 140)}`
+                );
+                continue;
+              }
               failed++;
               diagnostics.discover.perRowErrors++;
-              const innerMsg = inner instanceof Error ? inner.message : String(inner);
               failureReason = innerMsg.slice(0, 160);
               pushSample(
                 diagnostics.discover.downloadErrorSamples,
