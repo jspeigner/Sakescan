@@ -15,7 +15,7 @@ import {
   type SakeImageSearchMode,
   urlLooksLikeNonSakeProduct,
 } from './lib/sakeImageDiscovery.js';
-import { sakeVisionPasses, validateJapaneseSakeProductPhoto } from './lib/sakeImageVision.js';
+import { sakeVisionPasses, validateJapaneseSakeProductPhoto, isOpenAIQuotaError, isOpenAIVisionQuotaExceeded, resetOpenAIVisionQuotaForInvocation } from './lib/sakeImageVision.js';
 import {
   getWineEngineConfig,
   wineEngineAddByUrl,
@@ -59,6 +59,7 @@ type SakeImageAttemptRow = {
   attempt_count: number;
   success_count: number;
   next_retry_at: string | null;
+  last_failure_reason?: string | null;
 };
 
 async function countBreweryRemaining(
@@ -172,7 +173,7 @@ async function loadAttemptHistoryBySakeIds(
     const chunk = sakeIds.slice(i, i + ATTEMPT_HISTORY_BATCH_SIZE);
     const { data, error } = await supabase
       .from('sake_image_attempts')
-      .select('sake_id, attempt_count, success_count, next_retry_at')
+      .select('sake_id, attempt_count, success_count, next_retry_at, last_failure_reason')
       .in('sake_id', chunk);
 
     if (error) {
@@ -187,6 +188,7 @@ async function loadAttemptHistoryBySakeIds(
         attempt_count: row.attempt_count ?? 0,
         success_count: row.success_count ?? 0,
         next_retry_at: row.next_retry_at ?? null,
+        last_failure_reason: row.last_failure_reason ?? null,
       });
     });
   }
@@ -194,7 +196,21 @@ async function loadAttemptHistoryBySakeIds(
   return { map, readErrors, errorSamples, batches };
 }
 
-function computeNextRetryAt(attemptCount: number, noCandidates: boolean): string {
+function isEnvironmentalDiscoverFailure(reason: string): boolean {
+  const lower = reason.toLowerCase();
+  return (
+    lower.includes('openai_quota') ||
+    lower.includes('openai vision http 429') ||
+    (lower.includes('openai') && lower.includes('quota')) ||
+    lower.includes('time_budget_reached')
+  );
+}
+
+function computeNextRetryAt(attemptCount: number, noCandidates: boolean, failureReason?: string): string {
+  if (failureReason && isEnvironmentalDiscoverFailure(failureReason)) {
+    // Quota/timeouts are environmental — retry soon instead of multi-hour backoff.
+    return new Date(Date.now() + 10 * 60 * 1000).toISOString();
+  }
   const multiplier = noCandidates ? 2 : 1;
   const backoffMs = Math.min(
     DISCOVER_BACKOFF_MAX_MS,
@@ -359,6 +375,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         },
         firecrawlErrors: 0,
         firecrawlErrorSamples: [] as string[],
+        openaiVisionQuotaExceeded: false,
         candidateUrlFiltered: 0,
         visionChecks: 0,
         visionRejected: 0,
@@ -463,6 +480,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     if (firecrawlKey && openaiKey && !rateLimited && !hitTimeBudget) {
       resetFirecrawlBypassForInvocation();
+      resetOpenAIVisionQuotaForInvocation();
       const { data: missingPool } = await supabase
         .from('sake')
         .select('id, name, name_japanese, brewery, image_url')
@@ -491,6 +509,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const eligibleRows = missingRows.filter((row) => {
         const history = attemptBySakeId.get(row.id);
         if (!history?.next_retry_at) return true;
+        // Rows blocked by quota/timeouts should not wait out long backoff windows.
+        if (history.last_failure_reason && isEnvironmentalDiscoverFailure(history.last_failure_reason)) {
+          return true;
+        }
         const retryAtMs = Date.parse(history.next_retry_at);
         if (Number.isNaN(retryAtMs)) return true;
         return retryAtMs <= nowMs;
@@ -576,10 +598,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             diagnostics.discover.rowsWithNoCandidates++;
           }
 
-          for (const img of [
-            ...images.filter((candidate) => isTrustedRetailerSource(candidate.source)),
-            ...images.filter((candidate) => !isTrustedRetailerSource(candidate.source)),
-          ].slice(0, discoverCandidatesMax)) {
+          const trustedCandidates = images.filter((candidate) => isTrustedRetailerSource(candidate.source));
+          const otherCandidates = images.filter((candidate) => !isTrustedRetailerSource(candidate.source));
+          const candidateQueue = [
+            ...trustedCandidates.slice(0, discoverCandidatesMax),
+            ...(isOpenAIVisionQuotaExceeded()
+              ? []
+              : otherCandidates.slice(0, discoverCandidatesMax)),
+          ];
+
+          for (const img of candidateQueue) {
             if (shouldStopChunk()) {
               hitTimeBudget = true;
               timedOutDuringRow = true;
@@ -614,6 +642,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             try {
               const trustedSource = isTrustedRetailerSource(img.source);
               if (!trustedSource) {
+                if (isOpenAIVisionQuotaExceeded()) {
+                  continue;
+                }
                 diagnostics.discover.visionChecks++;
                 const v = await validateJapaneseSakeProductPhoto(openaiKey, img.url, {
                   sakeName: row.name,
@@ -671,6 +702,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               }
               break;
             } catch (inner) {
+              if (isOpenAIQuotaError(inner)) {
+                diagnostics.discover.openaiVisionQuotaExceeded = true;
+                failureReason = 'openai_quota_exceeded';
+                pushSample(
+                  diagnostics.discover.downloadErrorSamples,
+                  `${row.name}: OpenAI vision quota exceeded`
+                );
+                if (!errors.some((e) => e.includes('OpenAI vision quota'))) {
+                  errors.push('OpenAI vision quota exceeded — continuing with trusted retailer sources only');
+                }
+                continue;
+              }
               failed++;
               diagnostics.discover.perRowErrors++;
               const innerMsg = inner instanceof Error ? inner.message : String(inner);
@@ -680,6 +723,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 `${row.name}: ${innerMsg.slice(0, 140)}`
               );
             }
+          }
+
+          if (isOpenAIVisionQuotaExceeded()) {
+            diagnostics.discover.openaiVisionQuotaExceeded = true;
           }
 
           if (!placed) {
@@ -695,6 +742,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
         try {
           const nextAttemptCount = priorAttemptCount + 1;
+          const resolvedFailureReason =
+            timedOutDuringRow || !sawCandidates
+              ? timedOutDuringRow
+                ? 'time_budget_reached'
+                : 'no_candidates'
+              : failureReason || 'discover_failed';
           const attemptPayload = placed
             ? {
                 sake_id: row.id,
@@ -711,13 +764,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 attempt_count: nextAttemptCount,
                 success_count: priorSuccessCount,
                 last_attempt_at: new Date().toISOString(),
-                last_failure_reason:
-                  timedOutDuringRow || !sawCandidates
-                    ? timedOutDuringRow
-                      ? 'time_budget_reached'
-                      : 'no_candidates'
-                    : failureReason || 'discover_failed',
-                next_retry_at: computeNextRetryAt(nextAttemptCount, !sawCandidates),
+                last_failure_reason: resolvedFailureReason,
+                next_retry_at: computeNextRetryAt(nextAttemptCount, !sawCandidates, resolvedFailureReason),
                 updated_at: new Date().toISOString(),
               };
           const { error: upsertAttemptError } = await supabase
@@ -734,7 +782,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               sake_id: row.id,
               attempt_count: nextAttemptCount,
               success_count: placed ? priorSuccessCount + 1 : priorSuccessCount,
-              next_retry_at: placed ? null : computeNextRetryAt(nextAttemptCount, !sawCandidates),
+              next_retry_at: placed
+                ? null
+                : computeNextRetryAt(nextAttemptCount, !sawCandidates, resolvedFailureReason),
+              last_failure_reason: placed ? null : resolvedFailureReason,
             });
           }
         } catch (historyErr) {
@@ -993,9 +1044,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               visionChecks: diagnostics.discover.visionChecks,
               attemptHistoryReadErrors: diagnostics.discover.attemptHistoryReadErrors,
               firecrawlErrors: diagnostics.discover.firecrawlErrors,
+              openaiVisionQuotaExceeded:
+                diagnostics.discover.openaiVisionQuotaExceeded || isOpenAIVisionQuotaExceeded(),
               lowYieldAlert: discoverLowYieldAlert,
               noCandidatesAlert: discoverNoCandidatesAlert,
             }
+          : undefined,
+      openaiVisionQuotaExceeded:
+        diagnostics.discover.openaiVisionQuotaExceeded || isOpenAIVisionQuotaExceeded()
+          ? true
           : undefined,
       firecrawlBypassActive: discoverAttempts > 0 ? isFirecrawlBypassActive() : undefined,
       diagnostics,

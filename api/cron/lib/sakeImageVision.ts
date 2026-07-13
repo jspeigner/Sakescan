@@ -9,6 +9,35 @@ export type SakeVisionResult = {
   briefReason: string;
 };
 
+/** Thrown when OpenAI returns 429 / billing quota — discover should stop vision and retry later. */
+export class OpenAIVisionQuotaError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'OpenAIVisionQuotaError';
+  }
+}
+
+let openaiVisionQuotaExceeded = false;
+
+export function resetOpenAIVisionQuotaForInvocation(): void {
+  openaiVisionQuotaExceeded = false;
+}
+
+export function isOpenAIVisionQuotaExceeded(): boolean {
+  return openaiVisionQuotaExceeded;
+}
+
+export function isOpenAIQuotaError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  const lower = msg.toLowerCase();
+  return (
+    err instanceof OpenAIVisionQuotaError ||
+    lower.includes('openai vision http 429') ||
+    (lower.includes('openai') && lower.includes('quota')) ||
+    (lower.includes('exceeded') && lower.includes('billing'))
+  );
+}
+
 function parseVisionJson(text: string): SakeVisionResult | null {
   try {
     const o = JSON.parse(text) as Record<string, unknown>;
@@ -98,7 +127,12 @@ Set isJapaneseSakeProductPhoto to FALSE for: Scotch/whisky/whiskey (e.g. Johnnie
 
   if (!res.ok) {
     const errText = await res.text();
-    throw new Error(`OpenAI vision HTTP ${res.status}: ${errText.slice(0, 200)}`);
+    const errMsg = `OpenAI vision HTTP ${res.status}: ${errText.slice(0, 200)}`;
+    if (res.status === 429 || isOpenAIQuotaError(new Error(errMsg))) {
+      openaiVisionQuotaExceeded = true;
+      throw new OpenAIVisionQuotaError(errMsg);
+    }
+    throw new Error(errMsg);
   }
 
   const data = (await res.json()) as {
