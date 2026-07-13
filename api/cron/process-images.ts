@@ -8,6 +8,7 @@ import {
 } from './lib/imageMirror.js';
 import {
   isFirecrawlBypassActive,
+  isTrustedImageUrl,
   isTrustedRetailerSource,
   prefilterDiscoverCandidates,
   resetFirecrawlBypassForInvocation,
@@ -31,6 +32,7 @@ const DISCOVER_ROW_CAP = 40;
 const DISCOVER_CANDIDATES_MAX = 4;
 const DISCOVER_CANDIDATES_MAX_ACCELERATED = 2;
 const DISCOVER_CANDIDATES_MAX_TRUSTED = 3;
+const DISCOVER_VISION_MAX_PER_ROW_ACCELERATED = 2;
 const ATTEMPT_HISTORY_BATCH_SIZE = 80;
 /** Spot-check hosted images; clear when vision says not sake. */
 const AUDIT_ROW_CAP = 10;
@@ -666,6 +668,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               ? []
               : otherCandidates.slice(0, discoverCandidatesMax)),
           ];
+          let visionChecksThisRow = 0;
 
           for (const img of candidateQueue) {
             if (shouldStopChunk()) {
@@ -700,12 +703,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             }
 
             try {
-              const trustedSource = isTrustedRetailerSource(img.source);
+              const trustedSource = isTrustedRetailerSource(img.source) || isTrustedImageUrl(img.url);
               if (!trustedSource) {
                 if (isOpenAIVisionQuotaExceeded()) {
                   continue;
                 }
+                if (
+                  acceleratedDiscover &&
+                  visionChecksThisRow >= DISCOVER_VISION_MAX_PER_ROW_ACCELERATED
+                ) {
+                  failureReason = 'vision_cap_reached';
+                  continue;
+                }
                 diagnostics.discover.visionChecks++;
+                visionChecksThisRow++;
                 const v = await validateJapaneseSakeProductPhoto(openaiKey, img.url, {
                   sakeName: row.name,
                   brewery: row.brewery,

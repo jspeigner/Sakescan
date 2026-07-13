@@ -490,26 +490,47 @@ export async function searchTrustedRetailerCandidatesDirect(
     sourceCounts: { google: 0, bing: 0, sakura: 0, umami: 0, sakeTimes: 0 },
   };
 
-  const sakuraUrl = `https://export.sakurasaketen.com/sake?Keyword=${encodeURIComponent(name)}`;
-  const sakuraHtml = await fetchHtmlDirect(sakuraUrl);
+  const sakuraFilter = (url: string): boolean =>
+    !url.includes('logo') &&
+    !url.includes('icon') &&
+    !url.includes('badge') &&
+    !url.includes('arrow') &&
+    !url.includes('close') &&
+    !url.includes('fav.') &&
+    !url.includes('_og.') &&
+    (url.includes('website-files.com') ||
+      url.includes('uploads') ||
+      url.includes('cdn') ||
+      url.includes('sake'));
+
+  const fetchWithTimeout = async (url: string, ms = 4000): Promise<string | null> => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ms);
+    try {
+      const res = await fetch(url, { headers: BROWSER_HEADERS, redirect: 'follow', signal: controller.signal });
+      if (!res.ok) return null;
+      return await res.text();
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  const [sakuraHtml, umamiHtml, sakeTimesHtml] = await Promise.all([
+    fetchWithTimeout(`https://export.sakurasaketen.com/sake?Keyword=${encodeURIComponent(name)}`),
+    fetchWithTimeout(`https://umamimart.com/search?q=${encodeURIComponent(name + ' sake')}&type=product`),
+    nameJapanese
+      ? fetchWithTimeout(`https://en.sake-times.com/?s=${encodeURIComponent(nameJapanese)}`)
+      : Promise.resolve(null),
+  ]);
+
   if (sakuraHtml) {
-    const productImages = extractProductImagesFromHtml(
-      sakuraHtml,
-      (url) =>
-        !url.includes('logo') &&
-        !url.includes('icon') &&
-        !url.includes('badge') &&
-        !url.includes('arrow') &&
-        !url.includes('close') &&
-        (url.includes('uploads') || url.includes('cdn') || url.includes('sake')),
-      5
-    );
+    const productImages = extractProductImagesFromHtml(sakuraHtml, sakuraFilter, 5);
     productImages.forEach((url) => results.push({ url, source: 'Sakura Sake Shop' }));
     debug.sourceCounts.sakura += productImages.length;
   }
 
-  const umamiUrl = `https://umamimart.com/search?q=${encodeURIComponent(name + ' sake')}&type=product`;
-  const umamiHtml = await fetchHtmlDirect(umamiUrl);
   if (umamiHtml) {
     const shopifyRegex =
       /https:\/\/[^"'\s]+cdn\.shopify\.com[^"'\s]+\.(?:jpg|jpeg|png|webp)(?:\?[^"'\s]*)?/gi;
@@ -529,22 +550,18 @@ export async function searchTrustedRetailerCandidatesDirect(
     debug.sourceCounts.umami += productImages.length;
   }
 
-  if (nameJapanese) {
-    const sakeTimesUrl = `https://en.sake-times.com/?s=${encodeURIComponent(nameJapanese)}`;
-    const sakeTimesHtml = await fetchHtmlDirect(sakeTimesUrl);
-    if (sakeTimesHtml) {
-      const sakeImages = extractProductImagesFromHtml(
-        sakeTimesHtml,
-        (url) =>
-          !url.includes('logo') &&
-          !url.includes('icon') &&
-          !url.includes('avatar') &&
-          url.includes('sake'),
-        3
-      );
-      sakeImages.forEach((url) => results.push({ url, source: 'Sake Times' }));
-      debug.sourceCounts.sakeTimes += sakeImages.length;
-    }
+  if (sakeTimesHtml) {
+    const sakeImages = extractProductImagesFromHtml(
+      sakeTimesHtml,
+      (url) =>
+        !url.includes('logo') &&
+        !url.includes('icon') &&
+        !url.includes('avatar') &&
+        (url.includes('sake') || url.includes('wp-content')),
+      3
+    );
+    sakeImages.forEach((url) => results.push({ url, source: 'Sake Times' }));
+    debug.sourceCounts.sakeTimes += sakeImages.length;
   }
 
   return { images: results, debug };
@@ -553,6 +570,23 @@ export async function searchTrustedRetailerCandidatesDirect(
 /** Curated retailer sources — vision optional; download still validates the asset. */
 export function isTrustedRetailerSource(source: string): boolean {
   return TRUSTED_RETAILER_SOURCES.has(source);
+}
+
+const TRUSTED_IMAGE_HOST_PATTERNS = [
+  /sakurasaketen\.com/i,
+  /website-files\.com/i,
+  /umamimart\.com/i,
+  /cdn\.shopify\.com\/.*\/products\//i,
+  /sake-times\.com/i,
+  /kurand\.jp/i,
+  /dekanta\.jp/i,
+  /sakeshop\.co\.jp/i,
+  /tippsy-sake\.com/i,
+];
+
+/** Trusted hosts can skip OpenAI vision when URL passes junk filters. */
+export function isTrustedImageUrl(url: string): boolean {
+  return TRUSTED_IMAGE_HOST_PATTERNS.some((re) => re.test(url));
 }
 
 export async function searchSakeImageCandidates(
@@ -724,6 +758,7 @@ export async function searchSakeImageCandidates(
   }
 
   const skipWebSearch = mode === 'trusted-first' && results.length >= 2;
+  const skipBingInFast = fastMode;
 
   if (!skipWebSearch) {
     for (const searchQuery of searchQueries) {
@@ -733,7 +768,7 @@ export async function searchSakeImageCandidates(
       if (googleResult.error) {
         debug.firecrawlErrors.push(`googleImages (${searchQuery.slice(0, 40)}): ${googleResult.error}`);
       }
-      if (results.length < 8 || !fastMode) {
+      if (!skipBingInFast && (results.length < 8 || !fastMode)) {
         try {
           const bingRows = await scrapeBingImages(searchQuery);
           results.push(...bingRows);
