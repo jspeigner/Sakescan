@@ -10,6 +10,7 @@ import {
   sakeImageUpdatePayload,
   shouldReplaceImage,
 } from './imageProvenance.js';
+import { isPublicHttpImageUrl } from './publicImageUrl.js';
 import { sakeVisionPasses, validateJapaneseSakeProductPhoto } from './sakeImageVision.js';
 import {
   getWineEngineConfig,
@@ -145,6 +146,11 @@ export async function promoteScanImagesBatch(
 
     attempted++;
     try {
+      if (!isPublicHttpImageUrl(scan.scanned_image_url)) {
+        skippedVision++;
+        continue;
+      }
+
       if (openaiKey) {
         const v = await validateJapaneseSakeProductPhoto(openaiKey, scan.scanned_image_url, {
           sakeName: sake.name,
