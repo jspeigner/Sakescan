@@ -1,3 +1,5 @@
+import { isPublicHttpImageUrl } from './publicImageUrl.js';
+
 /**
  * Vision check: image must look like Japanese sake (nihonshu) product photography,
  * not whisky/wine/beer or unrelated subjects.
@@ -85,6 +87,10 @@ export async function validateJapaneseSakeProductPhoto(
   imageUrl: string,
   context: { sakeName: string; brewery?: string | null }
 ): Promise<SakeVisionResult> {
+  if (!isPublicHttpImageUrl(imageUrl)) {
+    throw new Error('Image URL must be a public HTTP(S) URL');
+  }
+
   const system = `You verify product photos for a Japanese sake (nihonshu) database. Reply with JSON only.`;
 
   const userText = `Sake name: "${context.sakeName}"${context.brewery ? `. Brewery: "${context.brewery}".` : ''}
