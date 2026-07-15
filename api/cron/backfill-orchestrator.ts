@@ -371,6 +371,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           skippedVision: promote.skippedVision,
           skippedWineEngine: promote.skippedWineEngine,
           skippedExisting: promote.skippedExisting,
+          skippedInvalidUrl: promote.skippedInvalidUrl,
         },
         errors: promote.errors.length ? promote.errors.slice(0, 6) : undefined,
       });
