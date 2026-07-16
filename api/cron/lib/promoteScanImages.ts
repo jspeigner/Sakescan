@@ -24,6 +24,7 @@ export type PromoteScanResult = {
   skippedVision: number;
   skippedWineEngine: number;
   skippedExisting: number;
+  skippedInvalidUrl: number;
   errors: string[];
 };
 
@@ -42,6 +43,15 @@ type SakeImageRow = {
   image_quality: string | null;
 };
 
+function isPublicHttpImageUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (url.protocol === 'http:' || url.protocol === 'https:') && Boolean(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
 export async function promoteScanImagesBatch(
   supabase: SupabaseClient,
   options?: {
@@ -59,6 +69,7 @@ export async function promoteScanImagesBatch(
   let skippedVision = 0;
   let skippedWineEngine = 0;
   let skippedExisting = 0;
+  let skippedInvalidUrl = 0;
 
   let scanQuery = supabase
     .from('scans')
@@ -83,6 +94,7 @@ export async function promoteScanImagesBatch(
       skippedVision: 0,
       skippedWineEngine: 0,
       skippedExisting: 0,
+      skippedInvalidUrl: 0,
       errors: [scanErr.message],
     };
   }
@@ -91,10 +103,15 @@ export async function promoteScanImagesBatch(
     (s): s is ScanCandidate =>
       Boolean(s.sake_id && s.scanned_image_url && (!requireOptIn || s.catalog_share_opt_in === true))
   );
+  const validCandidates = candidates.filter((s) => {
+    if (isPublicHttpImageUrl(s.scanned_image_url)) return true;
+    skippedInvalidUrl++;
+    return false;
+  });
 
   // Prefer one scan per sake (most recent first already)
   const bySake = new Map<string, ScanCandidate>();
-  for (const s of candidates) {
+  for (const s of validCandidates) {
     if (!bySake.has(s.sake_id)) bySake.set(s.sake_id, s);
   }
 
@@ -107,6 +124,7 @@ export async function promoteScanImagesBatch(
       skippedVision: 0,
       skippedWineEngine: 0,
       skippedExisting: 0,
+      skippedInvalidUrl,
       errors: [],
     };
   }
@@ -124,6 +142,7 @@ export async function promoteScanImagesBatch(
       skippedVision: 0,
       skippedWineEngine: 0,
       skippedExisting: 0,
+      skippedInvalidUrl,
       errors: [sakeErr.message],
     };
   }
@@ -200,6 +219,7 @@ export async function promoteScanImagesBatch(
     skippedVision,
     skippedWineEngine,
     skippedExisting,
+    skippedInvalidUrl,
     errors,
   };
 }
