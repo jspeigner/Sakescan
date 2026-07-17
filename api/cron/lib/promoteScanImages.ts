@@ -24,6 +24,7 @@ export type PromoteScanResult = {
   skippedVision: number;
   skippedWineEngine: number;
   skippedExisting: number;
+  skippedInvalidUrl: number;
   errors: string[];
 };
 
@@ -42,6 +43,15 @@ type SakeImageRow = {
   image_quality: string | null;
 };
 
+function isPublicHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value.trim());
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 export async function promoteScanImagesBatch(
   supabase: SupabaseClient,
   options?: {
@@ -59,6 +69,7 @@ export async function promoteScanImagesBatch(
   let skippedVision = 0;
   let skippedWineEngine = 0;
   let skippedExisting = 0;
+  let skippedInvalidUrl = 0;
 
   let scanQuery = supabase
     .from('scans')
@@ -83,6 +94,7 @@ export async function promoteScanImagesBatch(
       skippedVision: 0,
       skippedWineEngine: 0,
       skippedExisting: 0,
+      skippedInvalidUrl: 0,
       errors: [scanErr.message],
     };
   }
@@ -107,6 +119,7 @@ export async function promoteScanImagesBatch(
       skippedVision: 0,
       skippedWineEngine: 0,
       skippedExisting: 0,
+      skippedInvalidUrl: 0,
       errors: [],
     };
   }
@@ -124,6 +137,7 @@ export async function promoteScanImagesBatch(
       skippedVision: 0,
       skippedWineEngine: 0,
       skippedExisting: 0,
+      skippedInvalidUrl: 0,
       errors: [sakeErr.message],
     };
   }
@@ -143,10 +157,16 @@ export async function promoteScanImagesBatch(
       continue;
     }
 
+    const scannedImageUrl = scan.scanned_image_url.trim();
+    if (!isPublicHttpUrl(scannedImageUrl)) {
+      skippedInvalidUrl++;
+      continue;
+    }
+
     attempted++;
     try {
       if (openaiKey) {
-        const v = await validateJapaneseSakeProductPhoto(openaiKey, scan.scanned_image_url, {
+        const v = await validateJapaneseSakeProductPhoto(openaiKey, scannedImageUrl, {
           sakeName: sake.name,
           brewery: sake.brewery,
         });
@@ -159,7 +179,7 @@ export async function promoteScanImagesBatch(
 
       if (wineEngineCfg) {
         try {
-          const we = await wineEngineSearchByUrl(wineEngineCfg, scan.scanned_image_url, { limit: 1 });
+          const we = await wineEngineSearchByUrl(wineEngineCfg, scannedImageUrl, { limit: 1 });
           const confirm = wineEngineConfirmsSake(we, sakeId, { minScoreText: 45, minScore: 15 });
           if (we.status === 'ok' && we.result?.length && confirm.reason === 'matched_other_sake') {
             skippedWineEngine++;
@@ -172,7 +192,7 @@ export async function promoteScanImagesBatch(
 
       const stored = await downloadAndStore(
         supabase,
-        scan.scanned_image_url,
+        scannedImageUrl,
         'sake-images',
         sake.name,
         seenHashes,
@@ -200,6 +220,7 @@ export async function promoteScanImagesBatch(
     skippedVision,
     skippedWineEngine,
     skippedExisting,
+    skippedInvalidUrl,
     errors,
   };
 }
