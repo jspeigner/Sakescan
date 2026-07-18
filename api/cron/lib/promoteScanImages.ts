@@ -24,6 +24,7 @@ export type PromoteScanResult = {
   skippedVision: number;
   skippedWineEngine: number;
   skippedExisting: number;
+  skippedInvalidUrl: number;
   errors: string[];
 };
 
@@ -42,6 +43,15 @@ type SakeImageRow = {
   image_quality: string | null;
 };
 
+function isPublicHttpUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 export async function promoteScanImagesBatch(
   supabase: SupabaseClient,
   options?: {
@@ -59,6 +69,7 @@ export async function promoteScanImagesBatch(
   let skippedVision = 0;
   let skippedWineEngine = 0;
   let skippedExisting = 0;
+  let skippedInvalidUrl = 0;
 
   let scanQuery = supabase
     .from('scans')
@@ -83,6 +94,7 @@ export async function promoteScanImagesBatch(
       skippedVision: 0,
       skippedWineEngine: 0,
       skippedExisting: 0,
+      skippedInvalidUrl: 0,
       errors: [scanErr.message],
     };
   }
@@ -107,6 +119,7 @@ export async function promoteScanImagesBatch(
       skippedVision: 0,
       skippedWineEngine: 0,
       skippedExisting: 0,
+      skippedInvalidUrl: 0,
       errors: [],
     };
   }
@@ -124,6 +137,7 @@ export async function promoteScanImagesBatch(
       skippedVision: 0,
       skippedWineEngine: 0,
       skippedExisting: 0,
+      skippedInvalidUrl: 0,
       errors: [sakeErr.message],
     };
   }
@@ -140,6 +154,11 @@ export async function promoteScanImagesBatch(
 
     if (!shouldReplaceImage(sake.image_quality, sake.image_url, 't2')) {
       skippedExisting++;
+      continue;
+    }
+
+    if (!isPublicHttpUrl(scan.scanned_image_url)) {
+      skippedInvalidUrl++;
       continue;
     }
 
@@ -200,6 +219,7 @@ export async function promoteScanImagesBatch(
     skippedVision,
     skippedWineEngine,
     skippedExisting,
+    skippedInvalidUrl,
     errors,
   };
 }
