@@ -4,7 +4,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { downloadAndStore, sleep } from './imageMirror.js';
+import { downloadAndStore, isPublicHttpImageUrl, sleep } from './imageMirror.js';
 import {
   provenanceForUserScan,
   sakeImageUpdatePayload,
@@ -24,6 +24,7 @@ export type PromoteScanResult = {
   skippedVision: number;
   skippedWineEngine: number;
   skippedExisting: number;
+  skippedInvalidUrl: number;
   errors: string[];
 };
 
@@ -59,6 +60,7 @@ export async function promoteScanImagesBatch(
   let skippedVision = 0;
   let skippedWineEngine = 0;
   let skippedExisting = 0;
+  let skippedInvalidUrl = 0;
 
   let scanQuery = supabase
     .from('scans')
@@ -83,6 +85,7 @@ export async function promoteScanImagesBatch(
       skippedVision: 0,
       skippedWineEngine: 0,
       skippedExisting: 0,
+      skippedInvalidUrl: 0,
       errors: [scanErr.message],
     };
   }
@@ -107,6 +110,7 @@ export async function promoteScanImagesBatch(
       skippedVision: 0,
       skippedWineEngine: 0,
       skippedExisting: 0,
+      skippedInvalidUrl: 0,
       errors: [],
     };
   }
@@ -124,6 +128,7 @@ export async function promoteScanImagesBatch(
       skippedVision: 0,
       skippedWineEngine: 0,
       skippedExisting: 0,
+      skippedInvalidUrl: 0,
       errors: [sakeErr.message],
     };
   }
@@ -140,6 +145,11 @@ export async function promoteScanImagesBatch(
 
     if (!shouldReplaceImage(sake.image_quality, sake.image_url, 't2')) {
       skippedExisting++;
+      continue;
+    }
+
+    if (!isPublicHttpImageUrl(scan.scanned_image_url)) {
+      skippedInvalidUrl++;
       continue;
     }
 
@@ -200,6 +210,7 @@ export async function promoteScanImagesBatch(
     skippedVision,
     skippedWineEngine,
     skippedExisting,
+    skippedInvalidUrl,
     errors,
   };
 }
