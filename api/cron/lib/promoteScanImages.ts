@@ -24,6 +24,7 @@ export type PromoteScanResult = {
   skippedVision: number;
   skippedWineEngine: number;
   skippedExisting: number;
+  skippedInvalidUrl: number;
   errors: string[];
 };
 
@@ -42,6 +43,45 @@ type SakeImageRow = {
   image_quality: string | null;
 };
 
+function isPrivateIpv4(hostname: string): boolean {
+  const parts = hostname.split('.').map((part) => Number.parseInt(part, 10));
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+    return false;
+  }
+
+  const [a, b] = parts;
+  return (
+    a === 10 ||
+    a === 127 ||
+    a === 0 ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    (a === 169 && b === 254)
+  );
+}
+
+function isPublicHttpImageUrl(rawUrl: string): boolean {
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+
+    const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    if (!hostname || hostname === 'localhost' || hostname.endsWith('.localhost')) return false;
+    if (isPrivateIpv4(hostname)) return false;
+    const isIpv6 = hostname.includes(':');
+    if (
+      hostname === '::1' ||
+      (isIpv6 && (hostname.startsWith('fc') || hostname.startsWith('fd') || hostname.startsWith('fe80:')))
+    ) {
+      return false;
+    }
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function promoteScanImagesBatch(
   supabase: SupabaseClient,
   options?: {
@@ -59,6 +99,7 @@ export async function promoteScanImagesBatch(
   let skippedVision = 0;
   let skippedWineEngine = 0;
   let skippedExisting = 0;
+  let skippedInvalidUrl = 0;
 
   let scanQuery = supabase
     .from('scans')
@@ -83,6 +124,7 @@ export async function promoteScanImagesBatch(
       skippedVision: 0,
       skippedWineEngine: 0,
       skippedExisting: 0,
+      skippedInvalidUrl: 0,
       errors: [scanErr.message],
     };
   }
@@ -92,9 +134,13 @@ export async function promoteScanImagesBatch(
       Boolean(s.sake_id && s.scanned_image_url && (!requireOptIn || s.catalog_share_opt_in === true))
   );
 
-  // Prefer one scan per sake (most recent first already)
+  // Prefer one public, externally fetchable scan per sake (most recent first already).
   const bySake = new Map<string, ScanCandidate>();
   for (const s of candidates) {
+    if (!isPublicHttpImageUrl(s.scanned_image_url)) {
+      skippedInvalidUrl++;
+      continue;
+    }
     if (!bySake.has(s.sake_id)) bySake.set(s.sake_id, s);
   }
 
@@ -107,6 +153,7 @@ export async function promoteScanImagesBatch(
       skippedVision: 0,
       skippedWineEngine: 0,
       skippedExisting: 0,
+      skippedInvalidUrl,
       errors: [],
     };
   }
@@ -124,6 +171,7 @@ export async function promoteScanImagesBatch(
       skippedVision: 0,
       skippedWineEngine: 0,
       skippedExisting: 0,
+      skippedInvalidUrl,
       errors: [sakeErr.message],
     };
   }
@@ -200,6 +248,7 @@ export async function promoteScanImagesBatch(
     skippedVision,
     skippedWineEngine,
     skippedExisting,
+    skippedInvalidUrl,
     errors,
   };
 }
