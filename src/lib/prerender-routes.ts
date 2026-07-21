@@ -15,6 +15,9 @@ const STATIC_ROUTES = [
   "/guides",
   "/contact",
   "/careers",
+  "/careers/content-creator",
+  "/careers/marketing-lead",
+  "/careers/product-developer",
   "/privacy",
   "/terms",
 ];
@@ -25,7 +28,10 @@ const STATIC_LASTMOD: Record<string, string> = {
   "/explore": "2026-05-19",
   "/guides": "2026-02-15",
   "/contact": "2026-02-01",
-  "/careers": "2026-02-01",
+  "/careers": "2026-07-21",
+  "/careers/content-creator": "2026-07-21",
+  "/careers/marketing-lead": "2026-07-21",
+  "/careers/product-developer": "2026-07-21",
   "/privacy": "2026-01-01",
   "/terms": "2026-01-01",
 };
