@@ -164,11 +164,15 @@ export function wineEngineConfirmsSake(
   return { confirmed: false, top, reason: 'weak_or_unlinked_match' };
 }
 
-/** Reject candidate when collection clearly identifies a different sake. */
+/**
+ * Reject candidate only on strong evidence of a different sake.
+ * Incomplete collections often weak-match similar bottles — keep the bar high
+ * so discover is not starved by false rejects.
+ */
 export function wineEngineRejectsCandidate(
   response: WineEngineResponse<WineEngineMatch[]>,
   targetSakeId: string
 ): boolean {
-  const check = wineEngineConfirmsSake(response, targetSakeId, { minScoreText: 50, minScore: 20 });
+  const check = wineEngineConfirmsSake(response, targetSakeId, { minScoreText: 75, minScore: 40 });
   return check.reason === 'matched_other_sake';
 }

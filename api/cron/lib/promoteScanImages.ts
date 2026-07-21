@@ -24,6 +24,7 @@ export type PromoteScanResult = {
   skippedVision: number;
   skippedWineEngine: number;
   skippedExisting: number;
+  skippedUnusableUrl: number;
   errors: string[];
 };
 
@@ -42,6 +43,13 @@ type SakeImageRow = {
   image_quality: string | null;
 };
 
+/** OpenAI / Storage can only fetch public http(s) URLs — not local file:// paths from iOS. */
+export function isPromotableScanImageUrl(url: string | null | undefined): boolean {
+  if (!url) return false;
+  const trimmed = url.trim();
+  return /^https?:\/\//i.test(trimmed);
+}
+
 export async function promoteScanImagesBatch(
   supabase: SupabaseClient,
   options?: {
@@ -59,6 +67,7 @@ export async function promoteScanImagesBatch(
   let skippedVision = 0;
   let skippedWineEngine = 0;
   let skippedExisting = 0;
+  let skippedUnusableUrl = 0;
 
   let scanQuery = supabase
     .from('scans')
@@ -68,7 +77,7 @@ export async function promoteScanImagesBatch(
     .not('scanned_image_url', 'is', null)
     .neq('scanned_image_url', '')
     .order('created_at', { ascending: false })
-    .limit(batchSize * 3);
+    .limit(batchSize * 4);
 
   if (requireOptIn) {
     scanQuery = scanQuery.eq('catalog_share_opt_in', true);
@@ -83,6 +92,7 @@ export async function promoteScanImagesBatch(
       skippedVision: 0,
       skippedWineEngine: 0,
       skippedExisting: 0,
+      skippedUnusableUrl: 0,
       errors: [scanErr.message],
     };
   }
@@ -92,9 +102,13 @@ export async function promoteScanImagesBatch(
       Boolean(s.sake_id && s.scanned_image_url && (!requireOptIn || s.catalog_share_opt_in === true))
   );
 
-  // Prefer one scan per sake (most recent first already)
+  // Prefer HTTPS Storage URLs; skip file:// (mobile local paths) entirely.
   const bySake = new Map<string, ScanCandidate>();
   for (const s of candidates) {
+    if (!isPromotableScanImageUrl(s.scanned_image_url)) {
+      skippedUnusableUrl++;
+      continue;
+    }
     if (!bySake.has(s.sake_id)) bySake.set(s.sake_id, s);
   }
 
@@ -107,6 +121,7 @@ export async function promoteScanImagesBatch(
       skippedVision: 0,
       skippedWineEngine: 0,
       skippedExisting: 0,
+      skippedUnusableUrl,
       errors: [],
     };
   }
@@ -124,6 +139,7 @@ export async function promoteScanImagesBatch(
       skippedVision: 0,
       skippedWineEngine: 0,
       skippedExisting: 0,
+      skippedUnusableUrl,
       errors: [sakeErr.message],
     };
   }
@@ -200,6 +216,7 @@ export async function promoteScanImagesBatch(
     skippedVision,
     skippedWineEngine,
     skippedExisting,
+    skippedUnusableUrl,
     errors,
   };
 }

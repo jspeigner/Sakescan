@@ -210,7 +210,9 @@ function isEnvironmentalDiscoverFailure(reason: string): boolean {
     lower.includes('openai_quota') ||
     lower.includes('openai vision http 429') ||
     (lower.includes('openai') && lower.includes('quota')) ||
-    lower.includes('time_budget_reached')
+    lower.includes('time_budget_reached') ||
+    // False WineEngine rejects (incomplete collection) should not multi-hour block rows.
+    lower.includes('wineengine_matched_other_sake')
   );
 }
 
@@ -232,6 +234,7 @@ const ENVIRONMENTAL_BACKOFF_REASONS = [
   'openai vision http 429',
   'time_budget_reached',
   'openai_quota_exceeded',
+  'wineengine_matched_other_sake',
 ];
 
 /** One-time hygiene: unblock rows stuck on quota/timeout backoff when services recover. */
@@ -718,7 +721,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               continue;
             }
 
-            if (wineEngineActive && wineEngineCfg) {
+            // Trusted retailer URLs skip WineEngine reject — incomplete collections
+            // false-match similar bottles and starve discover.
+            const trustedEarly =
+              isTrustedRetailerSource(img.source) || isTrustedImageUrl(img.url);
+            if (wineEngineActive && wineEngineCfg && !trustedEarly) {
               try {
                 diagnostics.discover.wineEngineChecks++;
                 const weSearch = await wineEngineSearchByUrl(wineEngineCfg, img.url, { limit: 1 });
@@ -737,7 +744,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             }
 
             try {
-              const trustedSource = isTrustedRetailerSource(img.source) || isTrustedImageUrl(img.url);
+              const trustedSource = trustedEarly;
               const incomingQuality = trustedSource ? 't1' : 't3';
               if (!shouldReplaceImage(row.image_quality, row.image_url, incomingQuality)) {
                 failureReason = 'weaker_than_existing';

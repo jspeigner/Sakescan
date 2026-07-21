@@ -25,7 +25,7 @@ export type WineEngineBatchResult = {
 
 export async function runWineEngineSyncBatch(
   supabase: SupabaseClient,
-  supabaseUrl: string,
+  _supabaseUrl: string,
   options?: { batchSize?: number }
 ): Promise<WineEngineBatchResult> {
   const cfg = getWineEngineConfig();
@@ -46,20 +46,16 @@ export async function runWineEngineSyncBatch(
     offset: 0,
   });
   const offset = state.offset;
-  const projectHost = supabaseUrl.replace(/^https?:\/\//, '').split('/')[0];
 
-  let query = supabase
+  // Hosted catalog images in Supabase Storage (do not AND a second host filter —
+  // mismatched VITE_SUPABASE_URL previously yielded empty sync batches).
+  const query = supabase
     .from('sake')
     .select('id, name, image_url, image_quality')
     .not('image_url', 'is', null)
     .neq('image_url', '')
-    // Prefer retailer T1 (and legacy rows without quality) for collection accuracy
-    .or('image_quality.is.null,image_quality.eq.t1')
+    .ilike('image_url', '%supabase.co%')
     .order('updated_at', { ascending: true });
-
-  if (projectHost) {
-    query = query.ilike('image_url', `%${projectHost}%`);
-  }
 
   const { data: rows, error } = await query.range(offset, offset + batchSize - 1);
   if (error) throw new Error(error.message);

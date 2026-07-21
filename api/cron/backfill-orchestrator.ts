@@ -99,6 +99,14 @@ async function resetEnvironmentalBackoffOnStartup(
       .select('sake_id');
     if (!error && data) cleared += data.length;
   }
+  // Also clear WineEngine false-reject backoffs that starved discover.
+  const { data: weData, error: weErr } = await supabase
+    .from('sake_image_attempts')
+    .update({ next_retry_at: null, updated_at: now })
+    .eq('last_failure_reason', 'wineengine_matched_other_sake')
+    .gt('next_retry_at', now)
+    .select('sake_id');
+  if (!weErr && weData) cleared += weData.length;
   return cleared;
 }
 
@@ -360,9 +368,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         openaiKey: openaiKey || undefined,
         requireOptIn: false,
       });
+      // Unusable local file:// scan URLs are expected until mobile uploads to Storage —
+      // don't fail the whole orchestrator run for them.
+      const hardErrors = promote.errors.filter(
+        (e) => !e.toLowerCase().includes('file://') && !e.toLowerCase().includes('failed to download image')
+      );
       phases.push({
         phase: 'promote-scan-images',
-        status: promote.errors.length > 0 && promote.promoted === 0 ? 'failed' : promote.errors.length ? 'partial' : 'ok',
+        status:
+          hardErrors.length > 0 && promote.promoted === 0
+            ? 'failed'
+            : hardErrors.length
+              ? 'partial'
+              : 'ok',
         durationMs: Date.now() - t0,
         stats: {
           candidates: promote.candidates,
@@ -371,10 +389,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           skippedVision: promote.skippedVision,
           skippedWineEngine: promote.skippedWineEngine,
           skippedExisting: promote.skippedExisting,
+          skippedUnusableUrl: promote.skippedUnusableUrl,
         },
-        errors: promote.errors.length ? promote.errors.slice(0, 6) : undefined,
+        errors: hardErrors.length ? hardErrors.slice(0, 6) : undefined,
       });
-      if (promote.errors.length) runErrors.push(...promote.errors.slice(0, 3));
+      if (hardErrors.length) runErrors.push(...hardErrors.slice(0, 3));
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       phases.push({
@@ -507,7 +526,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       search: 'trusted-first',
       speed: openaiRecovered ? 'accelerated' : 'normal',
       budgetMs: String(discoverBudgetMs),
-      rowCap: prioritizeDiscover ? '16' : openaiRecovered ? '14' : '8',
+      rowCap: prioritizeDiscover ? '28' : openaiRecovered ? '20' : '12',
     };
 
     const inv = await invokeProcessImages(discoverQuery);

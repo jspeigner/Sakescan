@@ -26,7 +26,12 @@ export function shouldReplaceImage(
   incoming: ImageQuality
 ): boolean {
   if (!existingUrl) return true;
-  return qualityRank(incoming) > qualityRank(existingQuality);
+  // Legacy catalog photos (URL present, no provenance) count as T1 — never overwrite with T2/T3.
+  const existing =
+    existingQuality === 't1' || existingQuality === 't2' || existingQuality === 't3'
+      ? qualityRank(existingQuality)
+      : QUALITY_RANK.t1;
+  return qualityRank(incoming) > existing;
 }
 
 export function provenanceForTrustedRetailer(): ImageProvenance {

@@ -125,6 +125,7 @@ When a scan matches a sake that is missing a catalog photo (or only has a weak w
 3. Backend copies the scan photo into Storage and sets `sake.image_url` with provenance **T2** (`image_source=user_scan`, `image_quality=t2`).
 4. If a **T1** retailer product shot is found later, it **replaces** the user-scan catalog image. Scan history is kept.
 5. Existing saved history photos may also be harvested by cron without a new prompt (privacy copy already covers saved scans).
+6. `scanned_image_url` **must be a public `https://` Storage URL**. Local `file://` paths from the device cannot be promoted (OpenAI/Storage cannot fetch them). Upload the photo to Supabase Storage first, then save that URL on the scan.
 
 ### API: `POST /api/contribute-scan-image`
 
