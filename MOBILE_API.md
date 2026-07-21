@@ -104,11 +104,52 @@ Use the Supabase client SDK for your platform (iOS/Android/Flutter). The anon ke
 | id               | uuid    | Primary key              |
 | user_id          | uuid    | References `users.id`    |
 | sake_id          | uuid    | Matched sake (if found)  |
-| scanned_image_url| text    | Photo the user scanned   |
+| scanned_image_url| text    | **Public https Storage URL only** (never `file://`) |
 | ocr_raw_text     | text    | Text extracted from scan |
 | matched          | boolean | Whether a match was found|
 | catalog_share_opt_in | boolean | User opted in to share photo for catalog fill (default false) |
 | created_at       | timestamp |                        |
+
+> **Important:** Do **not** write local device paths (`file:///var/mobile/...`) into `scanned_image_url`. The database nulls non-http values. Upload the photo first (see below), then save the returned https URL.
+
+---
+
+## Upload scan photos (required)
+
+After capturing a label photo, upload bytes to Storage **before** (or while) saving the scan row.
+
+### API: `POST /api/upload-scan-image`
+
+Auth: `Authorization: Bearer <supabase_access_token>`
+
+```json
+{
+  "imageBase64": "<base64 or data:image/jpeg;base64,...>",
+  "contentType": "image/jpeg",
+  "scanId": "<optional uuid — updates that scan row>"
+}
+```
+
+Response:
+
+```json
+{
+  "success": true,
+  "url": "https://qpsdebikkmcdzddhphlk.supabase.co/storage/v1/object/public/sake-images/scan-uploads/...",
+  "path": "scan-uploads/<userId>/...",
+  "scanId": null,
+  "updatedScan": false
+}
+```
+
+### iOS save-scan flow (required)
+
+1. Capture / pick image on device.
+2. Call `POST /api/upload-scan-image` with the JPEG/PNG bytes (base64).
+3. Insert/update `scans` with `scanned_image_url = response.url` (https only).
+4. Optionally pass `scanId` on upload to update an existing row in one step.
+
+Alternative (Supabase client direct upload to bucket `sake-images`, path `scan-uploads/<userId>/...`) is fine if you set the public URL on the scan yourself — same rule: **https only**.
 
 ---
 
@@ -120,12 +161,11 @@ When a scan matches a sake that is missing a catalog photo (or only has a weak w
 
 ### Rules
 
-1. Only after a **successful match** (`matched=true`, `sake_id` set, `scanned_image_url` present).
-2. User must explicitly opt in (`catalog_share_opt_in=true`).
-3. Backend copies the scan photo into Storage and sets `sake.image_url` with provenance **T2** (`image_source=user_scan`, `image_quality=t2`).
-4. If a **T1** retailer product shot is found later, it **replaces** the user-scan catalog image. Scan history is kept.
-5. Existing saved history photos may also be harvested by cron without a new prompt (privacy copy already covers saved scans).
-6. `scanned_image_url` **must be a public `https://` Storage URL**. Local `file://` paths from the device cannot be promoted (OpenAI/Storage cannot fetch them). Upload the photo to Supabase Storage first, then save that URL on the scan.
+1. Only after a **successful match** (`matched=true`, `sake_id` set).
+2. `scanned_image_url` must be a public **https** Storage URL (upload first if needed).
+3. User must explicitly opt in (`catalog_share_opt_in=true`).
+4. Backend copies the scan photo into the catalog with provenance **T2** (`image_source=user_scan`, `image_quality=t2`).
+5. If a **T1** retailer product shot is found later, it **replaces** the user-scan catalog image. Scan history is kept.
 
 ### API: `POST /api/contribute-scan-image`
 
@@ -134,31 +174,24 @@ Auth: `Authorization: Bearer <supabase_access_token>`
 ```json
 {
   "scanId": "<uuid>",
+  "imageBase64": "<required if scan has no https URL yet>",
+  "contentType": "image/jpeg",
   "catalogShareOptIn": true,
   "promoteNow": true
 }
 ```
 
-Response includes updated `catalogImage` (`image_url`, `image_quality`, `image_source`) and optional `promote` stats.
+If the scan still has a local/`file://` URL (or null), include `imageBase64` — the API uploads to Storage, updates the scan, then promotes.
 
-### iOS flow (coordinate)
+Response includes `scannedImageUrl`, `uploaded`, `catalogImage`, and optional `promote` stats.
+
+### iOS contribute flow
 
 1. After match success, if catalog `image_url` is null **or** `image_quality` is `t2`/`t3`/`null`, show share prompt.
-2. On accept: call `POST /api/contribute-scan-image` with the scan id.
-3. On decline: leave `catalog_share_opt_in` false; do not upload for catalog.
-4. Storage prefix for contributions (when uploading separately): `scan-contributions/` under `sake-images` bucket — prefer the contribute API so opt-in + promote stay atomic.
+2. On accept: call `POST /api/contribute-scan-image` with `scanId` **and** `imageBase64` when the scan photo is only on-device.
+3. On decline: leave `catalog_share_opt_in` false.
 
-### Direct Supabase update (optional)
-
-```javascript
-await supabase
-  .from('scans')
-  .update({ catalog_share_opt_in: true })
-  .eq('id', scanId)
-  .eq('user_id', userId)
-```
-
-Cron `/api/cron/promote-scan-images` (also run by the backfill orchestrator) promotes opted-in / matched scans into missing catalog images.
+Cron `/api/cron/promote-scan-images` (also run by the backfill orchestrator) promotes matched scans with https photos into missing catalog images.
 
 ---
 
