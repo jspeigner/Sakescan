@@ -11,11 +11,6 @@ import {
   shouldReplaceImage,
 } from './imageProvenance.js';
 import { sakeVisionPasses, validateJapaneseSakeProductPhoto } from './sakeImageVision.js';
-import {
-  getWineEngineConfig,
-  wineEngineConfirmsSake,
-  wineEngineSearchByUrl,
-} from './wineEngine.js';
 
 export type PromoteScanResult = {
   candidates: number;
@@ -145,7 +140,6 @@ export async function promoteScanImagesBatch(
   }
 
   const sakeMap = new Map((sakes || []).map((s) => [s.id, s as SakeImageRow]));
-  const wineEngineCfg = getWineEngineConfig();
   const seenHashes = new Set<string>();
   const knownPlaceholderHashes = new Set<string>();
 
@@ -170,19 +164,6 @@ export async function promoteScanImagesBatch(
         if (!sakeVisionPasses(v, { allowMedium: true })) {
           skippedVision++;
           continue;
-        }
-      }
-
-      if (wineEngineCfg) {
-        try {
-          const we = await wineEngineSearchByUrl(wineEngineCfg, scan.scanned_image_url, { limit: 1 });
-          const confirm = wineEngineConfirmsSake(we, sakeId, { minScoreText: 45, minScore: 15 });
-          if (we.status === 'ok' && we.result?.length && confirm.reason === 'matched_other_sake') {
-            skippedWineEngine++;
-            continue;
-          }
-        } catch {
-          /* WineEngine optional */
         }
       }
 

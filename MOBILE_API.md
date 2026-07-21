@@ -38,7 +38,7 @@ Use the Supabase client SDK for your platform (iOS/Android/Flutter). The anon ke
 | image_url           | text    | URL to product photo (label or bottle) |
 | image_source        | text    | `retailer` \| `user_scan` \| `web_discover` \| `admin` |
 | image_quality       | text    | `t1` (retailer) \| `t2` (user scan) \| `t3` (web) — higher replaces lower |
-| image_verified_at   | timestamp | Last vision/WineEngine check         |
+| image_verified_at   | timestamp | Last vision verification timestamp   |
 | gallery_images      | jsonb   | `["url1", "url2"]` extra photos  |
 | external_id         | text    | Source ID (e.g. `TST0000047374`) |
 | average_rating      | number  | `4.2` (out of 5)                 |

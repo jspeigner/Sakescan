@@ -23,13 +23,6 @@ import {
   sakeImageUpdatePayload,
   shouldReplaceImage,
 } from './lib/imageProvenance.js';
-import {
-  getWineEngineConfig,
-  wineEngineAddByUrl,
-  wineEngineCount,
-  wineEngineRejectsCandidate,
-  wineEngineSearchByUrl,
-} from './lib/wineEngine.js';
 const MIRROR_OPS_BUDGET = 220;
 /** Attempt to fill missing image_url (Firecrawl + vision + upload). */
 const DISCOVER_ROW_CAP = 40;
@@ -355,7 +348,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         env: {
           discoverEnabled: Boolean(firecrawlKey && openaiKey),
           auditEnabled: Boolean(openaiKey),
-          wineEngineEnabled: Boolean(getWineEngineConfig()),
+          wineEngineEnabled: false,
         },
         timestamp: new Date().toISOString(),
       });
@@ -507,17 +500,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     // --- DISCOVER: null / empty image_url ---
-    // WineEngine skipped unless WINEENGINE_ENABLED=true (see getWineEngineConfig).
-    const wineEngineCfg = getWineEngineConfig();
-    let wineEngineCollectionCount = 0;
-    if (wineEngineCfg) {
-      try {
-        wineEngineCollectionCount = await wineEngineCount(wineEngineCfg);
-      } catch {
-        wineEngineCollectionCount = 0;
-      }
-    }
-    const wineEngineActive = Boolean(wineEngineCfg && wineEngineCollectionCount > 0);
+    // WineEngine disabled (subscription not renewed).
+
 
     if (firecrawlKey && openaiKey && !rateLimited && !hitTimeBudget) {
       resetFirecrawlBypassForInvocation();
@@ -721,27 +705,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               continue;
             }
 
-            // Trusted retailer URLs skip WineEngine reject — incomplete collections
-            // false-match similar bottles and starve discover.
+            // Trusted retailer URLs skip vision; WineEngine disabled.
             const trustedEarly =
               isTrustedRetailerSource(img.source) || isTrustedImageUrl(img.url);
-            if (wineEngineActive && wineEngineCfg && !trustedEarly) {
-              try {
-                diagnostics.discover.wineEngineChecks++;
-                const weSearch = await wineEngineSearchByUrl(wineEngineCfg, img.url, { limit: 1 });
-                if (wineEngineRejectsCandidate(weSearch, row.id)) {
-                  diagnostics.discover.wineEngineRejected++;
-                  failureReason = 'wineengine_matched_other_sake';
-                  continue;
-                }
-                const matchedId = weSearch.result?.[0]?.metadata?.image_id;
-                if (matchedId === row.id && (weSearch.result?.[0]?.score_text ?? 0) >= 55) {
-                  diagnostics.discover.wineEngineConfirmed++;
-                }
-              } catch {
-                /* WineEngine optional — continue with vision */
-              }
-            }
 
             try {
               const trustedSource = trustedEarly;
@@ -816,13 +782,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               diagnostics.discover.placedRows++;
               placed = true;
               failureReason = '';
-              if (wineEngineCfg) {
-                wineEngineAddByUrl(wineEngineCfg, { sakeId: row.id, imageUrl: result.url })
-                  .then(() => {
-                    diagnostics.discover.wineEngineIndexed++;
-                  })
-                  .catch(() => undefined);
-              }
               break;
             } catch (inner) {
               if (isOpenAIQuotaError(inner)) {
@@ -1163,9 +1122,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         breweryMainImages: brewRem.breweryMainImages,
         breweryGalleryImages: brewRem.breweryGalleryImages,
       },
-      wineEngine: wineEngineCfg
-        ? { collectionCount: wineEngineCollectionCount, activeInDiscover: wineEngineActive }
-        : undefined,
+      wineEngine: { disabled: true },
       sakeQueue: {
         externalRowsFetched: sakeExternalRowsFetched,
         note: 'Audit → discover (missing) → mirror external URLs. Discover needs FIRECRAWL + OPENAI.',
