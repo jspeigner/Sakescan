@@ -253,6 +253,33 @@ const { data } = await supabase
 
 Supabase Auth is enabled. Use `supabase.auth.signUp()`, `signInWithPassword()`, etc. User rows are created in the `users` table.
 
+### Password reset (Forgot Password)
+
+```javascript
+await supabase.auth.resetPasswordForEmail(email, {
+  redirectTo: 'https://www.sakescan.com/auth/callback',
+});
+```
+
+The website `/auth/callback` page deep-links into the app (`vibecode://reset-password#...`).
+
+**Supabase requirement:** custom SMTP must be configured. Without it, Auth only delivers mail to organization team members (so most users never receive the reset email). See `scripts/configure-auth-smtp.sh`.
+
+### Delete account
+
+Preferred (RPC):
+
+```javascript
+const { error } = await supabase.rpc('delete_own_account');
+```
+
+Fallback HTTP API:
+
+`POST /api/delete-account`  
+Auth: `Authorization: Bearer <supabase_access_token>`
+
+Deletes the caller's `public.users` row (cascades ratings/follows/etc.), avatar storage objects, and `auth.users` identity.
+
 ---
 
 ## Data Stats (as of Feb 2026)
