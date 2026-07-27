@@ -34,6 +34,7 @@ export function CareerApplicationForm({ job }: Props) {
   const [email, setEmail] = useState("");
   const [location, setLocation] = useState("");
   const [portfolioUrl, setPortfolioUrl] = useState("");
+  const [expectedPay, setExpectedPay] = useState("");
   const [coverNote, setCoverNote] = useState("");
   const [promptAnswer, setPromptAnswer] = useState("");
   const [resumeFile, setResumeFile] = useState<File | null>(null);
@@ -42,6 +43,7 @@ export function CareerApplicationForm({ job }: Props) {
   const applyMutation = useMutation({
     mutationFn: async () => {
       if (!resumeFile) throw new Error("Please attach your resume");
+      if (!expectedPay.trim()) throw new Error("Please enter your expected monthly pay");
       const resumeBase64 = await fileToBase64(resumeFile);
       const response = await fetch("/api/apply-career", {
         method: "POST",
@@ -53,6 +55,7 @@ export function CareerApplicationForm({ job }: Props) {
           email,
           location: location || undefined,
           portfolioUrl: portfolioUrl || undefined,
+          expectedPay: expectedPay.trim(),
           coverNote,
           promptAnswer: promptAnswer || undefined,
           resumeBase64,
@@ -146,6 +149,20 @@ export function CareerApplicationForm({ job }: Props) {
             placeholder="https://"
           />
         </div>
+      </div>
+
+      <div className="space-y-2">
+        <Label htmlFor="expectedPay">Expected monthly pay (USD)</Label>
+        <Input
+          id="expectedPay"
+          required
+          value={expectedPay}
+          onChange={(e) => setExpectedPay(e.target.value)}
+          placeholder="e.g. $2,000 / month"
+        />
+        <p className="text-xs text-muted-foreground">
+          Paid in crypto or stablecoin against a USD invoice. Tell us what monthly rate you expect for this role.
+        </p>
       </div>
 
       <div className="space-y-2">

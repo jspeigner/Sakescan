@@ -27,7 +27,7 @@ function extFromMime(mime: string): string | null {
  * POST /api/apply-career
  * {
  *   jobSlug, jobTitle, fullName, email, location?, portfolioUrl?,
- *   coverNote, promptAnswer?, resumeBase64, resumeFileName?, resumeContentType?
+ *   expectedPay, coverNote, promptAnswer?, resumeBase64, resumeFileName?, resumeContentType?
  * }
  */
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -48,6 +48,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     email?: string;
     location?: string;
     portfolioUrl?: string;
+    expectedPay?: string;
     coverNote?: string;
     promptAnswer?: string;
     resumeBase64?: string;
@@ -60,11 +61,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const fullName = body.fullName?.trim();
   const email = body.email?.trim().toLowerCase();
   const coverNote = body.coverNote?.trim();
+  const expectedPay = body.expectedPay?.trim();
   const resumeBase64 = body.resumeBase64;
 
-  if (!jobSlug || !jobTitle || !fullName || !email || !coverNote || !resumeBase64) {
+  if (!jobSlug || !jobTitle || !fullName || !email || !coverNote || !expectedPay || !resumeBase64) {
     return res.status(400).json({
-      error: 'jobSlug, jobTitle, fullName, email, coverNote, and resumeBase64 are required',
+      error:
+        'jobSlug, jobTitle, fullName, email, coverNote, expectedPay, and resumeBase64 are required',
     });
   }
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
@@ -124,6 +127,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       email,
       location: body.location?.trim() || null,
       portfolio_url: body.portfolioUrl?.trim() || null,
+      expected_pay: expectedPay,
       cover_note: coverNote,
       prompt_answer: body.promptAnswer?.trim() || null,
       resume_url: resumeUrl,

@@ -57,9 +57,9 @@ export default function CareerJob() {
                 <Briefcase className="w-4 h-4 shrink-0" />
                 {job.type}
               </div>
-              <div className="flex items-center gap-2">
-                <Wallet className="w-4 h-4 shrink-0" />
-                {job.compensation}
+              <div className="flex items-start gap-2">
+                <Wallet className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>{job.payNote}</span>
               </div>
               <div className="flex items-center gap-2">
                 <Clock className="w-4 h-4 shrink-0" />
