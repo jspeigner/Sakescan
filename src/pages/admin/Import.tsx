@@ -139,6 +139,7 @@ export default function AdminImport() {
 // ================= BREWERY IMPORT =================
 
 function BreweryImportPanel() {
+  const { session } = useAuth();
   const [step, setStep] = useState<BreweryImportStep>('idle');
   const [breweries, setBreweries] = useState<BreweryInput[]>([]);
   const [existingCount, setExistingCount] = useState(0);
@@ -160,13 +161,24 @@ function BreweryImportPanel() {
     setError(null);
 
     try {
+      const token = session?.access_token;
+      if (!token) {
+        throw new Error('Admin session expired. Sign in again and retry.');
+      }
+
       const response = await fetch('/api/setup-breweries', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify({}),
       });
 
       const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || `Request failed (${response.status})`);
+      }
 
       if (data.exists) {
         setExistingCount(data.rowCount || 0);
@@ -175,10 +187,16 @@ function BreweryImportPanel() {
         // Try to auto-create the table
         const createResponse = await fetch('/api/setup-breweries', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
           body: JSON.stringify({ action: 'create' }),
         });
         const createData = await createResponse.json();
+        if (!createResponse.ok) {
+          throw new Error(createData.error || `Request failed (${createResponse.status})`);
+        }
 
         if (createData.exists) {
           setExistingCount(createData.rowCount || 0);
@@ -244,9 +262,18 @@ function BreweryImportPanel() {
       setProgress(Math.round((i / breweries.length) * 100));
 
       try {
+        const token = session?.access_token;
+        if (!token) {
+          allErrors.push(`Batch ${batchNum}: Admin session expired. Sign in again and retry.`);
+          break;
+        }
+
         const response = await fetch('/api/import-breweries', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
           body: JSON.stringify({ breweries: batch }),
         });
 
@@ -341,12 +368,22 @@ function BreweryImportPanel() {
       setStep('checking');
       setError(null);
       try {
+        const token = session?.access_token;
+        if (!token) {
+          throw new Error('Admin session expired. Sign in again and retry.');
+        }
         const response = await fetch('/api/setup-breweries', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
           body: JSON.stringify({ action: 'create' }),
         });
         const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.error || `Request failed (${response.status})`);
+        }
         if (data.exists) {
           setExistingCount(data.rowCount || 0);
           loadJsonData();
@@ -623,6 +660,7 @@ function BreweryImportPanel() {
 // ================= SAKE IMPORT (existing logic) =================
 
 function SakeImportPanel() {
+  const { session } = useAuth();
   const [step, setStep] = useState<SakeImportStep>('idle');
   const [scrapedSakes, setScrapedSakes] = useState<ScrapedSake[]>([]);
   const [matchResult, setMatchResult] = useState<SakeMatchResult | null>(null);
@@ -638,9 +676,17 @@ function SakeImportPanel() {
     setProgress(10);
 
     try {
+      const token = session?.access_token;
+      if (!token) {
+        throw new Error('Admin session expired. Sign in again and retry.');
+      }
+
       const response = await fetch('/api/scrape-sakura-sake', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify({ page: 1 }),
       });
 
@@ -657,7 +703,10 @@ function SakeImportPanel() {
 
       const matchResponse = await fetch('/api/import-sakes', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify({ action: 'match', sakes: data.sakes }),
       });
 
@@ -686,12 +735,20 @@ function SakeImportPanel() {
     setError(null);
 
     try {
+      const token = session?.access_token;
+      if (!token) {
+        throw new Error('Admin session expired. Sign in again and retry.');
+      }
+
       const updatesToImport = matchResult.updates.filter(s => selectedUpdates.has(s.existingId!));
       const newToImport = matchResult.newSakes.filter(s => selectedNew.has(s.name));
 
       const response = await fetch('/api/import-sakes', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify({ action: 'import', updates: updatesToImport, newSakes: newToImport }),
       });
 
@@ -1237,8 +1294,15 @@ const SAKE_CHUNK_URL = `${SAKE_JOB_URL}?chunk=1`;
 const SAKE_CHUNK_MAX_ROUNDS = 80;
 const SAKE_CHUNK_POLL_MS = 120;
 
-async function runSakeImageJobFull(): Promise<ProcessingStatus> {
-  const response = await fetch(SAKE_JOB_URL, { method: 'POST' });
+function adminAuthHeaders(token: string): HeadersInit {
+  return { Authorization: `Bearer ${token}` };
+}
+
+async function runSakeImageJobFull(accessToken: string): Promise<ProcessingStatus> {
+  const response = await fetch(SAKE_JOB_URL, {
+    method: 'POST',
+    headers: adminAuthHeaders(accessToken),
+  });
   const data = await parseFetchJson<ProcessingStatus & { error?: string; details?: string }>(
     response,
     'Sake job'
@@ -1250,11 +1314,15 @@ async function runSakeImageJobFull(): Promise<ProcessingStatus> {
 }
 
 async function runSakeImageJobChunked(
+  accessToken: string,
   onProgress?: (round: number, data: ProcessingStatus) => void
 ): Promise<ProcessingStatus> {
   let last: ProcessingStatus | null = null;
   for (let round = 1; round <= SAKE_CHUNK_MAX_ROUNDS; round++) {
-    const response = await fetch(SAKE_CHUNK_URL, { method: 'POST' });
+    const response = await fetch(SAKE_CHUNK_URL, {
+      method: 'POST',
+      headers: adminAuthHeaders(accessToken),
+    });
     const data = await parseFetchJson<ProcessingStatus & { error?: string; details?: string }>(
       response,
       'Sake job'
@@ -1279,6 +1347,7 @@ async function runSakeImageJobChunked(
 }
 
 function ImageProcessorPanel() {
+  const { session } = useAuth();
   const [status, setStatus] = useState<ProcessingStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const [running, setRunning] = useState(false);
@@ -1290,7 +1359,14 @@ function ImageProcessorPanel() {
     setLoading(true);
     setProcessorError(null);
     try {
-      const response = await fetch('/api/cron/process-images?stats=1', { method: 'GET' });
+      const token = session?.access_token;
+      if (!token) {
+        throw new Error('Admin session expired. Sign in again and retry.');
+      }
+      const response = await fetch('/api/cron/process-images?stats=1', {
+        method: 'GET',
+        headers: adminAuthHeaders(token),
+      });
       const data = await parseFetchJson<ProcessingStatus & { error?: string }>(response, 'Stats');
       if (!response.ok) {
         throw new Error(data.error || `Stats failed (${response.status})`);
@@ -1316,7 +1392,11 @@ function ImageProcessorPanel() {
       duration: 400_000,
     });
     try {
-      const data = await runSakeImageJobChunked((round, chunk) => {
+      const token = session?.access_token;
+      if (!token) {
+        throw new Error('Admin session expired. Sign in again and retry.');
+      }
+      const data = await runSakeImageJobChunked(token, (round, chunk) => {
         toast.loading(`Sake job — chunk ${round}…`, {
           id: toastId,
           description: `External URLs ~${chunk.remaining.sakeImages ?? 0} · missing image ${chunk.remaining.sakeMissingImage ?? 0}`,
@@ -1351,7 +1431,11 @@ function ImageProcessorPanel() {
       duration: 400_000,
     });
     try {
-      const data = await runSakeImageJobFull();
+      const token = session?.access_token;
+      if (!token) {
+        throw new Error('Admin session expired. Sign in again and retry.');
+      }
+      const data = await runSakeImageJobFull(token);
       setStatus(data);
       setRunHistory((prev) => [data, ...prev].slice(0, 10));
       toast.success('Sake job finished (single request)', {
@@ -1376,7 +1460,14 @@ function ImageProcessorPanel() {
     setProcessorError(null);
     const toastId = toast.loading('Running brewery image job…', { duration: 120_000 });
     try {
-      const response = await fetch('/api/cron/process-brewery-images', { method: 'POST' });
+      const token = session?.access_token;
+      if (!token) {
+        throw new Error('Admin session expired. Sign in again and retry.');
+      }
+      const response = await fetch('/api/cron/process-brewery-images', {
+        method: 'POST',
+        headers: adminAuthHeaders(token),
+      });
       const data = await parseFetchJson<ProcessingStatus & { error?: string }>(response, 'Brewery job');
       if (!response.ok) {
         throw new Error(data.error || `Request failed (${response.status})`);
@@ -1406,8 +1497,12 @@ function ImageProcessorPanel() {
     setProcessorError(null);
     const toastId = toast.loading(`Running ${batches} sake jobs in a row…`, { duration: 600_000 });
     try {
+      const token = session?.access_token;
+      if (!token) {
+        throw new Error('Admin session expired. Sign in again and retry.');
+      }
       for (let i = 0; i < batches; i++) {
-        const data = await runSakeImageJobChunked();
+        const data = await runSakeImageJobChunked(token);
         setStatus(data);
         setRunHistory((prev) => [data, ...prev].slice(0, 10));
 
