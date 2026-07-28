@@ -27,6 +27,7 @@ import {
   ShieldCheck
 } from "lucide-react";
 import { toast } from "@/components/ui/sonner";
+import { useAuth } from "@/hooks/use-auth";
 
 // ---- Shared types ----
 
@@ -936,10 +937,18 @@ interface CleanupResult {
   skipped?: string[];
 }
 
-async function fetchCleanupJson(mode: string, dryRun: boolean, offset: number): Promise<CleanupResult> {
+async function fetchCleanupJson(
+  mode: string,
+  dryRun: boolean,
+  offset: number,
+  accessToken: string
+): Promise<CleanupResult> {
   const response = await fetch(`/api/admin-clear-bad-images?mode=${mode}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+    },
     body: JSON.stringify({ mode, dryRun, offset }),
   });
   const raw = await response.text();
@@ -957,6 +966,7 @@ async function fetchCleanupJson(mode: string, dryRun: boolean, offset: number): 
 }
 
 function BadImageCleanupPanel() {
+  const { session } = useAuth();
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<CleanupResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -971,6 +981,11 @@ function BadImageCleanupPanel() {
     const toastId = toast.loading(`${label} bad images (${mode} mode)…`, { duration: 300_000 });
 
     try {
+      const token = session?.access_token;
+      if (!token) {
+        throw new Error('Admin session expired. Sign in again and retry.');
+      }
+
       if (mode === 'vision') {
         // Page through in small batches of 30 to avoid Vercel timeouts
         let offset = 0;
@@ -981,7 +996,7 @@ function BadImageCleanupPanel() {
         let lastResult: CleanupResult | null = null;
 
         while (true) {
-          const data = await fetchCleanupJson(mode, dryRun, offset);
+          const data = await fetchCleanupJson(mode, dryRun, offset, token);
           totalScanned += data.totalScanned;
           totalCleared += data.totalCleared;
           totalBad += data.visionBadFound;
@@ -1009,7 +1024,7 @@ function BadImageCleanupPanel() {
           description: summary.note,
         });
       } else {
-        const data = await fetchCleanupJson(mode, dryRun, 0);
+        const data = await fetchCleanupJson(mode, dryRun, 0, token);
         setResult(data);
         toast.success(dryRun ? 'Scan complete' : 'Cleanup complete', {
           id: toastId,
