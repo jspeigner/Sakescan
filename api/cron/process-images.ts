@@ -23,6 +23,7 @@ import {
   sakeImageUpdatePayload,
   shouldReplaceImage,
 } from './lib/imageProvenance.js';
+import { requireCronOrAdmin } from '../lib/requireCronOrAdmin.js';
 const MIRROR_OPS_BUDGET = 220;
 /** Attempt to fill missing image_url (Firecrawl + vision + upload). */
 const DISCOVER_ROW_CAP = 40;
@@ -248,6 +249,12 @@ async function resetEnvironmentalBackoff(supabase: ReturnType<typeof createClien
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
+    if (req.method !== 'GET' && req.method !== 'POST') {
+      return res.status(405).json({ error: 'Method not allowed' });
+    }
+
+    if (!(await requireCronOrAdmin(req, res))) return;
+
     const q = req.query as Record<string, string | string[] | undefined>;
 
     /** Smallest possible response — proves the function bundle loads (use if full job fails). */
@@ -257,10 +264,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         ping: 'process-images',
         node: process.version,
       });
-    }
-
-    if (req.method !== 'GET' && req.method !== 'POST') {
-      return res.status(405).json({ error: 'Method not allowed' });
     }
 
     const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;

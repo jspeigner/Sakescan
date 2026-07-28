@@ -1,5 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import { requireAdmin } from './lib/requireAdmin.js';
 
 interface BreweryInput {
   name: string;
@@ -79,14 +80,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const supabaseUrl = process.env.SUPABASE_URL;
-  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const auth = await requireAdmin(req, res);
+  if (!auth.ok) return;
 
-  if (!supabaseUrl || !supabaseServiceKey) {
-    return res.status(500).json({ error: 'Supabase not configured' });
-  }
-
-  const supabase = createClient(supabaseUrl, supabaseServiceKey);
+  const supabase = createClient(auth.supabaseUrl, auth.supabaseServiceKey);
 
   const { breweries, skipImages } = req.body as {
     breweries: BreweryInput[];
