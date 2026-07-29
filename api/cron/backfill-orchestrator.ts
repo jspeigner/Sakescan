@@ -364,7 +364,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const promote = await promoteScanImagesBatch(supabase, {
         batchSize: prioritizeDiscover ? 30 : 22,
         openaiKey: openaiKey || undefined,
-        requireOptIn: false,
+        // Never promote declined / non-opted-in scan photos into the public catalog.
+        requireOptIn: true,
       });
       // Unusable local file:// scan URLs are expected until mobile uploads to Storage —
       // don't fail the whole orchestrator run for them.

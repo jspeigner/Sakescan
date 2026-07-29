@@ -21,7 +21,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const batchRaw = Array.isArray(q.batch) ? q.batch[0] : q.batch;
   const batchSize = Math.min(Math.max(parseInt(batchRaw || '25', 10) || 25, 5), 60);
   const optInRaw = Array.isArray(q.requireOptIn) ? q.requireOptIn[0] : q.requireOptIn;
-  const requireOptIn = optInRaw === '1' || optInRaw === 'true';
+  // Default ON: only promote scans with catalog_share_opt_in=true.
+  // Pass requireOptIn=0|false for an explicit one-time legacy backfill.
+  const requireOptIn = !(optInRaw === '0' || optInRaw === 'false');
 
   const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
@@ -29,7 +31,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const result = await promoteScanImagesBatch(supabase, {
       batchSize,
       openaiKey: openaiKey || undefined,
-      // Historical saved scans already imply share-for-history; new opt-in uses catalog_share_opt_in.
       requireOptIn,
     });
     const status =

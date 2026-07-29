@@ -45,6 +45,23 @@ export function isPromotableScanImageUrl(url: string | null | undefined): boolea
   return /^https?:\/\//i.test(trimmed);
 }
 
+/**
+ * Catalog promote must respect `catalog_share_opt_in` by default (MOBILE_API contract).
+ * Pass requireOptIn=false only for an explicit one-time legacy backfill.
+ */
+export function resolvePromoteRequireOptIn(requireOptIn?: boolean): boolean {
+  return requireOptIn !== false;
+}
+
+/** True when this scan may be copied into the public catalog under the given opt-in policy. */
+export function isEligibleCatalogShareCandidate(
+  catalogShareOptIn: boolean | null | undefined,
+  requireOptIn: boolean
+): boolean {
+  if (!requireOptIn) return true;
+  return catalogShareOptIn === true;
+}
+
 export async function promoteScanImagesBatch(
   supabase: SupabaseClient,
   options?: {
@@ -55,7 +72,7 @@ export async function promoteScanImagesBatch(
 ): Promise<PromoteScanResult> {
   const batchSize = Math.min(Math.max(options?.batchSize ?? 25, 5), 60);
   const openaiKey = options?.openaiKey;
-  const requireOptIn = options?.requireOptIn ?? false;
+  const requireOptIn = resolvePromoteRequireOptIn(options?.requireOptIn);
   const errors: string[] = [];
   let attempted = 0;
   let promoted = 0;
@@ -94,7 +111,11 @@ export async function promoteScanImagesBatch(
 
   const candidates = (scans || []).filter(
     (s): s is ScanCandidate =>
-      Boolean(s.sake_id && s.scanned_image_url && (!requireOptIn || s.catalog_share_opt_in === true))
+      Boolean(
+        s.sake_id &&
+          s.scanned_image_url &&
+          isEligibleCatalogShareCandidate(s.catalog_share_opt_in, requireOptIn)
+      )
   );
 
   // Prefer HTTPS Storage URLs; skip file:// (mobile local paths) entirely.
