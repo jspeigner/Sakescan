@@ -5,12 +5,21 @@
 set -euo pipefail
 
 STATS_URL="${SAKESCAN_STATS_URL:-https://www.sakescan.com/api/cron/backfill-orchestrator?stats=1}"
+AUTH_HEADER="${SAKESCAN_STATS_AUTH_HEADER:-}"
+AUTH_TOKEN="${SAKESCAN_STATS_BEARER_TOKEN:-${SAKESCAN_CRON_SECRET:-${CRON_SECRET:-}}}"
 JSON_ONLY=false
 if [[ "${1:-}" == "--json" ]]; then
   JSON_ONLY=true
 fi
 
-raw="$(curl -sS --max-time 45 "$STATS_URL")" || {
+curl_args=(-sS --max-time 45)
+if [[ -n "$AUTH_HEADER" ]]; then
+  curl_args+=(-H "Authorization: $AUTH_HEADER")
+elif [[ -n "$AUTH_TOKEN" ]]; then
+  curl_args+=(-H "Authorization: Bearer $AUTH_TOKEN")
+fi
+
+raw="$(curl "${curl_args[@]}" "$STATS_URL")" || {
   echo "FAIL: could not reach stats endpoint ($STATS_URL)" >&2
   exit 1
 }
@@ -20,6 +29,9 @@ import json, sys
 
 raw = sys.argv[1]
 d = json.loads(raw)
+
+endpoint_error = d.get("error")
+has_stats_shape = isinstance(d.get("gaps"), dict) and isinstance(d.get("discoverHealth"), dict)
 
 gaps = d.get("gaps") or {}
 dh = d.get("discoverHealth") or {}
@@ -65,6 +77,10 @@ last_status = last.get("status")
 errors = last.get("errors") or []
 
 alerts = []
+if endpoint_error:
+    alerts.append(f"Stats endpoint error: {endpoint_error}")
+if not has_stats_shape:
+    alerts.append("Stats response missing expected gaps/discoverHealth fields")
 if skip.get("discover"):
     alerts.append("BACKFILL_SKIP_DISCOVER is set — discover phase disabled")
 if skip.get("firecrawlQuotaExceeded"):
@@ -80,10 +96,15 @@ if last_status and last_status != "ok":
 if errors:
     alerts.append(f"Last run errors: {errors}")
 
-healthy = not alerts and (placed > 0 or promote_count > 0 or (yield_rate or 0) > 0 or streak < 20)
+healthy = (
+    has_stats_shape
+    and not alerts
+    and (placed > 0 or promote_count > 0 or (yield_rate or 0) > 0 or streak < 20)
+)
 
 out = {
     "healthy": healthy,
+    "endpointError": endpoint_error,
     "timestamp": d.get("timestamp"),
     "missingImage": missing,
     "lowYieldStreak": streak,
