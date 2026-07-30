@@ -213,9 +213,16 @@ export function SakeModal({ open, onOpenChange, sake, onSaved }: SakeModalProps)
     }
 
     try {
+      const token = session?.access_token;
+      if (!token) {
+        throw new Error('Admin session expired. Sign in again and retry.');
+      }
       const response = await fetch('/api/download-image', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify({
           imageUrl,
           sakeName: form.name,

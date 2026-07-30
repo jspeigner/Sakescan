@@ -10,12 +10,8 @@ import {
   sakeImageUpdatePayload,
   shouldReplaceImage,
 } from './imageProvenance.js';
+import { isPublicHttpImageUrl } from './publicImageUrl.js';
 import { sakeVisionPasses, validateJapaneseSakeProductPhoto } from './sakeImageVision.js';
-import {
-  getWineEngineConfig,
-  wineEngineConfirmsSake,
-  wineEngineSearchByUrl,
-} from './wineEngine.js';
 
 export type PromoteScanResult = {
   candidates: number;
@@ -24,7 +20,7 @@ export type PromoteScanResult = {
   skippedVision: number;
   skippedWineEngine: number;
   skippedExisting: number;
-  skippedInvalidUrl: number;
+  skippedUnusableUrl: number;
   errors: string[];
 };
 
@@ -43,43 +39,28 @@ type SakeImageRow = {
   image_quality: string | null;
 };
 
-function isPrivateIpv4(hostname: string): boolean {
-  const parts = hostname.split('.').map((part) => Number.parseInt(part, 10));
-  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
-    return false;
-  }
-
-  const [a, b] = parts;
-  return (
-    a === 10 ||
-    a === 127 ||
-    a === 0 ||
-    (a === 172 && b >= 16 && b <= 31) ||
-    (a === 192 && b === 168) ||
-    (a === 169 && b === 254)
-  );
+/** OpenAI / Storage can only fetch public http(s) URLs — not local file:// paths from iOS. */
+export function isPromotableScanImageUrl(url: string | null | undefined): boolean {
+  if (!url) return false;
+  const trimmed = url.trim();
+  return /^https?:\/\//i.test(trimmed);
 }
 
-function isPublicHttpImageUrl(rawUrl: string): boolean {
-  try {
-    const parsed = new URL(rawUrl);
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+/**
+ * Catalog promote must respect `catalog_share_opt_in` by default (MOBILE_API contract).
+ * Pass requireOptIn=false only for an explicit one-time legacy backfill.
+ */
+export function resolvePromoteRequireOptIn(requireOptIn?: boolean): boolean {
+  return requireOptIn !== false;
+}
 
-    const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
-    if (!hostname || hostname === 'localhost' || hostname.endsWith('.localhost')) return false;
-    if (isPrivateIpv4(hostname)) return false;
-    const isIpv6 = hostname.includes(':');
-    if (
-      hostname === '::1' ||
-      (isIpv6 && (hostname.startsWith('fc') || hostname.startsWith('fd') || hostname.startsWith('fe80:')))
-    ) {
-      return false;
-    }
-
-    return true;
-  } catch {
-    return false;
-  }
+/** True when this scan may be copied into the public catalog under the given opt-in policy. */
+export function isEligibleCatalogShareCandidate(
+  catalogShareOptIn: boolean | null | undefined,
+  requireOptIn: boolean
+): boolean {
+  if (!requireOptIn) return true;
+  return catalogShareOptIn === true;
 }
 
 export async function promoteScanImagesBatch(
@@ -92,14 +73,14 @@ export async function promoteScanImagesBatch(
 ): Promise<PromoteScanResult> {
   const batchSize = Math.min(Math.max(options?.batchSize ?? 25, 5), 60);
   const openaiKey = options?.openaiKey;
-  const requireOptIn = options?.requireOptIn ?? false;
+  const requireOptIn = resolvePromoteRequireOptIn(options?.requireOptIn);
   const errors: string[] = [];
   let attempted = 0;
   let promoted = 0;
   let skippedVision = 0;
   let skippedWineEngine = 0;
   let skippedExisting = 0;
-  let skippedInvalidUrl = 0;
+  let skippedUnusableUrl = 0;
 
   let scanQuery = supabase
     .from('scans')
@@ -109,7 +90,7 @@ export async function promoteScanImagesBatch(
     .not('scanned_image_url', 'is', null)
     .neq('scanned_image_url', '')
     .order('created_at', { ascending: false })
-    .limit(batchSize * 3);
+    .limit(batchSize * 4);
 
   if (requireOptIn) {
     scanQuery = scanQuery.eq('catalog_share_opt_in', true);
@@ -124,21 +105,25 @@ export async function promoteScanImagesBatch(
       skippedVision: 0,
       skippedWineEngine: 0,
       skippedExisting: 0,
-      skippedInvalidUrl: 0,
+      skippedUnusableUrl: 0,
       errors: [scanErr.message],
     };
   }
 
   const candidates = (scans || []).filter(
     (s): s is ScanCandidate =>
-      Boolean(s.sake_id && s.scanned_image_url && (!requireOptIn || s.catalog_share_opt_in === true))
+      Boolean(
+        s.sake_id &&
+          s.scanned_image_url &&
+          isEligibleCatalogShareCandidate(s.catalog_share_opt_in, requireOptIn)
+      )
   );
 
-  // Prefer one public, externally fetchable scan per sake (most recent first already).
+  // Prefer HTTPS Storage URLs; skip file:// (mobile local paths) entirely.
   const bySake = new Map<string, ScanCandidate>();
   for (const s of candidates) {
-    if (!isPublicHttpImageUrl(s.scanned_image_url)) {
-      skippedInvalidUrl++;
+    if (!isPromotableScanImageUrl(s.scanned_image_url)) {
+      skippedUnusableUrl++;
       continue;
     }
     if (!bySake.has(s.sake_id)) bySake.set(s.sake_id, s);
@@ -153,7 +138,7 @@ export async function promoteScanImagesBatch(
       skippedVision: 0,
       skippedWineEngine: 0,
       skippedExisting: 0,
-      skippedInvalidUrl,
+      skippedUnusableUrl,
       errors: [],
     };
   }
@@ -171,13 +156,12 @@ export async function promoteScanImagesBatch(
       skippedVision: 0,
       skippedWineEngine: 0,
       skippedExisting: 0,
-      skippedInvalidUrl,
+      skippedUnusableUrl,
       errors: [sakeErr.message],
     };
   }
 
   const sakeMap = new Map((sakes || []).map((s) => [s.id, s as SakeImageRow]));
-  const wineEngineCfg = getWineEngineConfig();
   const seenHashes = new Set<string>();
   const knownPlaceholderHashes = new Set<string>();
 
@@ -193,6 +177,11 @@ export async function promoteScanImagesBatch(
 
     attempted++;
     try {
+      if (!isPublicHttpImageUrl(scan.scanned_image_url)) {
+        skippedVision++;
+        continue;
+      }
+
       if (openaiKey) {
         const v = await validateJapaneseSakeProductPhoto(openaiKey, scan.scanned_image_url, {
           sakeName: sake.name,
@@ -202,19 +191,6 @@ export async function promoteScanImagesBatch(
         if (!sakeVisionPasses(v, { allowMedium: true })) {
           skippedVision++;
           continue;
-        }
-      }
-
-      if (wineEngineCfg) {
-        try {
-          const we = await wineEngineSearchByUrl(wineEngineCfg, scan.scanned_image_url, { limit: 1 });
-          const confirm = wineEngineConfirmsSake(we, sakeId, { minScoreText: 45, minScore: 15 });
-          if (we.status === 'ok' && we.result?.length && confirm.reason === 'matched_other_sake') {
-            skippedWineEngine++;
-            continue;
-          }
-        } catch {
-          /* WineEngine optional */
         }
       }
 
@@ -248,7 +224,7 @@ export async function promoteScanImagesBatch(
     skippedVision,
     skippedWineEngine,
     skippedExisting,
-    skippedInvalidUrl,
+    skippedUnusableUrl,
     errors,
   };
 }

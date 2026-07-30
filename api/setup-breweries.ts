@@ -1,5 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
+import { requireAdmin } from './lib/requireAdmin.js';
 
 const CREATE_TABLE_SQL = `
 CREATE TABLE IF NOT EXISTS breweries (
@@ -38,11 +39,15 @@ ALTER TABLE breweries ENABLE ROW LEVEL SECURITY;
 const CREATE_POLICIES_SQL = `
 DO $$
 BEGIN
+  -- Public catalog read only. service_role bypasses RLS; never use FOR ALL USING (true).
+  IF EXISTS (
+    SELECT 1 FROM pg_policies
+    WHERE tablename = 'breweries' AND policyname = 'Allow service role full access on breweries'
+  ) THEN
+    DROP POLICY "Allow service role full access on breweries" ON breweries;
+  END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'breweries' AND policyname = 'Allow public read access on breweries') THEN
     CREATE POLICY "Allow public read access on breweries" ON breweries FOR SELECT USING (true);
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'breweries' AND policyname = 'Allow service role full access on breweries') THEN
-    CREATE POLICY "Allow service role full access on breweries" ON breweries FOR ALL USING (true);
   END IF;
 END $$;
 `.trim();
@@ -102,13 +107,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const { action } = req.body || {};
-  const supabaseUrl = process.env.SUPABASE_URL;
-  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const auth = await requireAdmin(req, res);
+  if (!auth.ok) return;
 
-  if (!supabaseUrl || !supabaseServiceKey) {
-    return res.status(500).json({ error: 'Supabase not configured' });
-  }
+  const { action } = req.body || {};
+  const supabaseUrl = auth.supabaseUrl;
+  const supabaseServiceKey = auth.supabaseServiceKey;
 
   const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
