@@ -13,10 +13,9 @@ import { enrichSakeMetadataBatch } from './lib/sakeMetadataEnrich.js';
 import { enrichSakeSpecsBatch } from './lib/sakeSpecEnrich.js';
 import { promoteScanImagesBatch } from './lib/promoteScanImages.js';
 import { discoverBreweryImagesBatch } from './lib/discoverBreweryImages.js';
-import { runWineEngineSyncBatch } from './lib/wineEngineSyncBatch.js';
-import { getWineEngineConfig } from './lib/wineEngine.js';
 import { isFirecrawlBypassActive } from './lib/sakeImageDiscovery.js';
 import processImagesHandler from './process-images.js';
+import { requireCronOrAdmin } from '../lib/requireCronOrAdmin.js';
 
 const RUN_BUDGET_MS = 180_000;
 const DISCOVER_BUDGET_RESERVE_MS = 8_000;
@@ -99,6 +98,14 @@ async function resetEnvironmentalBackoffOnStartup(
       .select('sake_id');
     if (!error && data) cleared += data.length;
   }
+  // Also clear WineEngine false-reject backoffs that starved discover.
+  const { data: weData, error: weErr } = await supabase
+    .from('sake_image_attempts')
+    .update({ next_retry_at: null, updated_at: now })
+    .eq('last_failure_reason', 'wineengine_matched_other_sake')
+    .gt('next_retry_at', now)
+    .select('sake_id');
+  if (!weErr && weData) cleared += weData.length;
   return cleared;
 }
 
@@ -112,7 +119,8 @@ type PhaseResult = {
 
 /** Run process-images in-process (avoids Vercel Deployment Protection on self-fetch). */
 async function invokeProcessImages(
-  query: Record<string, string>
+  query: Record<string, string>,
+  parentReq: VercelRequest
 ): Promise<{ ok: boolean; json?: Record<string, unknown>; error?: string }> {
   let statusCode = 200;
   let json: Record<string, unknown> = {};
@@ -136,6 +144,9 @@ async function invokeProcessImages(
   const req = {
     method: 'GET',
     query: { chunk: '1', ...query },
+    headers: {
+      authorization: parentReq.headers.authorization,
+    },
   } as VercelRequest;
 
   const res = {
@@ -229,6 +240,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
+  if (!(await requireCronOrAdmin(req, res))) return;
+
   const q = req.query as Record<string, string | string[] | undefined>;
   const statsOnly = req.method === 'GET' && q.stats === '1';
 
@@ -284,7 +297,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       env: {
         firecrawl: Boolean(firecrawlKey),
         openai: Boolean(openaiKey),
-        wineEngine: Boolean(getWineEngineConfig()),
+        wineEngine: false,
         skipFlags,
         firecrawlBypassActive: isFirecrawlBypassActive(),
         lastDiscoverFirecrawlErrors,
@@ -358,11 +371,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const promote = await promoteScanImagesBatch(supabase, {
         batchSize: prioritizeDiscover ? 30 : 22,
         openaiKey: openaiKey || undefined,
-        requireOptIn: false,
+        // Never promote declined / non-opted-in scan photos into the public catalog.
+        requireOptIn: true,
       });
+      // Unusable local file:// scan URLs are expected until mobile uploads to Storage —
+      // don't fail the whole orchestrator run for them.
+      const hardErrors = promote.errors.filter(
+        (e) => !e.toLowerCase().includes('file://') && !e.toLowerCase().includes('failed to download image')
+      );
       phases.push({
         phase: 'promote-scan-images',
-        status: promote.errors.length > 0 && promote.promoted === 0 ? 'failed' : promote.errors.length ? 'partial' : 'ok',
+        status:
+          hardErrors.length > 0 && promote.promoted === 0
+            ? 'failed'
+            : hardErrors.length
+              ? 'partial'
+              : 'ok',
         durationMs: Date.now() - t0,
         stats: {
           candidates: promote.candidates,
@@ -371,11 +395,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           skippedVision: promote.skippedVision,
           skippedWineEngine: promote.skippedWineEngine,
           skippedExisting: promote.skippedExisting,
-          skippedInvalidUrl: promote.skippedInvalidUrl,
+          skippedUnusableUrl: promote.skippedUnusableUrl,
         },
-        errors: promote.errors.length ? promote.errors.slice(0, 6) : undefined,
+        errors: hardErrors.length ? hardErrors.slice(0, 6) : undefined,
       });
-      if (promote.errors.length) runErrors.push(...promote.errors.slice(0, 3));
+      if (hardErrors.length) runErrors.push(...hardErrors.slice(0, 3));
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       phases.push({
@@ -508,10 +532,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       search: 'trusted-first',
       speed: openaiRecovered ? 'accelerated' : 'normal',
       budgetMs: String(discoverBudgetMs),
-      rowCap: prioritizeDiscover ? '16' : openaiRecovered ? '14' : '8',
+      rowCap: prioritizeDiscover ? '28' : openaiRecovered ? '20' : '12',
     };
 
-    const inv = await invokeProcessImages(discoverQuery);
+    const inv = await invokeProcessImages(discoverQuery, req);
     const discoverJson = inv.json;
     const health = discoverJson?.discoverHealth as
       | { attempts?: number; placed?: number; yield?: number; firecrawlErrors?: number }
@@ -580,7 +604,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Phase 4: mirror external URLs
   if (!shouldStop()) {
     const t0 = Date.now();
-    const inv = await invokeProcessImages({ mode: 'mirror' });
+    const inv = await invokeProcessImages({ mode: 'mirror' }, req);
     phases.push({
       phase: 'images-mirror',
       status: inv.ok ? 'ok' : 'failed',
@@ -595,41 +619,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (inv.error) runErrors.push(`mirror: ${inv.error}`);
   }
 
-  // Phase 5: WineEngine sync (enabled when credentials present unless WINEENGINE_ENABLED=false)
-  if (!shouldStop() && getWineEngineConfig()) {
-    const t0 = Date.now();
-    try {
-      const we = await runWineEngineSyncBatch(supabase, supabaseUrl, {
-        batchSize: adaptiveDiscover ? 45 : 35,
-      });
-      phases.push({
-        phase: 'wineengine-sync',
-        status: we.errors.length > 0 && we.processed > 0 ? 'partial' : we.errors.length ? 'failed' : 'ok',
-        durationMs: Date.now() - t0,
-        stats: {
-          offset: we.offset,
-          processed: we.processed,
-          added: we.added,
-          failed: we.failed,
-          collectionCount: we.collectionCount,
-          hasMore: we.hasMore,
-        },
-        errors: we.errors.length ? we.errors.slice(0, 6) : undefined,
-      });
-      if (we.errors.length) runErrors.push(...we.errors.slice(0, 3));
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      phases.push({ phase: 'wineengine-sync', status: 'failed', durationMs: Date.now() - t0, errors: [msg] });
-      runErrors.push(`wineengine: ${msg.slice(0, 120)}`);
-    }
-  } else if (!getWineEngineConfig()) {
-    phases.push({
-      phase: 'wineengine-sync',
-      status: 'skipped',
-      durationMs: 0,
-      errors: ['WineEngine disabled or credentials missing (set WINEENGINE_USERNAME/PASSWORD; use WINEENGINE_ENABLED=false to pause)'],
-    });
-  }
+  // Phase 5: WineEngine sync — disabled (subscription not renewed)
+  phases.push({
+    phase: 'wineengine-sync',
+    status: 'skipped',
+    durationMs: 0,
+    errors: ['WineEngine disabled — subscription not active'],
+  });
 
   // Phase 6: brewery image discover (gallery promote + website og:image)
   if (!shouldStop() && !envFlag('BACKFILL_SKIP_BREWERY_DISCOVER')) {
@@ -726,9 +722,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       missingImage: gaps.missingImage > 0 ? 'continue discover cron' : 'images caught up',
       missingDescription: gaps.missingDescription > 0 ? 'metadata enrich continues' : 'descriptions caught up',
       externalImages: gaps.externalImages > 0 ? 'mirror continues' : 'mirror caught up',
-      wineEngine: getWineEngineConfig()
-        ? 'offset cursor in backfill_state'
-        : 'disabled — credentials missing or WINEENGINE_ENABLED=false',
+      wineEngine: 'disabled — subscription not active',
       promoteScans: 'runs every orchestrator tick',
       breweryImages: 'discover + daily mirror cron',
     },

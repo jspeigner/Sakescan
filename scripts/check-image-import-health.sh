@@ -54,9 +54,7 @@ for log in logs:
     if discover and promote:
         break
 
-placed = discover.get("placed")
-if placed is None:
-    placed = discover.get("_sakeDiscovered", 0)
+placed = discover.get("placed", 0)
 vision = discover.get("visionChecks", 0)
 yield_rate = discover.get("yield")
 firecrawl_err = discover.get("firecrawlErrors", 0)
@@ -96,14 +94,12 @@ out = {
         "yield": yield_rate,
         "firecrawlErrors": firecrawl_err,
         "stopReason": discover.get("_stopReason"),
-        "sakeDiscovered": discover.get("_sakeDiscovered"),
         "runAt": discover.get("_timestamp"),
     },
     "latestPromote": {
         "promoted": promote_count,
         "attempted": promote.get("attempted"),
         "skippedExisting": promote.get("skippedExisting"),
-        "skippedInvalidUrl": promote.get("skippedInvalidUrl"),
         "status": promote.get("_status"),
         "runAt": promote.get("_timestamp"),
     },
@@ -121,14 +117,10 @@ out = {
     },
 }
 print(json.dumps(out, indent=2))
-sys.exit(0)
 PY
 )" || {
   echo "FAIL: could not parse stats JSON" >&2
-  python3 - "$raw" <<'PY' >&2
-import sys
-print(sys.argv[1][:500])
-PY
+  echo "$raw" | head -c 500 >&2
   exit 1
 }
 
@@ -138,8 +130,9 @@ if $JSON_ONLY; then
   echo "$report"
   if [[ "$healthy" == "True" ]]; then
     exit 0
+  else
+    exit 1
   fi
-  exit 1
 fi
 
 echo "=== SakeScan image import health ==="
