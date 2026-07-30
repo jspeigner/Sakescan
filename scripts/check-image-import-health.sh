@@ -117,7 +117,6 @@ out = {
     },
 }
 print(json.dumps(out, indent=2))
-sys.exit(0 if healthy else 1)
 PY
 )" || {
   echo "FAIL: could not parse stats JSON" >&2
@@ -125,12 +124,17 @@ PY
   exit 1
 }
 
+healthy="$(echo "$report" | python3 -c "import json,sys; print(json.load(sys.stdin)['healthy'])")"
+
 if $JSON_ONLY; then
   echo "$report"
-  exit $?
+  if [[ "$healthy" == "True" ]]; then
+    exit 0
+  else
+    exit 1
+  fi
 fi
 
-healthy="$(echo "$report" | python3 -c "import json,sys; print(json.load(sys.stdin)['healthy'])")"
 echo "=== SakeScan image import health ==="
 echo "$report"
 echo
