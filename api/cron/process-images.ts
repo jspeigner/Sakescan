@@ -23,13 +23,7 @@ import {
   sakeImageUpdatePayload,
   shouldReplaceImage,
 } from './lib/imageProvenance.js';
-import {
-  getWineEngineConfig,
-  wineEngineAddByUrl,
-  wineEngineCount,
-  wineEngineRejectsCandidate,
-  wineEngineSearchByUrl,
-} from './lib/wineEngine.js';
+import { requireCronOrAdmin } from '../lib/requireCronOrAdmin.js';
 const MIRROR_OPS_BUDGET = 220;
 /** Attempt to fill missing image_url (Firecrawl + vision + upload). */
 const DISCOVER_ROW_CAP = 40;
@@ -210,7 +204,9 @@ function isEnvironmentalDiscoverFailure(reason: string): boolean {
     lower.includes('openai_quota') ||
     lower.includes('openai vision http 429') ||
     (lower.includes('openai') && lower.includes('quota')) ||
-    lower.includes('time_budget_reached')
+    lower.includes('time_budget_reached') ||
+    // False WineEngine rejects (incomplete collection) should not multi-hour block rows.
+    lower.includes('wineengine_matched_other_sake')
   );
 }
 
@@ -232,6 +228,7 @@ const ENVIRONMENTAL_BACKOFF_REASONS = [
   'openai vision http 429',
   'time_budget_reached',
   'openai_quota_exceeded',
+  'wineengine_matched_other_sake',
 ];
 
 /** One-time hygiene: unblock rows stuck on quota/timeout backoff when services recover. */
@@ -252,6 +249,12 @@ async function resetEnvironmentalBackoff(supabase: ReturnType<typeof createClien
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
+    if (req.method !== 'GET' && req.method !== 'POST') {
+      return res.status(405).json({ error: 'Method not allowed' });
+    }
+
+    if (!(await requireCronOrAdmin(req, res))) return;
+
     const q = req.query as Record<string, string | string[] | undefined>;
 
     /** Smallest possible response — proves the function bundle loads (use if full job fails). */
@@ -261,10 +264,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         ping: 'process-images',
         node: process.version,
       });
-    }
-
-    if (req.method !== 'GET' && req.method !== 'POST') {
-      return res.status(405).json({ error: 'Method not allowed' });
     }
 
     const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
@@ -352,7 +351,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         env: {
           discoverEnabled: Boolean(firecrawlKey && openaiKey),
           auditEnabled: Boolean(openaiKey),
-          wineEngineEnabled: Boolean(getWineEngineConfig()),
+          wineEngineEnabled: false,
         },
         timestamp: new Date().toISOString(),
       });
@@ -504,17 +503,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     // --- DISCOVER: null / empty image_url ---
-    // WineEngine skipped unless WINEENGINE_ENABLED=true (see getWineEngineConfig).
-    const wineEngineCfg = getWineEngineConfig();
-    let wineEngineCollectionCount = 0;
-    if (wineEngineCfg) {
-      try {
-        wineEngineCollectionCount = await wineEngineCount(wineEngineCfg);
-      } catch {
-        wineEngineCollectionCount = 0;
-      }
-    }
-    const wineEngineActive = Boolean(wineEngineCfg && wineEngineCollectionCount > 0);
+    // WineEngine disabled (subscription not renewed).
+
 
     if (firecrawlKey && openaiKey && !rateLimited && !hitTimeBudget) {
       resetFirecrawlBypassForInvocation();
@@ -718,26 +708,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               continue;
             }
 
-            if (wineEngineActive && wineEngineCfg) {
-              try {
-                diagnostics.discover.wineEngineChecks++;
-                const weSearch = await wineEngineSearchByUrl(wineEngineCfg, img.url, { limit: 1 });
-                if (wineEngineRejectsCandidate(weSearch, row.id)) {
-                  diagnostics.discover.wineEngineRejected++;
-                  failureReason = 'wineengine_matched_other_sake';
-                  continue;
-                }
-                const matchedId = weSearch.result?.[0]?.metadata?.image_id;
-                if (matchedId === row.id && (weSearch.result?.[0]?.score_text ?? 0) >= 55) {
-                  diagnostics.discover.wineEngineConfirmed++;
-                }
-              } catch {
-                /* WineEngine optional — continue with vision */
-              }
-            }
+            // Trusted retailer URLs skip vision; WineEngine disabled.
+            const trustedEarly =
+              isTrustedRetailerSource(img.source) || isTrustedImageUrl(img.url);
 
             try {
-              const trustedSource = isTrustedRetailerSource(img.source) || isTrustedImageUrl(img.url);
+              const trustedSource = trustedEarly;
               const incomingQuality = trustedSource ? 't1' : 't3';
               if (!shouldReplaceImage(row.image_quality, row.image_url, incomingQuality)) {
                 failureReason = 'weaker_than_existing';
@@ -809,13 +785,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               diagnostics.discover.placedRows++;
               placed = true;
               failureReason = '';
-              if (wineEngineCfg) {
-                wineEngineAddByUrl(wineEngineCfg, { sakeId: row.id, imageUrl: result.url })
-                  .then(() => {
-                    diagnostics.discover.wineEngineIndexed++;
-                  })
-                  .catch(() => undefined);
-              }
               break;
             } catch (inner) {
               if (isOpenAIQuotaError(inner)) {
@@ -1156,9 +1125,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         breweryMainImages: brewRem.breweryMainImages,
         breweryGalleryImages: brewRem.breweryGalleryImages,
       },
-      wineEngine: wineEngineCfg
-        ? { collectionCount: wineEngineCollectionCount, activeInDiscover: wineEngineActive }
-        : undefined,
+      wineEngine: { disabled: true },
       sakeQueue: {
         externalRowsFetched: sakeExternalRowsFetched,
         note: 'Audit → discover (missing) → mirror external URLs. Discover needs FIRECRAWL + OPENAI.',

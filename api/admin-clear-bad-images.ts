@@ -105,16 +105,34 @@ async function isNonSakeVision(openaiKey: string, imageUrl: string, sakeName: st
   }
 }
 
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'jspeigner@gmail.com';
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
+  const authHeader = req.headers.authorization;
+  const jwt = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  if (!jwt) {
+    return res.status(401).json({ error: 'Missing authorization' });
+  }
+
   const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
+  const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
   const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-  if (!supabaseUrl || !supabaseServiceKey) {
+  if (!supabaseUrl || !supabaseAnonKey || !supabaseServiceKey) {
     return res.status(500).json({ error: 'Supabase not configured' });
+  }
+
+  const userClient = createClient(supabaseUrl, supabaseAnonKey);
+  const { data: userData, error: userError } = await userClient.auth.getUser(jwt);
+  if (userError || !userData.user?.email) {
+    return res.status(401).json({ error: 'Invalid session' });
+  }
+  if (userData.user.email.toLowerCase() !== ADMIN_EMAIL.toLowerCase()) {
+    return res.status(403).json({ error: 'Forbidden' });
   }
 
   const supabase = createClient(supabaseUrl, supabaseServiceKey);

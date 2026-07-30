@@ -2,6 +2,8 @@
  * Firecrawl-backed image discovery for sake rows (used by /api/search-sake and sake cron).
  */
 
+import { isPublicHttpImageUrl } from './publicImageUrl.js';
+
 export type SearchImageRow = {
   url: string;
   thumbnail?: string;
@@ -119,7 +121,7 @@ export function filterAndRankImages(
   const tokens = searchTokens(name, nameJapanese, brewery);
 
   const kept = images.filter((img) => {
-    if (!img.url.startsWith('http')) return false;
+    if (!isPublicHttpImageUrl(img.url)) return false;
     if (JUNK_URL_REGEXES.some((re) => re.test(img.url))) return false;
     const nonHay = haystackForNonSakeCheck(img.url, img.title);
     if (NON_SAKE_PRODUCT_REGEXES.some((re) => re.test(nonHay))) return false;
@@ -329,7 +331,7 @@ function extractImageUrlsFromGoogleHtml(htmlContent: string): string[] {
       let url = match[1];
       if (!url) return;
       url = url.replace(/\\u003d/g, '=').replace(/\\u0026/g, '&').replace(/\\\//g, '/');
-      if (!url.startsWith('http')) return;
+      if (!isPublicHttpImageUrl(url)) return;
       if (url.includes('google.com') || url.includes('gstatic.com') || url.includes('googleusercontent.com/logos')) {
         return;
       }
@@ -436,7 +438,7 @@ async function scrapeBingImages(searchQuery: string): Promise<SearchImageRow[]> 
       const raw = m[1];
       if (!raw) return;
       const url = decodeHtmlEntities(raw);
-      if (!url.startsWith('http')) return;
+      if (!isPublicHttpImageUrl(url)) return;
       if (url.includes('bing.com') || url.includes('microsoft.com')) return;
       foundUrls.add(url);
     });

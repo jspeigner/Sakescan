@@ -9,7 +9,8 @@
     "build": "vite build && bun scripts/prerender.mts",
     "build:dev": "vite build --mode development",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "bun test api/cron/lib/promoteScanImages.test.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

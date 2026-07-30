@@ -2,12 +2,15 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
 import { logBackfillRun } from './lib/backfillState.js';
 import { promoteScanImagesBatch } from './lib/promoteScanImages.js';
+import { requireCronOrAdmin } from '../lib/requireCronOrAdmin.js';
 
 /** Promote matched user scan photos into sake.image_url (T2). */
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'GET' && req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
+
+  if (!(await requireCronOrAdmin(req, res))) return;
 
   const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
   const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -21,7 +24,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const batchRaw = Array.isArray(q.batch) ? q.batch[0] : q.batch;
   const batchSize = Math.min(Math.max(parseInt(batchRaw || '25', 10) || 25, 5), 60);
   const optInRaw = Array.isArray(q.requireOptIn) ? q.requireOptIn[0] : q.requireOptIn;
-  const requireOptIn = optInRaw === '1' || optInRaw === 'true';
+  // Default ON: only promote scans with catalog_share_opt_in=true.
+  // Pass requireOptIn=0|false for an explicit one-time legacy backfill.
+  const requireOptIn = !(optInRaw === '0' || optInRaw === 'false');
 
   const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
@@ -29,7 +34,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const result = await promoteScanImagesBatch(supabase, {
       batchSize,
       openaiKey: openaiKey || undefined,
-      // Historical saved scans already imply share-for-history; new opt-in uses catalog_share_opt_in.
       requireOptIn,
     });
     const status =
