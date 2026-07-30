@@ -26,6 +26,7 @@ import {
   Download,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
+import { sanitizePostgrestSearch } from "@/lib/postgrest-search";
 import type { Brewery } from "@/lib/supabase-types";
 import { useNavigate, Link } from "react-router-dom";
 import { useAuth } from "@/hooks/use-auth";
@@ -69,7 +70,12 @@ export default function AdminBreweries() {
         .range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1);
 
       if (searchQuery) {
-        query = query.or(`name.ilike.%${searchQuery}%,prefecture.ilike.%${searchQuery}%,region.ilike.%${searchQuery}%`);
+        const safeSearch = sanitizePostgrestSearch(searchQuery);
+        if (safeSearch) {
+          query = query.or(
+            `name.ilike.%${safeSearch}%,prefecture.ilike.%${safeSearch}%,region.ilike.%${safeSearch}%`
+          );
+        }
       }
 
       const { data, error, count } = await query;

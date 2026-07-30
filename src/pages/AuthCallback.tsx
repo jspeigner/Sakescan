@@ -33,6 +33,27 @@ function extractAuthFragment(hash: string, search: string): string | null {
   return null;
 }
 
+/** Remove auth secrets from the address bar after we capture them for the app deep link. */
+export function stripAuthParamsFromBrowserUrl(): void {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  const sensitive = ["access_token", "refresh_token", "token", "token_hash", "code", "type"];
+  let changed = false;
+  for (const key of sensitive) {
+    if (url.searchParams.has(key)) {
+      url.searchParams.delete(key);
+      changed = true;
+    }
+  }
+  if (url.hash.includes("access_token") || url.hash.includes("refresh_token")) {
+    url.hash = "";
+    changed = true;
+  }
+  if (changed) {
+    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+  }
+}
+
 export default function AuthCallback() {
   const location = useLocation();
   const [status, setStatus] = useState<CallbackStatus>("redirecting");
@@ -47,14 +68,17 @@ export default function AuthCallback() {
     }
 
     const appUrl = `vibecode://reset-password#${fragment}`;
+    (window as unknown as { __authCallbackUrl?: string }).__authCallbackUrl = appUrl;
+    stripAuthParamsFromBrowserUrl();
 
     if (isMobile) {
       window.location.href = appUrl;
-      return;
+      // If the app doesn't open, show manual open / App Store actions.
+      const timer = window.setTimeout(() => setStatus("open-app"), 1800);
+      return () => window.clearTimeout(timer);
     }
 
     setStatus("open-app");
-    (window as unknown as { __authCallbackUrl?: string }).__authCallbackUrl = appUrl;
   }, [location.hash, location.search]);
 
   const handleOpenApp = () => {

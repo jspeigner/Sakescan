@@ -124,10 +124,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   let promote: Awaited<ReturnType<typeof promoteScanImagesBatch>> | null = null;
   if (promoteNow) {
+    // Promote this scan only — not a generic recent-opt-in batch.
     promote = await promoteScanImagesBatch(admin, {
-      batchSize: 5,
+      batchSize: 1,
       openaiKey: openaiKey || undefined,
       requireOptIn: true,
+      scanIds: [scan.id],
     });
   }
 

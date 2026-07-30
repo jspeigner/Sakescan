@@ -14,16 +14,10 @@ import { Search, Star, Wine, Loader2 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import type { Sake } from "@/lib/supabase-types";
 import { withImageCacheBust } from "@/lib/image-url";
+import { sanitizePostgrestSearch } from "@/lib/postgrest-search";
 import { slugify } from "@/lib/slugify";
 
-/** Strip PostgREST filter metacharacters so user search cannot rewrite `.or()` clauses. */
-export function sanitizePostgrestSearch(raw: string): string {
-  return raw
-    .replace(/[%_,.()]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 80);
-}
+export { sanitizePostgrestSearch } from "@/lib/postgrest-search";
 
 export default function SakeExplore() {
   const [search, setSearch] = useState("");
