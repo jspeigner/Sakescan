@@ -100,7 +100,6 @@ out = {
         "promoted": promote_count,
         "attempted": promote.get("attempted"),
         "skippedExisting": promote.get("skippedExisting"),
-        "skippedInvalidUrl": promote.get("skippedInvalidUrl"),
         "status": promote.get("_status"),
         "runAt": promote.get("_timestamp"),
     },
@@ -121,15 +120,19 @@ print(json.dumps(out, indent=2))
 PY
 )" || {
   echo "FAIL: could not parse stats JSON" >&2
-  printf '%s\n' "${raw:0:500}" >&2
+  echo "$raw" | head -c 500 >&2
   exit 1
 }
 
-healthy="$(printf '%s' "$report" | python3 -c "import json,sys; print(json.load(sys.stdin)['healthy'])")"
+healthy="$(echo "$report" | python3 -c "import json,sys; print(json.load(sys.stdin)['healthy'])")"
 
 if $JSON_ONLY; then
   echo "$report"
-  [[ "$healthy" == "True" ]] && exit 0 || exit 1
+  if [[ "$healthy" == "True" ]]; then
+    exit 0
+  else
+    exit 1
+  fi
 fi
 
 echo "=== SakeScan image import health ==="
