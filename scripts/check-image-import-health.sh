@@ -15,7 +15,6 @@ raw="$(curl -sS --max-time 45 "$STATS_URL")" || {
   exit 1
 }
 
-set +e
 report="$(python3 - "$raw" <<'PY'
 import json, sys
 
@@ -101,7 +100,6 @@ out = {
         "promoted": promote_count,
         "attempted": promote.get("attempted"),
         "skippedExisting": promote.get("skippedExisting"),
-        "skippedInvalidUrl": promote.get("skippedInvalidUrl"),
         "status": promote.get("_status"),
         "runAt": promote.get("_timestamp"),
     },
@@ -119,33 +117,24 @@ out = {
     },
 }
 print(json.dumps(out, indent=2))
-sys.exit(0 if healthy else 1)
 PY
-)"
-report_status=$?
-set -e
-if [[ $report_status -ne 0 ]]; then
-  if [[ -n "$report" ]]; then
-    if $JSON_ONLY; then
-      echo "$report"
-      exit "$report_status"
-    fi
-  else
+)" || {
   echo "FAIL: could not parse stats JSON" >&2
-    python3 - "$raw" <<'PY' >&2
-import sys
-print(sys.argv[1][:500])
-PY
+  echo "$raw" | head -c 500 >&2
   exit 1
-  fi
-fi
+}
+
+healthy="$(echo "$report" | python3 -c "import json,sys; print(json.load(sys.stdin)['healthy'])")"
 
 if $JSON_ONLY; then
   echo "$report"
-  exit "$report_status"
+  if [[ "$healthy" == "True" ]]; then
+    exit 0
+  else
+    exit 1
+  fi
 fi
 
-healthy="$(echo "$report" | python3 -c "import json,sys; print(json.load(sys.stdin)['healthy'])")"
 echo "=== SakeScan image import health ==="
 echo "$report"
 echo
