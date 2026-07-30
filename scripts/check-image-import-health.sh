@@ -100,7 +100,6 @@ out = {
         "promoted": promote_count,
         "attempted": promote.get("attempted"),
         "skippedExisting": promote.get("skippedExisting"),
-        "skippedInvalidUrl": promote.get("skippedInvalidUrl"),
         "status": promote.get("_status"),
         "runAt": promote.get("_timestamp"),
     },
@@ -129,8 +128,11 @@ healthy="$(echo "$report" | python3 -c "import json,sys; print(json.load(sys.std
 
 if $JSON_ONLY; then
   echo "$report"
-  [[ "$healthy" == "True" ]]
-  exit $?
+  if [[ "$healthy" == "True" ]]; then
+    exit 0
+  else
+    exit 1
+  fi
 fi
 
 echo "=== SakeScan image import health ==="

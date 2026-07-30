@@ -6,6 +6,7 @@ import {
   sleep,
   supabaseProjectHost,
 } from './lib/imageMirror.js';
+import { requireCronOrAdmin } from '../lib/requireCronOrAdmin.js';
 
 /** Low volume: brewery assets change rarely. */
 const BREWERY_MAIN_BUDGET = 8;
@@ -16,6 +17,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'GET' && req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
+
+  if (!(await requireCronOrAdmin(req, res))) return;
 
   const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
   const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;

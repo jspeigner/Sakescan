@@ -3,6 +3,8 @@
  * not whisky/wine/beer or unrelated subjects.
  */
 
+import { isPublicHttpImageUrl } from './publicImageUrl.js';
+
 export type SakeVisionResult = {
   isJapaneseSakeProductPhoto: boolean;
   confidence: 'high' | 'medium' | 'low';
@@ -85,6 +87,14 @@ export async function validateJapaneseSakeProductPhoto(
   imageUrl: string,
   context: { sakeName: string; brewery?: string | null }
 ): Promise<SakeVisionResult> {
+  if (!isPublicHttpImageUrl(imageUrl)) {
+    return {
+      isJapaneseSakeProductPhoto: false,
+      confidence: 'low',
+      briefReason: 'Non-public or invalid image URL',
+    };
+  }
+
   const system = `You verify product photos for a Japanese sake (nihonshu) database. Reply with JSON only.`;
 
   const userText = `Sake name: "${context.sakeName}"${context.brewery ? `. Brewery: "${context.brewery}".` : ''}
