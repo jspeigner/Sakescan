@@ -15,6 +15,7 @@ import { promoteScanImagesBatch } from './lib/promoteScanImages.js';
 import { discoverBreweryImagesBatch } from './lib/discoverBreweryImages.js';
 import { isFirecrawlBypassActive } from './lib/sakeImageDiscovery.js';
 import processImagesHandler from './process-images.js';
+import { requireCronOrAdmin } from '../lib/requireCronOrAdmin.js';
 
 const RUN_BUDGET_MS = 180_000;
 const DISCOVER_BUDGET_RESERVE_MS = 8_000;
@@ -118,7 +119,8 @@ type PhaseResult = {
 
 /** Run process-images in-process (avoids Vercel Deployment Protection on self-fetch). */
 async function invokeProcessImages(
-  query: Record<string, string>
+  query: Record<string, string>,
+  parentReq: VercelRequest
 ): Promise<{ ok: boolean; json?: Record<string, unknown>; error?: string }> {
   let statusCode = 200;
   let json: Record<string, unknown> = {};
@@ -142,6 +144,9 @@ async function invokeProcessImages(
   const req = {
     method: 'GET',
     query: { chunk: '1', ...query },
+    headers: {
+      authorization: parentReq.headers.authorization,
+    },
   } as VercelRequest;
 
   const res = {
@@ -234,6 +239,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'GET' && req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
+
+  if (!(await requireCronOrAdmin(req, res))) return;
 
   const q = req.query as Record<string, string | string[] | undefined>;
   const statsOnly = req.method === 'GET' && q.stats === '1';
@@ -527,7 +534,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       rowCap: prioritizeDiscover ? '28' : openaiRecovered ? '20' : '12',
     };
 
-    const inv = await invokeProcessImages(discoverQuery);
+    const inv = await invokeProcessImages(discoverQuery, req);
     const discoverJson = inv.json;
     const health = discoverJson?.discoverHealth as
       | { attempts?: number; placed?: number; yield?: number; firecrawlErrors?: number }
@@ -596,7 +603,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Phase 4: mirror external URLs
   if (!shouldStop()) {
     const t0 = Date.now();
-    const inv = await invokeProcessImages({ mode: 'mirror' });
+    const inv = await invokeProcessImages({ mode: 'mirror' }, req);
     phases.push({
       phase: 'images-mirror',
       status: inv.ok ? 'ok' : 'failed',

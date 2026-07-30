@@ -1,5 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
+import { requireAdmin } from './lib/requireAdmin.js';
 
 const CREATE_TABLE_SQL = `
 CREATE TABLE IF NOT EXISTS breweries (
@@ -102,13 +103,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const { action } = req.body || {};
-  const supabaseUrl = process.env.SUPABASE_URL;
-  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const auth = await requireAdmin(req, res);
+  if (!auth.ok) return;
 
-  if (!supabaseUrl || !supabaseServiceKey) {
-    return res.status(500).json({ error: 'Supabase not configured' });
-  }
+  const { action } = req.body || {};
+  const supabaseUrl = auth.supabaseUrl;
+  const supabaseServiceKey = auth.supabaseServiceKey;
 
   const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
