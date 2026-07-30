@@ -100,6 +100,7 @@ out = {
         "promoted": promote_count,
         "attempted": promote.get("attempted"),
         "skippedExisting": promote.get("skippedExisting"),
+        "skippedInvalidUrl": promote.get("skippedInvalidUrl"),
         "status": promote.get("_status"),
         "runAt": promote.get("_timestamp"),
     },
@@ -120,7 +121,7 @@ print(json.dumps(out, indent=2))
 PY
 )" || {
   echo "FAIL: could not parse stats JSON" >&2
-  echo "$raw" | head -c 500 >&2
+  python3 -c 'import sys; sys.stderr.write(sys.stdin.read()[:500])' <<< "$raw"
   exit 1
 }
 
