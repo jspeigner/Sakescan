@@ -14,9 +14,15 @@ import { Search, Star, Wine, Loader2 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import type { Sake } from "@/lib/supabase-types";
 import { withImageCacheBust } from "@/lib/image-url";
+import { slugify } from "@/lib/slugify";
 
-function slugify(name: string): string {
-  return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+/** Strip PostgREST filter metacharacters so user search cannot rewrite `.or()` clauses. */
+export function sanitizePostgrestSearch(raw: string): string {
+  return raw
+    .replace(/[%_,.()]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 80);
 }
 
 export default function SakeExplore() {
@@ -35,8 +41,9 @@ export default function SakeExplore() {
         .order("average_rating", { ascending: false, nullsFirst: false })
         .range(page * pageSize, (page + 1) * pageSize - 1);
 
-      if (search) {
-        query = query.or(`name.ilike.%${search}%,brewery.ilike.%${search}%`);
+      const safeSearch = sanitizePostgrestSearch(search);
+      if (safeSearch) {
+        query = query.or(`name.ilike.%${safeSearch}%,brewery.ilike.%${safeSearch}%`);
       }
       if (typeFilter !== "all") {
         query = query.eq("type", typeFilter);

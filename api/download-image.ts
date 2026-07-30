@@ -1,5 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
+import { requireAdmin } from './lib/requireAdmin.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Only allow POST
@@ -7,21 +8,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
+  const auth = await requireAdmin(req, res);
+  if (!auth.ok) return;
+
   const { imageUrl, sakeName } = req.body;
 
   if (!imageUrl) {
     return res.status(400).json({ error: 'Image URL is required' });
   }
 
-  const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
-  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-  if (!supabaseUrl || !supabaseServiceKey) {
-    return res.status(500).json({ error: 'Supabase not configured' });
-  }
-
   // Create Supabase client with service role key for storage access
-  const supabase = createClient(supabaseUrl, supabaseServiceKey);
+  const supabase = createClient(auth.supabaseUrl, auth.supabaseServiceKey);
 
   try {
     // Download the image

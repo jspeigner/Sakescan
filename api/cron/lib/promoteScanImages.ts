@@ -4,18 +4,14 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { downloadAndStore, isPublicHttpImageUrl, sleep } from './imageMirror.js';
+import { downloadAndStore, sleep } from './imageMirror.js';
 import {
   provenanceForUserScan,
   sakeImageUpdatePayload,
   shouldReplaceImage,
 } from './imageProvenance.js';
+import { isPublicHttpImageUrl } from './publicImageUrl.js';
 import { sakeVisionPasses, validateJapaneseSakeProductPhoto } from './sakeImageVision.js';
-import {
-  getWineEngineConfig,
-  wineEngineConfirmsSake,
-  wineEngineSearchByUrl,
-} from './wineEngine.js';
 
 export type PromoteScanResult = {
   candidates: number;
@@ -24,7 +20,7 @@ export type PromoteScanResult = {
   skippedVision: number;
   skippedWineEngine: number;
   skippedExisting: number;
-  skippedInvalidUrl: number;
+  skippedUnusableUrl: number;
   errors: string[];
 };
 
@@ -43,6 +39,30 @@ type SakeImageRow = {
   image_quality: string | null;
 };
 
+/** OpenAI / Storage can only fetch public http(s) URLs — not local file:// paths from iOS. */
+export function isPromotableScanImageUrl(url: string | null | undefined): boolean {
+  if (!url) return false;
+  const trimmed = url.trim();
+  return /^https?:\/\//i.test(trimmed);
+}
+
+/**
+ * Catalog promote must respect `catalog_share_opt_in` by default (MOBILE_API contract).
+ * Pass requireOptIn=false only for an explicit one-time legacy backfill.
+ */
+export function resolvePromoteRequireOptIn(requireOptIn?: boolean): boolean {
+  return requireOptIn !== false;
+}
+
+/** True when this scan may be copied into the public catalog under the given opt-in policy. */
+export function isEligibleCatalogShareCandidate(
+  catalogShareOptIn: boolean | null | undefined,
+  requireOptIn: boolean
+): boolean {
+  if (!requireOptIn) return true;
+  return catalogShareOptIn === true;
+}
+
 export async function promoteScanImagesBatch(
   supabase: SupabaseClient,
   options?: {
@@ -53,14 +73,14 @@ export async function promoteScanImagesBatch(
 ): Promise<PromoteScanResult> {
   const batchSize = Math.min(Math.max(options?.batchSize ?? 25, 5), 60);
   const openaiKey = options?.openaiKey;
-  const requireOptIn = options?.requireOptIn ?? false;
+  const requireOptIn = resolvePromoteRequireOptIn(options?.requireOptIn);
   const errors: string[] = [];
   let attempted = 0;
   let promoted = 0;
   let skippedVision = 0;
   let skippedWineEngine = 0;
   let skippedExisting = 0;
-  let skippedInvalidUrl = 0;
+  let skippedUnusableUrl = 0;
 
   let scanQuery = supabase
     .from('scans')
@@ -70,7 +90,7 @@ export async function promoteScanImagesBatch(
     .not('scanned_image_url', 'is', null)
     .neq('scanned_image_url', '')
     .order('created_at', { ascending: false })
-    .limit(batchSize * 3);
+    .limit(batchSize * 4);
 
   if (requireOptIn) {
     scanQuery = scanQuery.eq('catalog_share_opt_in', true);
@@ -85,19 +105,27 @@ export async function promoteScanImagesBatch(
       skippedVision: 0,
       skippedWineEngine: 0,
       skippedExisting: 0,
-      skippedInvalidUrl: 0,
+      skippedUnusableUrl: 0,
       errors: [scanErr.message],
     };
   }
 
   const candidates = (scans || []).filter(
     (s): s is ScanCandidate =>
-      Boolean(s.sake_id && s.scanned_image_url && (!requireOptIn || s.catalog_share_opt_in === true))
+      Boolean(
+        s.sake_id &&
+          s.scanned_image_url &&
+          isEligibleCatalogShareCandidate(s.catalog_share_opt_in, requireOptIn)
+      )
   );
 
-  // Prefer one scan per sake (most recent first already)
+  // Prefer HTTPS Storage URLs; skip file:// (mobile local paths) entirely.
   const bySake = new Map<string, ScanCandidate>();
   for (const s of candidates) {
+    if (!isPromotableScanImageUrl(s.scanned_image_url)) {
+      skippedUnusableUrl++;
+      continue;
+    }
     if (!bySake.has(s.sake_id)) bySake.set(s.sake_id, s);
   }
 
@@ -110,7 +138,7 @@ export async function promoteScanImagesBatch(
       skippedVision: 0,
       skippedWineEngine: 0,
       skippedExisting: 0,
-      skippedInvalidUrl: 0,
+      skippedUnusableUrl,
       errors: [],
     };
   }
@@ -128,13 +156,12 @@ export async function promoteScanImagesBatch(
       skippedVision: 0,
       skippedWineEngine: 0,
       skippedExisting: 0,
-      skippedInvalidUrl: 0,
+      skippedUnusableUrl,
       errors: [sakeErr.message],
     };
   }
 
   const sakeMap = new Map((sakes || []).map((s) => [s.id, s as SakeImageRow]));
-  const wineEngineCfg = getWineEngineConfig();
   const seenHashes = new Set<string>();
   const knownPlaceholderHashes = new Set<string>();
 
@@ -148,13 +175,13 @@ export async function promoteScanImagesBatch(
       continue;
     }
 
-    if (!isPublicHttpImageUrl(scan.scanned_image_url)) {
-      skippedInvalidUrl++;
-      continue;
-    }
-
     attempted++;
     try {
+      if (!isPublicHttpImageUrl(scan.scanned_image_url)) {
+        skippedVision++;
+        continue;
+      }
+
       if (openaiKey) {
         const v = await validateJapaneseSakeProductPhoto(openaiKey, scan.scanned_image_url, {
           sakeName: sake.name,
@@ -164,19 +191,6 @@ export async function promoteScanImagesBatch(
         if (!sakeVisionPasses(v, { allowMedium: true })) {
           skippedVision++;
           continue;
-        }
-      }
-
-      if (wineEngineCfg) {
-        try {
-          const we = await wineEngineSearchByUrl(wineEngineCfg, scan.scanned_image_url, { limit: 1 });
-          const confirm = wineEngineConfirmsSake(we, sakeId, { minScoreText: 45, minScore: 15 });
-          if (we.status === 'ok' && we.result?.length && confirm.reason === 'matched_other_sake') {
-            skippedWineEngine++;
-            continue;
-          }
-        } catch {
-          /* WineEngine optional */
         }
       }
 
@@ -210,7 +224,7 @@ export async function promoteScanImagesBatch(
     skippedVision,
     skippedWineEngine,
     skippedExisting,
-    skippedInvalidUrl,
+    skippedUnusableUrl,
     errors,
   };
 }

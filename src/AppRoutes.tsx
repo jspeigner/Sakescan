@@ -4,6 +4,7 @@ import Index from "./pages/Index";
 import Contact from "./pages/Contact";
 import About from "./pages/About";
 import Careers from "./pages/Careers";
+import CareerJob from "./pages/CareerJob";
 import Privacy from "./pages/Privacy";
 import Terms from "./pages/Terms";
 import NotFound from "./pages/NotFound";
@@ -31,6 +32,7 @@ export function AppRoutes() {
       <Route path="/contact" element={<Contact />} />
       <Route path="/about" element={<About />} />
       <Route path="/careers" element={<Careers />} />
+      <Route path="/careers/:slug" element={<CareerJob />} />
       <Route path="/privacy" element={<Privacy />} />
       <Route path="/terms" element={<Terms />} />
       <Route path="/blog" element={<Blog />} />
