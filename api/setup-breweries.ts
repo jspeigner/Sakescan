@@ -39,11 +39,15 @@ ALTER TABLE breweries ENABLE ROW LEVEL SECURITY;
 const CREATE_POLICIES_SQL = `
 DO $$
 BEGIN
+  -- Public catalog read only. service_role bypasses RLS; never use FOR ALL USING (true).
+  IF EXISTS (
+    SELECT 1 FROM pg_policies
+    WHERE tablename = 'breweries' AND policyname = 'Allow service role full access on breweries'
+  ) THEN
+    DROP POLICY "Allow service role full access on breweries" ON breweries;
+  END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'breweries' AND policyname = 'Allow public read access on breweries') THEN
     CREATE POLICY "Allow public read access on breweries" ON breweries FOR SELECT USING (true);
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'breweries' AND policyname = 'Allow service role full access on breweries') THEN
-    CREATE POLICY "Allow service role full access on breweries" ON breweries FOR ALL USING (true);
   END IF;
 END $$;
 `.trim();

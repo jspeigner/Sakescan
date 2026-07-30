@@ -9,30 +9,18 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Star, MapPin, Globe, Phone, Calendar, Wine, Loader2 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
-import type { Brewery, Sake } from "@/lib/supabase-types";
+import type { Sake } from "@/lib/supabase-types";
+import { fetchBreweryBySlug } from "@/lib/brewery-slug";
+import { slugify } from "@/lib/slugify";
 import NotFound from "./NotFound";
 import { withImageCacheBust } from "@/lib/image-url";
 
-function slugify(name: string): string {
-  return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
-}
-
 export default function BreweryDetail() {
   const { slug } = useParams<{ slug: string }>();
-  const breweryName = slug?.replace(/-/g, " ") ?? "";
 
   const { data: brewery, isLoading } = useQuery({
     queryKey: ["brewery-detail", slug],
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from("breweries")
-        .select("*")
-        .ilike("name", `%${breweryName}%`)
-        .limit(1)
-        .single();
-      if (error) throw error;
-      return data as Brewery;
-    },
+    queryFn: () => fetchBreweryBySlug(slug!),
     enabled: !!slug,
   });
 
@@ -43,7 +31,7 @@ export default function BreweryDetail() {
       const { data } = await supabase
         .from("sake")
         .select("id, name, type, average_rating, image_url, polishing_ratio, updated_at")
-        .ilike("brewery", `%${brewery.name}%`)
+        .eq("brewery", brewery.name)
         .order("average_rating", { ascending: false, nullsFirst: false })
         .limit(20);
       return (data ?? []) as Pick<

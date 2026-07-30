@@ -6,6 +6,24 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 
 const MAX_DECODED_BYTES = 2_500_000;
 
+const ALLOWED_SCAN_MIME = new Set([
+  'image/jpeg',
+  'image/jpg',
+  'image/png',
+  'image/webp',
+  'image/gif',
+  'image/heic',
+  'image/heif',
+]);
+
+export function normalizeScanImageMime(mime: string | undefined | null): string | null {
+  if (!mime) return 'image/jpeg';
+  const base = mime.toLowerCase().split(';')[0]?.trim() ?? '';
+  if (!ALLOWED_SCAN_MIME.has(base)) return null;
+  if (base === 'image/jpg') return 'image/jpeg';
+  return base;
+}
+
 export function extFromMime(mime: string): string {
   const m = mime.toLowerCase();
   if (m.includes('png')) return 'png';
@@ -14,6 +32,44 @@ export function extFromMime(mime: string): string {
   if (m.includes('heic') || m.includes('heif')) return 'heic';
   if (m.includes('jpeg') || m.includes('jpg')) return 'jpg';
   return 'jpg';
+}
+
+/** Best-effort magic-byte sniff so clients cannot label HTML/JS as image/jpeg. */
+export function sniffScanImageMime(buffer: Buffer): string | null {
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return 'image/jpeg';
+  }
+  if (
+    buffer.length >= 8 &&
+    buffer[0] === 0x89 &&
+    buffer[1] === 0x50 &&
+    buffer[2] === 0x4e &&
+    buffer[3] === 0x47
+  ) {
+    return 'image/png';
+  }
+  if (
+    buffer.length >= 6 &&
+    buffer[0] === 0x47 &&
+    buffer[1] === 0x49 &&
+    buffer[2] === 0x46 &&
+    buffer[3] === 0x38
+  ) {
+    return 'image/gif';
+  }
+  if (
+    buffer.length >= 12 &&
+    buffer.toString('ascii', 0, 4) === 'RIFF' &&
+    buffer.toString('ascii', 8, 12) === 'WEBP'
+  ) {
+    return 'image/webp';
+  }
+  // HEIC/HEIF (ISO BMFF) — 'ftyp' at offset 4
+  if (buffer.length >= 12 && buffer.toString('ascii', 4, 8) === 'ftyp') {
+    const brand = buffer.toString('ascii', 8, 12);
+    if (/heic|heix|heif|mif1|msf1/i.test(brand)) return 'image/heic';
+  }
+  return null;
 }
 
 export function isHttpScanImageUrl(url: string | null | undefined): boolean {
@@ -55,7 +111,19 @@ export async function uploadScanImageToStorage(
     scanId?: string;
   }
 ): Promise<{ url: string; path: string }> {
-  const contentType = params.contentType?.trim() || 'image/jpeg';
+  const claimed = normalizeScanImageMime(params.contentType);
+  if (!claimed) {
+    throw new Error('Unsupported image type (use JPEG, PNG, WebP, GIF, or HEIC)');
+  }
+
+  const sniffed = sniffScanImageMime(params.buffer);
+  // Prefer magic bytes; allow HEIC/HEIF claims when sniff cannot confirm (mobile).
+  const contentType =
+    sniffed ?? (claimed === 'image/heic' || claimed === 'image/heif' ? claimed : null);
+  if (!contentType) {
+    throw new Error('File bytes are not a recognized image');
+  }
+
   const ext = extFromMime(contentType);
   const timestamp = Date.now();
   const randomStr = Math.random().toString(36).substring(2, 10);
