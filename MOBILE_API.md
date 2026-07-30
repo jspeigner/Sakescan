@@ -191,7 +191,7 @@ Response includes `scannedImageUrl`, `uploaded`, `catalogImage`, and optional `p
 2. On accept: call `POST /api/contribute-scan-image` with `scanId` **and** `imageBase64` when the scan photo is only on-device.
 3. On decline: leave `catalog_share_opt_in` false.
 
-Cron `/api/cron/promote-scan-images` (also run by the backfill orchestrator) promotes matched scans with https photos into missing catalog images.
+Cron `/api/cron/promote-scan-images` (also run by the backfill orchestrator) promotes **only** matched scans with `catalog_share_opt_in=true` and https photos into missing catalog images. Declined scans are never auto-promoted.
 
 ---
 
