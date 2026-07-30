@@ -15,6 +15,7 @@ import { Search, Loader2, MoreHorizontal, Eye, Pencil, Star, Camera, MapPin, Mai
 import { supabase } from "@/lib/supabase";
 import type { User } from "@/lib/supabase-types";
 import { useAuth } from "@/hooks/use-auth";
+import { sanitizePostgrestSearch } from "@/lib/postgrest-search";
 
 interface UserWithStats extends User {
   reviewCount?: number;
@@ -57,7 +58,10 @@ export default function AdminUsers() {
         .order('created_at', { ascending: false });
 
       if (searchQuery) {
-        query = query.or(`display_name.ilike.%${searchQuery}%,email.ilike.%${searchQuery}%`);
+        const safeSearch = sanitizePostgrestSearch(searchQuery);
+        if (safeSearch) {
+          query = query.or(`display_name.ilike.%${safeSearch}%,email.ilike.%${safeSearch}%`);
+        }
       }
 
       if (filter === 'active') {

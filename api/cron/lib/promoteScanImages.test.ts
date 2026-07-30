@@ -3,6 +3,7 @@ import {
   isEligibleCatalogShareCandidate,
   isPromotableScanImageUrl,
   resolvePromoteRequireOptIn,
+  resolvePromoteScanIds,
 } from './promoteScanImages.ts';
 
 describe('resolvePromoteRequireOptIn', () => {
@@ -14,6 +15,17 @@ describe('resolvePromoteRequireOptIn', () => {
   test('allows explicit legacy backfill override', () => {
     expect(resolvePromoteRequireOptIn(false)).toBe(false);
     expect(resolvePromoteRequireOptIn(true)).toBe(true);
+  });
+});
+
+describe('resolvePromoteScanIds', () => {
+  test('empty when omitted', () => {
+    expect(resolvePromoteScanIds()).toEqual([]);
+    expect(resolvePromoteScanIds([])).toEqual([]);
+  });
+
+  test('keeps unique non-empty ids for targeted promoteNow', () => {
+    expect(resolvePromoteScanIds(['a', '', 'b', 'a'])).toEqual(['a', 'b']);
   });
 });
 

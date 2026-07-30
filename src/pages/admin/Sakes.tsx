@@ -14,6 +14,7 @@ import { Search, Plus, MoreHorizontal, Loader2, Pencil, Trash2, Star, ImageOff, 
 import { supabase } from "@/lib/supabase";
 import type { Sake } from "@/lib/supabase-types";
 import { withImageCacheBust } from "@/lib/image-url";
+import { sanitizePostgrestSearch } from "@/lib/postgrest-search";
 
 const PAGE_SIZE = 20;
 
@@ -47,7 +48,12 @@ export default function AdminSakes() {
         .range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1);
 
       if (searchQuery) {
-        query = query.or(`name.ilike.%${searchQuery}%,name_japanese.ilike.%${searchQuery}%,brewery.ilike.%${searchQuery}%`);
+        const safeSearch = sanitizePostgrestSearch(searchQuery);
+        if (safeSearch) {
+          query = query.or(
+            `name.ilike.%${safeSearch}%,name_japanese.ilike.%${safeSearch}%,brewery.ilike.%${safeSearch}%`
+          );
+        }
       }
 
       // Apply brewery filter from URL

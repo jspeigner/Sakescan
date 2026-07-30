@@ -54,6 +54,12 @@ export function resolvePromoteRequireOptIn(requireOptIn?: boolean): boolean {
   return requireOptIn !== false;
 }
 
+/** Normalize optional scanId targeting for contribute-scan-image / one-off promote. */
+export function resolvePromoteScanIds(scanIds?: string[]): string[] {
+  if (!scanIds?.length) return [];
+  return [...new Set(scanIds.filter((id) => typeof id === 'string' && id.length > 0))];
+}
+
 /** True when this scan may be copied into the public catalog under the given opt-in policy. */
 export function isEligibleCatalogShareCandidate(
   catalogShareOptIn: boolean | null | undefined,
@@ -69,9 +75,15 @@ export async function promoteScanImagesBatch(
     batchSize?: number;
     openaiKey?: string;
     requireOptIn?: boolean;
+    /** When set, only these scan rows are considered (e.g. contribute-scan-image promoteNow). */
+    scanIds?: string[];
   }
 ): Promise<PromoteScanResult> {
-  const batchSize = Math.min(Math.max(options?.batchSize ?? 25, 5), 60);
+  const targetedScanIds = resolvePromoteScanIds(options?.scanIds);
+  const targetingScans = targetedScanIds.length > 0;
+  const batchSize = targetingScans
+    ? Math.min(Math.max(options?.batchSize ?? targetedScanIds.length, 1), 60)
+    : Math.min(Math.max(options?.batchSize ?? 25, 5), 60);
   const openaiKey = options?.openaiKey;
   const requireOptIn = resolvePromoteRequireOptIn(options?.requireOptIn);
   const errors: string[] = [];
@@ -90,7 +102,11 @@ export async function promoteScanImagesBatch(
     .not('scanned_image_url', 'is', null)
     .neq('scanned_image_url', '')
     .order('created_at', { ascending: false })
-    .limit(batchSize * 4);
+    .limit(targetingScans ? targetedScanIds.length : batchSize * 4);
+
+  if (targetingScans) {
+    scanQuery = scanQuery.in('id', targetedScanIds);
+  }
 
   if (requireOptIn) {
     scanQuery = scanQuery.eq('catalog_share_opt_in', true);
