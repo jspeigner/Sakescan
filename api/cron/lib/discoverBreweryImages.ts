@@ -4,6 +4,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { downloadAndStore, sleep } from './imageMirror.js';
+import { fetchPublicHttpUrl, isPublicHttpImageUrl } from './publicImageUrl.js';
 
 export type BreweryDiscoverResult = {
   attempted: number;
@@ -26,13 +27,13 @@ function extractOgImage(html: string): string | null {
 }
 
 async function fetchOgImage(pageUrl: string): Promise<string | null> {
+  if (!isPublicHttpImageUrl(pageUrl)) return null;
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 8_000);
-    const res = await fetch(pageUrl, {
+    const res = await fetchPublicHttpUrl(pageUrl, {
       signal: ctrl.signal,
       headers: { 'User-Agent': 'SakeScanBot/1.0 (+https://www.sakescan.com)' },
-      redirect: 'follow',
     });
     clearTimeout(timer);
     if (!res.ok) return null;
