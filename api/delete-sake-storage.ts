@@ -55,18 +55,30 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(400).json({ error: 'publicUrl is required' });
   }
 
-  const host = (() => {
+  const projectHost = (() => {
     try {
       return new URL(supabaseUrl).hostname;
     } catch {
       return '';
     }
   })();
-  if (!host || !publicUrl.includes(host)) {
+  let publicHost = '';
+  try {
+    publicHost = new URL(publicUrl).hostname;
+  } catch {
+    return res.status(400).json({ error: 'Invalid publicUrl' });
+  }
+  // Hostname equality only — substring includes() would allow attacker hosts that embed the project host.
+  if (!projectHost || publicHost !== projectHost) {
     return res.status(400).json({ error: 'URL must be from this Supabase project' });
   }
-  if (!publicUrl.includes('/object/public/sake-images/')) {
-    return res.status(400).json({ error: 'Not a sake-images public URL' });
+  const objectMarker = '/object/public/sake-images/';
+  try {
+    if (!new URL(publicUrl).pathname.includes(objectMarker)) {
+      return res.status(400).json({ error: 'Not a sake-images public URL' });
+    }
+  } catch {
+    return res.status(400).json({ error: 'Invalid publicUrl' });
   }
 
   const bucket = 'sake-images';
