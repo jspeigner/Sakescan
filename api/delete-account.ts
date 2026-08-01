@@ -43,7 +43,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   console.warn('[delete-account] RPC failed, using service-role fallback:', rpcError.message);
   const admin = createClient(supabaseUrl, supabaseServiceKey);
 
+  // Best-effort avatar cleanup (RPC also deletes storage.objects by path prefix).
   await admin.storage.from('avatars').remove([userId, `${userId}/avatar`]);
+
+  // Remove dependent rows first — public.users delete can fail on FK without cascade.
+  const { error: ratingsError } = await admin.from('ratings').delete().eq('user_id', userId);
+  if (ratingsError) {
+    console.error('[delete-account] ratings delete failed:', ratingsError);
+    return res.status(500).json({ error: ratingsError.message });
+  }
+
+  // Scans may SET NULL on user_id when the RPC path is used; clear explicitly in fallback.
+  const { error: scansError } = await admin.from('scans').delete().eq('user_id', userId);
+  if (scansError) {
+    console.error('[delete-account] scans delete failed:', scansError);
+    return res.status(500).json({ error: scansError.message });
+  }
 
   const { error: profileError } = await admin.from('users').delete().eq('id', userId);
   if (profileError) {
