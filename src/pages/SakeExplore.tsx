@@ -55,12 +55,11 @@ export default function SakeExplore() {
   const { data: filters } = useQuery({
     queryKey: ["sake-filters"],
     queryFn: async () => {
-      const [typesRes, regionsRes] = await Promise.all([
-        supabase.from("sake").select("type").not("type", "is", null),
-        supabase.from("sake").select("region").not("region", "is", null),
+      const { fetchDistinctSakeColumn } = await import("@/lib/sake-filters");
+      const [types, regions] = await Promise.all([
+        fetchDistinctSakeColumn("type"),
+        fetchDistinctSakeColumn("region"),
       ]);
-      const types = [...new Set((typesRes.data ?? []).map((r) => r.type as string))].filter(Boolean).sort();
-      const regions = [...new Set((regionsRes.data ?? []).map((r) => r.region as string))].filter(Boolean).sort();
       return { types, regions };
     },
     staleTime: 1000 * 60 * 60,
