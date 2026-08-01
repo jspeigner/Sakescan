@@ -218,7 +218,7 @@ export async function promoteScanImagesBatch(
         seenHashes,
         knownPlaceholderHashes
       );
-      if (stored.rateLimited || stored.skippedPlaceholder) continue;
+      if (stored.rateLimited || stored.skippedPlaceholder || stored.skippedDuplicate) continue;
 
       const payload = sakeImageUpdatePayload(stored.url, provenanceForUserScan(scan.id));
       const { error: upErr } = await supabase.from('sake').update(payload).eq('id', sakeId);

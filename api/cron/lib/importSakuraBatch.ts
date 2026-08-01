@@ -159,7 +159,7 @@ export async function runSakuraImportBatch(
                 seenHashes,
                 knownPlaceholderHashes
               );
-              if (!stored.skippedPlaceholder && !stored.rateLimited) {
+              if (!stored.skippedPlaceholder && !stored.skippedDuplicate && !stored.rateLimited) {
                 Object.assign(patch, sakeImageUpdatePayload(stored.url, provenanceForTrustedRetailer()));
                 imageStored++;
                 changed = true;
@@ -209,7 +209,7 @@ export async function runSakuraImportBatch(
                 seenHashes,
                 knownPlaceholderHashes
               );
-              if (!stored.skippedPlaceholder && !stored.rateLimited) {
+              if (!stored.skippedPlaceholder && !stored.skippedDuplicate && !stored.rateLimited) {
                 imageUrl = stored.url;
                 imageStored++;
               }

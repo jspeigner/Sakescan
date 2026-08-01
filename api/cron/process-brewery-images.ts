@@ -76,7 +76,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             .update({ image_url: null, updated_at: new Date().toISOString() })
             .eq('id', brewery.id);
           skippedPlaceholders++;
-        } else {
+        } else if (!result.skippedDuplicate) {
           await supabase
             .from('breweries')
             .update({ image_url: result.url, updated_at: new Date().toISOString() })
@@ -138,7 +138,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             if (result.skippedPlaceholder) {
               newGallery[i] = '';
               skippedPlaceholders++;
-            } else {
+            } else if (!result.skippedDuplicate) {
               newGallery[i] = result.url;
               breweryGalleryProcessed++;
             }

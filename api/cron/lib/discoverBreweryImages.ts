@@ -81,7 +81,7 @@ export async function discoverBreweryImagesBatch(
           seenHashes,
           knownPlaceholderHashes
         );
-        if (!stored.rateLimited && !stored.skippedPlaceholder) {
+        if (!stored.rateLimited && !stored.skippedPlaceholder && !stored.skippedDuplicate) {
           await supabase
             .from('breweries')
             .update({ image_url: stored.url, updated_at: new Date().toISOString() })
@@ -107,7 +107,7 @@ export async function discoverBreweryImagesBatch(
         seenHashes,
         knownPlaceholderHashes
       );
-      if (stored.rateLimited || stored.skippedPlaceholder) continue;
+      if (stored.rateLimited || stored.skippedPlaceholder || stored.skippedDuplicate) continue;
 
       await supabase
         .from('breweries')

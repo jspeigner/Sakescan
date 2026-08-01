@@ -771,6 +771,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 failureReason = 'placeholder_skipped';
                 continue;
               }
+              if (result.skippedDuplicate) {
+                // Already mirrored identical bytes this run — leave existing URL alone.
+                continue;
+              }
 
               await supabase
                 .from('sake')
@@ -980,6 +984,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 .eq('id', sake.id);
               skippedPlaceholders++;
               diagnostics.mirror.placeholderClears++;
+            } else if (result.skippedDuplicate) {
+              // Shared product-shot bytes already stored earlier this run — keep URL.
             } else {
               await supabase
                 .from('sake')
