@@ -126,7 +126,7 @@ export async function downloadAndStore(
   return { url: data.publicUrl };
 }
 
-function isTransientDownloadError(message: string): boolean {
+export function isTransientDownloadError(message: string): boolean {
   const normalized = message.toLowerCase();
   return (
     normalized.includes('fetch failed') ||
@@ -136,6 +136,20 @@ function isTransientDownloadError(message: string): boolean {
     normalized.includes('timeout') ||
     normalized.includes('http 429') ||
     normalized.includes('http 5')
+  );
+}
+
+/**
+ * Whether a failed external-image download should null out the catalog URL.
+ * Only permanent content/access failures qualify — transient network/DNS/timeouts
+ * must leave the URL intact so a later run can retry.
+ */
+export function shouldClearExternalImageUrlOnError(message: string): boolean {
+  if (isTransientDownloadError(message)) return false;
+  return (
+    message.includes('Blocked') ||
+    message.includes('Not an image') ||
+    message.includes('Too small')
   );
 }
 
