@@ -8,21 +8,7 @@
  */
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
-
-const NON_SAKE_URL_REGEXES = [
-  /johnnie|walker|jwalker|jw\s*black|jw\s*red/i,
-  /chivas|ballantine|macallan|glenfiddich|glenlivet|lagavulin|laphroaig|talisker/i,
-  /\bwhisk(e)?y\b|\bscotch\b|\bbourbon\b|\brye\s+whisk/i,
-  /\bvodka\b|\bgin\b|\brum\b|\btequila\b|\bmezcal\b|\bcognac\b|\bbrandy\b/i,
-  /\bwine\b|\bchampagne\b|\bprosecco\b|\bcabernet\b|\bmerlot\b|\bchardonnay\b/i,
-  /\bbeer\b|\blager\b|\bstout\b|\bipa\b|\bheineken\b|\bcorona\b|\bbudweiser\b/i,
-  /jack\s*daniels|jim\s*beam|hennessy|martell|remy\s*martin/i,
-];
-
-function looksLikeNonSakeUrl(url: string): boolean {
-  const lower = url.toLowerCase();
-  return NON_SAKE_URL_REGEXES.some((re) => re.test(lower));
-}
+import { looksLikeNonSakeUrl } from './lib/nonSakeUrl.js';
 
 function supabaseProjectHost(url: string): string | null {
   try {

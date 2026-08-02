@@ -198,16 +198,21 @@ export async function promoteScanImagesBatch(
         continue;
       }
 
-      if (openaiKey) {
-        const v = await validateJapaneseSakeProductPhoto(openaiKey, scan.scanned_image_url, {
-          sakeName: sake.name,
-          brewery: sake.brewery,
-        });
-        await sleep(60);
-        if (!sakeVisionPasses(v, { allowMedium: true })) {
-          skippedVision++;
-          continue;
-        }
+      // Fail closed: never promote unverified user scans into the catalog when
+      // vision cannot run (missing OPENAI_API_KEY).
+      if (!openaiKey) {
+        skippedVision++;
+        continue;
+      }
+
+      const v = await validateJapaneseSakeProductPhoto(openaiKey, scan.scanned_image_url, {
+        sakeName: sake.name,
+        brewery: sake.brewery,
+      });
+      await sleep(60);
+      if (!sakeVisionPasses(v, { allowMedium: true })) {
+        skippedVision++;
+        continue;
       }
 
       const stored = await downloadAndStore(
