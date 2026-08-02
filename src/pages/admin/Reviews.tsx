@@ -348,7 +348,10 @@ export default function AdminReviews() {
                 placeholder="Search by sake name, brewery, user, or review text..."
                 className="pl-9"
                 value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
+                onChange={(e) => {
+                  setSearchQuery(e.target.value);
+                  setPage(0);
+                }}
               />
             </div>
             <Button type="submit" variant="secondary">

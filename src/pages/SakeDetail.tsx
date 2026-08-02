@@ -11,6 +11,7 @@ import { Star, Droplets, Thermometer, Wine, Wheat, MapPin, Loader2 } from "lucid
 import { supabase } from "@/lib/supabase";
 import type { Sake } from "@/lib/supabase-types";
 import { fetchSakeBySlug } from "@/lib/sake-slug";
+import { brewerySlugFromSakeBreweryField } from "@/lib/brewery-slug";
 import NotFound from "./NotFound";
 import { withImageCacheBust } from "@/lib/image-url";
 
@@ -70,9 +71,7 @@ export default function SakeDetail() {
       : {}),
   };
 
-  function slugify(name: string): string {
-    return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
-  }
+  const brewerySlug = brewerySlugFromSakeBreweryField(sake.brewery);
 
   return (
     <div className="min-h-screen bg-background">
@@ -129,7 +128,7 @@ export default function SakeDetail() {
                     <span className="text-sm text-muted-foreground">({sake.total_ratings} ratings)</span>
                   </div>
                 ) : null}
-                <Link to={`/brewery/${slugify(sake.brewery)}`} className="text-sm text-primary hover:underline">
+                <Link to={`/brewery/${brewerySlug}`} className="text-sm text-primary hover:underline">
                   {sake.brewery}
                 </Link>
               </div>

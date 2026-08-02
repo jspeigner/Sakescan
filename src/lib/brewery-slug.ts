@@ -6,6 +6,35 @@ export function breweryNameFromSlug(slug: string): string {
   return slug.replace(/-/g, " ");
 }
 
+/** Common corporate suffixes on sake.brewery that are absent from breweries.name. */
+const CORPORATE_SUFFIX_RE =
+  /\s*(?:co\.?\s*,?\s*ltd\.?|co\.?|ltd\.?|inc\.?|llc|corp\.?|kk|株式会社|有限会社)\.?$/i;
+
+/** Strip trailing Co.,Ltd / 株式会社 etc. so slugify matches catalog brewery pages. */
+export function stripBreweryCorporateSuffix(name: string): string {
+  const trimmed = name.trim();
+  const stripped = trimmed.replace(CORPORATE_SUFFIX_RE, "").replace(/[.,\s]+$/g, "").trim();
+  return stripped || trimmed;
+}
+
+/**
+ * URL slug for linking from a sake row's brewery field to /brewery/:slug.
+ * "Akita Meijyo Co.,Ltd" → "akita-meijyo" (matches breweries.name "Akita Meijyo").
+ */
+export function brewerySlugFromSakeBreweryField(breweryField: string): string {
+  return slugify(stripBreweryCorporateSuffix(breweryField));
+}
+
+/**
+ * Pattern for matching sake.brewery to a catalog brewery name.
+ * Exact equality misses common corporate suffixes
+ * ("Akita Meijyo" vs "Akita Meijyo Co.,Ltd").
+ */
+export function brewerySakeNamePattern(breweryName: string): string {
+  const cleaned = breweryName.replace(/[%_]/g, " ").replace(/\s+/g, " ").trim();
+  return `${cleaned}%`;
+}
+
 /**
  * Pick the brewery whose slugify(name) exactly matches the URL slug.
  * Avoids substring false positives (e.g. "asahi-shuzou" → Tamaasahi Shuzou).

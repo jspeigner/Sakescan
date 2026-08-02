@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { breweryNameFromSlug, pickBreweryBySlug } from "./brewery-slug.ts";
+import {
+  breweryNameFromSlug,
+  brewerySakeNamePattern,
+  brewerySlugFromSakeBreweryField,
+  pickBreweryBySlug,
+  stripBreweryCorporateSuffix,
+} from "./brewery-slug.ts";
 
 describe("pickBreweryBySlug", () => {
   const rows = [
@@ -30,5 +36,26 @@ describe("pickBreweryBySlug", () => {
 describe("breweryNameFromSlug", () => {
   test("turns hyphens into spaces", () => {
     expect(breweryNameFromSlug("asahi-shuzou")).toBe("asahi shuzou");
+  });
+});
+
+describe("brewerySlugFromSakeBreweryField", () => {
+  test("strips Co.,Ltd so sake detail links hit the brewery page", () => {
+    expect(stripBreweryCorporateSuffix("Akita Meijyo Co.,Ltd")).toBe("Akita Meijyo");
+    expect(brewerySlugFromSakeBreweryField("Akita Meijyo Co.,Ltd")).toBe("akita-meijyo");
+  });
+
+  test("leaves names without corporate suffixes unchanged", () => {
+    expect(brewerySlugFromSakeBreweryField("Dassai")).toBe("dassai");
+  });
+});
+
+describe("brewerySakeNamePattern", () => {
+  test("builds a prefix LIKE pattern for admin brewery filters", () => {
+    expect(brewerySakeNamePattern("Akita Meijyo")).toBe("Akita Meijyo%");
+  });
+
+  test("strips embedded LIKE wildcards from the brewery name", () => {
+    expect(brewerySakeNamePattern("Aki%ta_Meijyo")).toBe("Aki ta Meijyo%");
   });
 });
