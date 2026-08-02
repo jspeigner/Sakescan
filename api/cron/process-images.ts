@@ -14,6 +14,7 @@ import {
   resetFirecrawlBypassForInvocation,
   searchSakeImageCandidates,
   type SakeImageSearchMode,
+  shouldClearCatalogUrlAsNonSakeProduct,
   urlLooksLikeNonSakeProduct,
 } from './lib/sakeImageDiscovery.js';
 import { sakeVisionPasses, validateJapaneseSakeProductPhoto, isOpenAIQuotaError, isOpenAIVisionQuotaExceeded, resetOpenAIVisionQuotaForInvocation } from './lib/sakeImageVision.js';
@@ -939,16 +940,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
         if (sake.image_url && !isSupabaseUrl(sake.image_url, supabaseUrl)) {
           diagnostics.mirror.attemptedRows++;
-          // Skip obvious non-sake URLs before even attempting to download
+          // Heuristic may false-positive on sake retailer paths (/wine-and-sake/, /wine/...).
+          // Never null catalog URLs from URL text alone — defer so the queue can rotate.
           if (urlLooksLikeNonSakeProduct(sake.image_url)) {
-            await supabase
-              .from('sake')
-              .update({ image_url: null, updated_at: new Date().toISOString() })
-              .eq('id', sake.id);
-            skippedPlaceholders++;
             diagnostics.mirror.urlFiltered++;
-            diagnostics.mirror.placeholderClears++;
-            console.log(`[process-images/mirror] cleared non-sake URL for ${sake.name}: ${sake.image_url}`);
+            if (shouldClearCatalogUrlAsNonSakeProduct(sake.image_url)) {
+              await supabase
+                .from('sake')
+                .update({ image_url: null, updated_at: new Date().toISOString() })
+                .eq('id', sake.id);
+              skippedPlaceholders++;
+              diagnostics.mirror.placeholderClears++;
+              console.log(`[process-images/mirror] cleared non-sake URL for ${sake.name}: ${sake.image_url}`);
+            } else {
+              await supabase
+                .from('sake')
+                .update({ updated_at: new Date().toISOString() })
+                .eq('id', sake.id);
+              console.log(
+                `[process-images/mirror] deferred non-sake-looking URL (kept) for ${sake.name}: ${sake.image_url}`
+              );
+            }
             mirrorOpsRemaining--;
             continue;
           }
