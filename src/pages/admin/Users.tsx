@@ -70,13 +70,16 @@ export default function AdminUsers() {
         query = query.eq('is_guest', true);
       }
 
-      // Get all matching for count, then paginate
-      const { data: allUsers, error, count } = await query;
+      // Server-side page — a bare select is capped ~1000 rows by PostgREST, so
+      // client-side pagination falsely emptied pages past the first thousand users.
+      const from = page * PAGE_SIZE;
+      const to = from + PAGE_SIZE - 1;
+      const { data: pageUsers, error, count } = await query.range(from, to);
 
       if (error) throw error;
 
-      // Get user IDs for stats
-      const userIds = allUsers?.map(u => u.id) || [];
+      // Get user IDs for stats (current page only)
+      const userIds = pageUsers?.map(u => u.id) || [];
 
       // Fetch review counts and scan counts
       const [ratingsRes, scansRes] = await Promise.all([
@@ -104,7 +107,7 @@ export default function AdminUsers() {
       });
 
       // Enrich users with stats
-      const enrichedUsers: UserWithStats[] = (allUsers || []).map(user => ({
+      const enrichedUsers: UserWithStats[] = (pageUsers || []).map(user => ({
         ...user,
         reviewCount: reviewStats.get(user.id)?.count || 0,
         scanCount: scanStats.get(user.id) || 0,
@@ -114,14 +117,7 @@ export default function AdminUsers() {
       }));
 
       setTotalCount(count || 0);
-
-      // Paginate
-      const paginatedUsers = enrichedUsers.slice(
-        page * PAGE_SIZE,
-        (page + 1) * PAGE_SIZE
-      );
-
-      setUsers(paginatedUsers);
+      setUsers(enrichedUsers);
     } catch (error) {
       console.error('Error fetching users:', error);
     } finally {

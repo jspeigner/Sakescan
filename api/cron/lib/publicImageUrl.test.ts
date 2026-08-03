@@ -16,6 +16,15 @@ describe('isPublicHttpImageUrl', () => {
     expect(isPublicHttpImageUrl('http://[::1]/')).toBe(false);
   });
 
+  test('blocks IPv4-mapped IPv6 private addresses', () => {
+    // Regression: hostname "::ffff:127.0.0.1" bypassed the IPv4 private check.
+    expect(isPublicHttpImageUrl('http://[::ffff:127.0.0.1]/x')).toBe(false);
+    expect(isPublicHttpImageUrl('http://[::ffff:10.0.0.1]/x')).toBe(false);
+    expect(isPublicHttpImageUrl('http://[::ffff:192.168.1.1]/x')).toBe(false);
+    expect(isPublicHttpImageUrl('http://[::ffff:7f00:1]/x')).toBe(false); // 127.0.0.1
+    expect(isPublicHttpImageUrl('http://[::ffff:a00:1]/x')).toBe(false); // 10.0.0.1
+  });
+
   test('blocks non-http schemes', () => {
     expect(isPublicHttpImageUrl('file:///etc/passwd')).toBe(false);
     expect(isPublicHttpImageUrl('ftp://example.com/a.jpg')).toBe(false);

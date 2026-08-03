@@ -443,7 +443,7 @@ export function SakeModal({ open, onOpenChange, sake, onSaved }: SakeModalProps)
               <Label htmlFor="prefecture">Prefecture</Label>
               <Select
                 value={form.prefecture || ""}
-                onValueChange={(value) => setForm(prev => ({ ...prev, prefecture: value, region: value }))}
+                onValueChange={(value) => setForm(prev => ({ ...prev, prefecture: value }))}
               >
                 <SelectTrigger>
                   <SelectValue placeholder="Select prefecture" />
