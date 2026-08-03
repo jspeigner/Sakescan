@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { fetchAllSelectPages } from '../../lib/fetchAllSelectPages.js';
 import { downloadAndStoreWithRetry } from './imageMirror.js';
 import {
   getBackfillState,
@@ -114,19 +115,16 @@ export async function runSakuraImportBatch(
     prefecture: string | null;
   };
 
-  const existingSakes: ExistingSakeRow[] = [];
-  const existingPageSize = 5000;
-  for (let offset = 0; ; offset += existingPageSize) {
-    const { data, error: fetchError } = await supabase
+  // Must page at PostgREST max-rows (~1000). A 5000-sized range still returns ≤1000
+  // rows, so `data.length < 5000` stopped after the first page and treated the rest
+  // of the catalog as missing → duplicate inserts on every Sakura batch.
+  const existingSakes = await fetchAllSelectPages<ExistingSakeRow>(async (from, to) => {
+    const { data, error } = await supabase
       .from('sake')
       .select('id, name, name_japanese, brewery, image_url, image_quality, description, type, prefecture')
-      .range(offset, offset + existingPageSize - 1);
-
-    if (fetchError) throw new Error(fetchError.message);
-    if (!data?.length) break;
-    existingSakes.push(...(data as ExistingSakeRow[]));
-    if (data.length < existingPageSize) break;
-  }
+      .range(from, to);
+    return { data: data as ExistingSakeRow[] | null, error };
+  });
 
   let filterIndex = state.filterIndex % SAKURA_FILTER_ROTATION.length;
 
