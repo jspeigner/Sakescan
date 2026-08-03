@@ -125,16 +125,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       for (const scraped of scrapedSakes) {
         // Try to find a match in existing database
-<<<<<<< HEAD
         const match = existingSakes.find(existing => {
-=======
-        const match = existingSakes?.find(existing => {
           const scrapedName = scraped.name?.trim().toLowerCase() ?? '';
           const existingName = existing.name?.trim().toLowerCase() ?? '';
           // ''.includes('') is true — never match on empty/partial blank names.
           if (!scrapedName || !existingName) return false;
 
->>>>>>> origin/main
           // Match by name (case insensitive, partial match)
           const nameMatch =
             existingName.includes(scrapedName) || scrapedName.includes(existingName);
