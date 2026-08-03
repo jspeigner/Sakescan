@@ -1,5 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import { fetchAllSelectPages } from './lib/fetchAllSelectPages.js';
 import { requireAdmin } from './lib/requireAdmin.js';
 import { fetchPublicHttpUrl, isPublicHttpImageUrl } from './cron/lib/publicImageUrl.js';
 
@@ -104,23 +105,36 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (action === 'match') {
       const scrapedSakes: SakeToImport[] = sakes;
       
-      // Fetch all existing sakes
-      const { data: existingSakes, error: fetchError } = await supabase
-        .from('sake')
-        .select('id, name, name_japanese, brewery, image_url');
-
-      if (fetchError) throw fetchError;
+      // Page through the full catalog — a bare `.select()` is capped at ~1000 rows
+      // by PostgREST, which falsely marks the rest as new and duplicates on import.
+      const existingSakes = await fetchAllSelectPages<{
+        id: string;
+        name: string;
+        name_japanese: string | null;
+        brewery: string;
+        image_url: string | null;
+      }>(async (from, to) => {
+        const { data, error } = await supabase
+          .from('sake')
+          .select('id, name, name_japanese, brewery, image_url')
+          .range(from, to);
+        return { data, error };
+      });
 
       const results: SakeToImport[] = [];
 
       for (const scraped of scrapedSakes) {
         // Try to find a match in existing database
+<<<<<<< HEAD
+        const match = existingSakes.find(existing => {
+=======
         const match = existingSakes?.find(existing => {
           const scrapedName = scraped.name?.trim().toLowerCase() ?? '';
           const existingName = existing.name?.trim().toLowerCase() ?? '';
           // ''.includes('') is true — never match on empty/partial blank names.
           if (!scrapedName || !existingName) return false;
 
+>>>>>>> origin/main
           // Match by name (case insensitive, partial match)
           const nameMatch =
             existingName.includes(scrapedName) || scrapedName.includes(existingName);
