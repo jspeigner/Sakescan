@@ -4,6 +4,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { downloadAndStore, sleep } from './imageMirror.js';
+import { fetchPublicHttpUrl, isPublicHttpImageUrl } from './publicImageUrl.js';
 
 export type BreweryDiscoverResult = {
   attempted: number;
@@ -26,13 +27,13 @@ function extractOgImage(html: string): string | null {
 }
 
 async function fetchOgImage(pageUrl: string): Promise<string | null> {
+  if (!isPublicHttpImageUrl(pageUrl)) return null;
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 8_000);
-    const res = await fetch(pageUrl, {
+    const res = await fetchPublicHttpUrl(pageUrl, {
       signal: ctrl.signal,
       headers: { 'User-Agent': 'SakeScanBot/1.0 (+https://www.sakescan.com)' },
-      redirect: 'follow',
     });
     clearTimeout(timer);
     if (!res.ok) return null;
@@ -81,7 +82,7 @@ export async function discoverBreweryImagesBatch(
           seenHashes,
           knownPlaceholderHashes
         );
-        if (!stored.rateLimited && !stored.skippedPlaceholder) {
+        if (!stored.rateLimited && !stored.skippedPlaceholder && !stored.skippedDuplicate) {
           await supabase
             .from('breweries')
             .update({ image_url: stored.url, updated_at: new Date().toISOString() })
@@ -107,7 +108,7 @@ export async function discoverBreweryImagesBatch(
         seenHashes,
         knownPlaceholderHashes
       );
-      if (stored.rateLimited || stored.skippedPlaceholder) continue;
+      if (stored.rateLimited || stored.skippedPlaceholder || stored.skippedDuplicate) continue;
 
       await supabase
         .from('breweries')

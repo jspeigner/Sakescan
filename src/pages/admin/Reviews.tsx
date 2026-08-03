@@ -222,12 +222,23 @@ export default function AdminReviews() {
     if (!confirm('Are you sure you want to delete this review? This cannot be undone.')) return;
 
     try {
-      const { error } = await supabase
-        .from('ratings')
-        .delete()
-        .eq('id', review.id);
+      const token = session?.access_token;
+      if (!token) {
+        throw new Error('Admin session expired. Sign in again and retry delete.');
+      }
 
-      if (error) throw error;
+      const response = await fetch('/api/admin-update-review', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ id: review.id, action: 'delete' }),
+      });
+      const data = (await response.json()) as { error?: string };
+      if (!response.ok) {
+        throw new Error(data.error || `Delete failed (${response.status})`);
+      }
       
       // Close modal if deleting currently viewed review
       if (selectedReview?.id === review.id) {
@@ -238,7 +249,8 @@ export default function AdminReviews() {
       fetchReviews();
     } catch (error) {
       console.error('Error deleting review:', error);
-      alert('Failed to delete review');
+      const message = error instanceof Error ? error.message : 'Failed to delete review';
+      alert(message);
     }
   };
 

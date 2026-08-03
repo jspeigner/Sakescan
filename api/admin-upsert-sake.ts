@@ -53,13 +53,37 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const body = req.body as {
     id?: string;
     payload?: SakePayload;
+    action?: 'delete' | 'upsert';
   };
+
+  const admin = createClient(supabaseUrl, supabaseServiceKey);
+
+  // Client-side deletes hit RLS (permission denied on `sake`); admin must use service role.
+  if (body?.action === 'delete') {
+    if (!body.id) {
+      return res.status(400).json({ error: 'id is required for delete' });
+    }
+    const { data, error } = await admin
+      .from('sake')
+      .delete()
+      .eq('id', body.id)
+      .select('id')
+      .maybeSingle();
+
+    if (error) {
+      console.error('[admin-upsert-sake/delete]', error);
+      return res.status(500).json({ error: error.message });
+    }
+    if (!data?.id) {
+      return res.status(404).json({ error: 'Sake not found' });
+    }
+    return res.status(200).json({ success: true, id: data.id, mode: 'delete' });
+  }
+
   const payload = body?.payload;
   if (!payload?.name || !payload?.brewery) {
     return res.status(400).json({ error: 'name and brewery are required' });
   }
-
-  const admin = createClient(supabaseUrl, supabaseServiceKey);
 
   const row: Record<string, unknown> = { ...payload };
   if (payload.image_url) {

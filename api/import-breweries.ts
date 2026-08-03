@@ -1,6 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { requireAdmin } from './lib/requireAdmin.js';
+import { fetchPublicHttpUrl, isPublicHttpImageUrl } from './cron/lib/publicImageUrl.js';
 
 interface BreweryInput {
   name: string;
@@ -26,7 +27,10 @@ async function downloadAndStoreImage(
   imageUrl: string,
   breweryName: string
 ): Promise<string> {
-  const imageResponse = await fetch(imageUrl, {
+  if (!isPublicHttpImageUrl(imageUrl)) {
+    throw new Error('Image URL must be a public http(s) URL');
+  }
+  const imageResponse = await fetchPublicHttpUrl(imageUrl, {
     headers: {
       'User-Agent': 'Mozilla/5.0 (compatible; SakeScan/1.0)',
       'Accept': 'image/*',

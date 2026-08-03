@@ -194,7 +194,8 @@ export function SakeModal({ open, onOpenChange, sake, onSaved }: SakeModalProps)
       ...prev,
       type: (data.type as string) || prev.type,
       prefecture: (data.prefecture as string) || prev.prefecture,
-      region: (data.prefecture as string) || prev.region,
+      // Prefecture ≠ region (Explore filters by region). Only set region from a real region field.
+      region: (data.region as string) || prev.region,
       polishing_ratio: (data.polishingRatio as number) || prev.polishing_ratio,
       alcohol_percentage: (data.alcoholPercentage as number) || prev.alcohol_percentage,
       description: (data.description as string) || prev.description,
