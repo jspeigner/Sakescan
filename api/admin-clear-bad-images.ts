@@ -8,6 +8,7 @@
  */
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
+import { fetchPublicHttpUrl } from './cron/lib/publicImageUrl.js';
 
 const NON_SAKE_URL_REGEXES = [
   /johnnie|walker|jwalker|jw\s*black|jw\s*red/i,
@@ -40,12 +41,11 @@ function isSupabaseUrl(url: string, supabaseUrl: string): boolean {
 
 async function imageUrlToDataUrl(imageUrl: string): Promise<string | null> {
   try {
-    const res = await fetch(imageUrl, {
+    const res = await fetchPublicHttpUrl(imageUrl, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (compatible; SakeScan/1.0)',
         Accept: 'image/*',
       },
-      redirect: 'follow',
     });
     if (!res.ok) return null;
     const ct = res.headers.get('content-type') || 'image/jpeg';

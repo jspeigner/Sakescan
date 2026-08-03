@@ -53,7 +53,8 @@ export function pickBreweryBySlug<T extends { name: string }>(
   return rows.find((row) => row.name.toLowerCase() === nameGuess) ?? null;
 }
 
-export async function fetchBreweryBySlug(slug: string): Promise<Brewery> {
+/** Returns null when the slug does not match a brewery. Throws only on query/transport failures. */
+export async function fetchBreweryBySlug(slug: string): Promise<Brewery | null> {
   const nameGuess = breweryNameFromSlug(slug);
   // Hyphens in the URL may be spaces OR hyphens in the real name (e.g. Den-en).
   // Expand to a LIKE pattern, then require an exact slugify(name) match.
@@ -76,9 +77,5 @@ export async function fetchBreweryBySlug(slug: string): Promise<Brewery> {
     .limit(50);
   if (error) throw error;
 
-  const match = pickBreweryBySlug((data ?? []) as Brewery[], slug);
-  if (!match) {
-    throw new Error(`Brewery not found: ${slug}`);
-  }
-  return match;
+  return pickBreweryBySlug((data ?? []) as Brewery[], slug);
 }

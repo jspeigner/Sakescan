@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { createHash } from 'crypto';
+import { fetchPublicHttpUrl } from './publicImageUrl.js';
 
 export const MIN_IMAGE_BYTES = 3000;
 /** Product shots rarely need more; large files risk OOM in serverless. */
@@ -8,15 +9,6 @@ export const MAX_IMAGE_BYTES = Number.isFinite(parsedMaxImageBytes) ? parsedMaxI
 
 export function isSupabaseUrl(url: string, supabaseUrl: string): boolean {
   return url.includes(supabaseUrl.replace('https://', '')) || url.includes('supabase.co/storage');
-}
-
-export function isPublicHttpImageUrl(url: string): boolean {
-  try {
-    const parsed = new URL(url);
-    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
-  } catch {
-    return false;
-  }
 }
 
 export function supabaseProjectHost(supabaseUrl: string): string | null {
@@ -47,7 +39,7 @@ export async function downloadAndStore(
   seenHashes: Set<string>,
   knownPlaceholderHashes: Set<string>
 ): Promise<DownloadResult> {
-  const response = await fetch(imageUrl, {
+  const response = await fetchPublicHttpUrl(imageUrl, {
     headers: {
       'User-Agent':
         'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -59,7 +51,6 @@ export async function downloadAndStore(
           ? 'https://export.sakurasaketen.com/'
           : 'https://japansake.or.jp/',
     },
-    redirect: 'follow',
   });
 
   if (response.status === 429) {
