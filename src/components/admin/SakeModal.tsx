@@ -473,7 +473,7 @@ export function SakeModal({ open, onOpenChange, sake, onSaved }: SakeModalProps)
               <Input
                 id="polishing_ratio"
                 type="number"
-                value={form.polishing_ratio || ""}
+                value={form.polishing_ratio ?? ""}
                 onChange={(e) => setForm(prev => ({ ...prev, polishing_ratio: e.target.value ? Number(e.target.value) : null }))}
                 placeholder="50"
               />
@@ -484,7 +484,7 @@ export function SakeModal({ open, onOpenChange, sake, onSaved }: SakeModalProps)
                 id="alcohol_percentage"
                 type="number"
                 step="0.1"
-                value={form.alcohol_percentage || ""}
+                value={form.alcohol_percentage ?? ""}
                 onChange={(e) => setForm(prev => ({ ...prev, alcohol_percentage: e.target.value ? Number(e.target.value) : null }))}
                 placeholder="16"
               />
@@ -494,7 +494,7 @@ export function SakeModal({ open, onOpenChange, sake, onSaved }: SakeModalProps)
               <Input
                 id="smv"
                 type="number"
-                value={form.smv || ""}
+                value={form.smv ?? ""}
                 onChange={(e) => setForm(prev => ({ ...prev, smv: e.target.value ? Number(e.target.value) : null }))}
                 placeholder="+3"
               />
@@ -505,7 +505,7 @@ export function SakeModal({ open, onOpenChange, sake, onSaved }: SakeModalProps)
                 id="acidity"
                 type="number"
                 step="0.1"
-                value={form.acidity || ""}
+                value={form.acidity ?? ""}
                 onChange={(e) => setForm(prev => ({ ...prev, acidity: e.target.value ? Number(e.target.value) : null }))}
                 placeholder="1.4"
               />

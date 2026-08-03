@@ -308,7 +308,10 @@ export default function AdminUsers() {
                 placeholder="Search by name or email..."
                 className="pl-9"
                 value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
+                onChange={(e) => {
+                  setSearchQuery(e.target.value);
+                  setPage(0);
+                }}
               />
             </div>
             <Button type="submit" variant="secondary">

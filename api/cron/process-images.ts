@@ -474,7 +474,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             brewery: row.brewery,
           });
           await sleep(DELAY_MS_DISCOVER);
-          if (!v.isJapaneseSakeProductPhoto || v.confidence === 'low') {
+          // Only clear when vision says the photo is not sake. Low confidence on a
+          // positive "is sake" result must not wipe a hosted catalog image.
+          if (!v.isJapaneseSakeProductPhoto) {
             await supabase
               .from('sake')
               .update({ image_url: null, updated_at: new Date().toISOString() })

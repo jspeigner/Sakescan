@@ -15,6 +15,7 @@ import { supabase } from "@/lib/supabase";
 import type { Sake } from "@/lib/supabase-types";
 import { withImageCacheBust } from "@/lib/image-url";
 import { sanitizePostgrestSearch } from "@/lib/postgrest-search";
+import { brewerySakeNamePattern } from "@/lib/brewery-slug";
 import { useAuth } from "@/hooks/use-auth";
 
 const PAGE_SIZE = 20;
@@ -83,9 +84,9 @@ export default function AdminSakes() {
         }
       }
 
-      // Apply brewery filter from URL
+      // Apply brewery filter from URL (prefix match: "Akita Meijyo" → "Akita Meijyo Co.,Ltd")
       if (breweryFilter) {
-        query = query.eq('brewery', breweryFilter);
+        query = query.ilike('brewery', brewerySakeNamePattern(breweryFilter));
       }
 
       // Apply filter for missing images
@@ -106,7 +107,7 @@ export default function AdminSakes() {
         .or('image_url.is.null,image_url.eq.');
       
       if (breweryFilter) {
-        missingQuery = missingQuery.eq('brewery', breweryFilter);
+        missingQuery = missingQuery.ilike('brewery', brewerySakeNamePattern(breweryFilter));
       }
       
       const { count: missingCount } = await missingQuery;
@@ -222,7 +223,10 @@ export default function AdminSakes() {
                 placeholder="Search by name, Japanese name, or brewery..."
                 className="pl-9"
                 value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
+                onChange={(e) => {
+                  setSearchQuery(e.target.value);
+                  setPage(0);
+                }}
               />
             </div>
             <Button type="submit" variant="secondary">
