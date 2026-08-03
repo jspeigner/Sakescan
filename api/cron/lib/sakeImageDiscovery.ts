@@ -228,6 +228,18 @@ export function urlLooksLikeNonSakeProduct(url: string): boolean {
   return NON_SAKE_PRODUCT_REGEXES.some((re) => re.test(h));
 }
 
+/**
+ * Whether mirror may permanently null an existing catalog `image_url` based only on
+ * `urlLooksLikeNonSakeProduct`.
+ *
+ * Always false: category tokens like `\bwine\b` / `\bbeer\b` match legitimate sake
+ * retailer paths (e.g. `/wine-and-sake/`, `/wine/products/...`). Discovery may still
+ * skip such candidates; clearing stored URLs requires vision or an admin action.
+ */
+export function shouldClearCatalogUrlAsNonSakeProduct(_url: string): boolean {
+  return false;
+}
+
 async function firecrawlScrapeV1(
   apiKey: string,
   body: Record<string, unknown>
