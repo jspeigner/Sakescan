@@ -18,11 +18,12 @@ import {
 
 const SAKURA_STATE_KEY = 'sakura_import';
 
-function normalizeName(value: string): string {
+export function normalizeName(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9\u3040-\u9faf]+/g, ' ').trim();
 }
 
-function matchesExisting(
+/** True when a scraped Sakura row is the same product as an existing catalog sake. */
+export function matchesExisting(
   scraped: ScrapedSake,
   existing: {
     id: string;
@@ -37,6 +38,8 @@ function matchesExisting(
 ): boolean {
   const scrapedName = normalizeName(scraped.name);
   const existingName = normalizeName(existing.name);
+  if (!scrapedName || !existingName) return false;
+
   const scrapedJapanese = scraped.nameJapanese ? normalizeName(scraped.nameJapanese) : '';
   const existingJapanese = existing.name_japanese ? normalizeName(existing.name_japanese) : '';
   const japaneseMatch =
@@ -49,12 +52,20 @@ function matchesExisting(
     existingName.includes(scrapedName) ||
     scrapedName.includes(existingName);
 
-  const breweryMatch =
-    scraped.brewery &&
-    existing.brewery &&
-    existing.brewery.toLowerCase().includes(scraped.brewery.toLowerCase());
+  // Require a product-name match. Brewery-only matching incorrectly attaches every
+  // new product from a known brewery onto the first existing row for that brewery,
+  // overwriting images/metadata and suppressing inserts of distinct products.
+  if (!nameMatch) return false;
 
-  return Boolean(nameMatch || (breweryMatch && scrapedName.length > 3));
+  if (scraped.brewery && existing.brewery) {
+    const scrapedBrewery = scraped.brewery.toLowerCase();
+    const existingBrewery = existing.brewery.toLowerCase();
+    return (
+      existingBrewery.includes(scrapedBrewery) || scrapedBrewery.includes(existingBrewery)
+    );
+  }
+
+  return true;
 }
 
 function buildDescriptionFromScraped(scraped: ScrapedSake): string | null {
