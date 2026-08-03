@@ -1,23 +1,10 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { fetchAllSelectPages } from './lib/fetchAllSelectPages.js';
+import { looksLikeNonSakeUrl } from './lib/nonSakeUrl.js';
 import { requireAdmin } from './lib/requireAdmin.js';
+import { matchesExisting } from './cron/lib/importSakuraBatch.js';
 import { fetchPublicHttpUrl, isPublicHttpImageUrl } from './cron/lib/publicImageUrl.js';
-
-const NON_SAKE_URL_REGEXES = [
-  /johnnie|walker|jwalker|jw\s*black|jw\s*red/i,
-  /chivas|ballantine|macallan|glenfiddich|glenlivet|lagavulin|laphroaig|talisker/i,
-  /\bwhisk(e)?y\b|\bscotch\b|\bbourbon\b|\brye\s+whisk/i,
-  /\bvodka\b|\bgin\b|\brum\b|\btequila\b|\bmezcal\b|\bcognac\b|\bbrandy\b/i,
-  /\bwine\b|\bchampagne\b|\bprosecco\b|\bcabernet\b|\bmerlot\b|\bchardonnay\b/i,
-  /\bbeer\b|\blager\b|\bstout\b|\bipa\b|\bheineken\b|\bcorona\b|\bbudweiser\b/i,
-  /jack\s*daniels|jim\s*beam|hennessy|martell|remy\s*martin/i,
-];
-
-function looksLikeNonSakeUrl(url: string): boolean {
-  const lower = url.toLowerCase();
-  return NON_SAKE_URL_REGEXES.some((re) => re.test(lower));
-}
 
 interface SakeToImport {
   name: string;
@@ -124,28 +111,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const results: SakeToImport[] = [];
 
       for (const scraped of scrapedSakes) {
-        // Try to find a match in existing database
-        const match = existingSakes.find(existing => {
-          const scrapedName = scraped.name?.trim().toLowerCase() ?? '';
-          const existingName = existing.name?.trim().toLowerCase() ?? '';
-          // ''.includes('') is true — never match on empty/partial blank names.
-          if (!scrapedName || !existingName) return false;
-
-          // Match by name (case insensitive, partial match)
-          const nameMatch =
-            existingName.includes(scrapedName) || scrapedName.includes(existingName);
-
-          // Match by Japanese name if available
-          const japaneseMatch = scraped.nameJapanese && existing.name_japanese &&
-            (existing.name_japanese.includes(scraped.nameJapanese) ||
-             scraped.nameJapanese.includes(existing.name_japanese));
-
-          // Match by brewery + partial name
-          const breweryMatch = scraped.brewery && existing.brewery &&
-            existing.brewery.toLowerCase().includes(scraped.brewery.toLowerCase());
-
-          return nameMatch || japaneseMatch || (breweryMatch && nameMatch);
-        });
+        // Reuse Sakura matcher: require product-name overlap, and when both sides
+        // have a brewery, require brewery compatibility. Name-only matching used to
+        // attach images onto a different brewery's row with the same product name.
+        const match = existingSakes.find((existing) =>
+          matchesExisting(
+            {
+              name: scraped.name,
+              nameJapanese: scraped.nameJapanese,
+              brewery: scraped.brewery,
+            },
+            {
+              ...existing,
+              description: null,
+              type: null,
+              prefecture: null,
+            }
+          )
+        );
 
         if (match) {
           // Check if existing sake is missing at least one image
