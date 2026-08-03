@@ -28,6 +28,8 @@ export function sleep(ms: number): Promise<void> {
 export interface DownloadResult {
   url: string;
   skippedPlaceholder?: boolean;
+  /** Same image bytes already mirrored earlier in this run — skip re-upload, do not clear URL. */
+  skippedDuplicate?: boolean;
   rateLimited?: boolean;
 }
 
@@ -86,8 +88,9 @@ export async function downloadAndStore(
   }
 
   if (seenHashes.has(hash)) {
-    knownPlaceholderHashes.add(hash);
-    return { url: imageUrl, skippedPlaceholder: true };
+    // Duplicate bytes within a run are common for shared product shots.
+    // Do not treat them as placeholders (that previously nulled valid catalog URLs).
+    return { url: imageUrl, skippedDuplicate: true };
   }
   seenHashes.add(hash);
 

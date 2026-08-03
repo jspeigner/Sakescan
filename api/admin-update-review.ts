@@ -36,12 +36,41 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(403).json({ error: 'Forbidden' });
   }
 
-  const body = req.body as { id?: string; payload?: ReviewPayload };
-  if (!body?.id || !body.payload) {
-    return res.status(400).json({ error: 'id and payload are required' });
+  const body = req.body as {
+    id?: string;
+    payload?: ReviewPayload;
+    action?: 'delete' | 'update';
+  };
+  if (!body?.id) {
+    return res.status(400).json({ error: 'id is required' });
   }
 
   const admin = createClient(supabaseUrl, supabaseServiceKey);
+
+  // Anon can currently delete ratings while RLS migration is pending; admin UI must
+  // go through the service-role path so delete keeps working after lockdown.
+  if (body.action === 'delete') {
+    const { data, error } = await admin
+      .from('ratings')
+      .delete()
+      .eq('id', body.id)
+      .select('id')
+      .maybeSingle();
+
+    if (error) {
+      console.error('[admin-update-review/delete]', error);
+      return res.status(500).json({ error: error.message });
+    }
+    if (!data?.id) {
+      return res.status(404).json({ error: 'Review not found' });
+    }
+    return res.status(200).json({ success: true, id: data.id, mode: 'delete' });
+  }
+
+  if (!body.payload) {
+    return res.status(400).json({ error: 'id and payload are required' });
+  }
+
   const { data, error } = await admin
     .from('ratings')
     .update(body.payload)
