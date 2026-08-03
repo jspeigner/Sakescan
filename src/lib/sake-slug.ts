@@ -25,12 +25,13 @@ async function fetchSakeByIdPrefix(idFragment: string): Promise<Sake | null> {
   return (match as Sake | undefined) ?? null;
 }
 
-export async function fetchSakeBySlug(slug: string): Promise<Sake> {
+/** Returns null when the slug does not match a sake. Throws only on query/transport failures. */
+export async function fetchSakeBySlug(slug: string): Promise<Sake | null> {
   const mappedId = getSakeIdFromSlug(slug) ?? (await loadSakeIdMap())[slug];
   if (mappedId) {
-    const { data, error } = await supabase.from("sake").select("*").eq("id", mappedId).single();
+    const { data, error } = await supabase.from("sake").select("*").eq("id", mappedId).maybeSingle();
     if (error) throw error;
-    return data as Sake;
+    return (data as Sake | null) ?? null;
   }
 
   const { idFragment, nameSlug } = parseSakeSlug(slug);
@@ -38,11 +39,7 @@ export async function fetchSakeBySlug(slug: string): Promise<Sake> {
 
   // Japanese-only names slugify to empty → "/sake/-080467c8". Resolve by UUID prefix.
   if (!namePattern) {
-    const byId = await fetchSakeByIdPrefix(idFragment);
-    if (!byId) {
-      throw new Error(`Sake not found: ${slug}`);
-    }
-    return byId;
+    return fetchSakeByIdPrefix(idFragment);
   }
 
   const { data, error } = await supabase
@@ -54,12 +51,8 @@ export async function fetchSakeBySlug(slug: string): Promise<Sake> {
   if (error) throw error;
 
   const sake = data?.find((row) => String(row.id).startsWith(idFragment));
-  if (!sake) {
-    // Name ilike can miss romanization drift; fall back to id prefix.
-    const byId = await fetchSakeByIdPrefix(idFragment);
-    if (byId) return byId;
-    throw new Error(`Sake not found: ${slug}`);
-  }
+  if (sake) return sake as Sake;
 
-  return sake as Sake;
+  // Name ilike can miss romanization drift; fall back to id prefix.
+  return fetchSakeByIdPrefix(idFragment);
 }

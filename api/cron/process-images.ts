@@ -3,6 +3,8 @@ import { createClient } from '@supabase/supabase-js';
 import {
   downloadAndStore,
   isSupabaseUrl,
+  isTransientDownloadError,
+  shouldClearExternalImageUrlOnError,
   sleep,
   supabaseProjectHost,
 } from './lib/imageMirror.js';
@@ -109,19 +111,6 @@ function shuffleInPlace<T>(arr: T[]): void {
     const j = Math.floor(Math.random() * (i + 1));
     [arr[i], arr[j]] = [arr[j], arr[i]];
   }
-}
-
-function isTransientDownloadError(message: string): boolean {
-  const normalized = message.toLowerCase();
-  return (
-    normalized.includes('fetch failed') ||
-    normalized.includes('network') ||
-    normalized.includes('econnreset') ||
-    normalized.includes('etimedout') ||
-    normalized.includes('timeout') ||
-    normalized.includes('http 429') ||
-    normalized.includes('http 5')
-  );
 }
 
 async function downloadAndStoreWithRetry(
@@ -1001,17 +990,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             diagnostics.mirror.downloadErrors++;
             const msg = err instanceof Error ? err.message : String(err);
             pushSample(diagnostics.mirror.errorSamples, `${sake.name}: ${msg.slice(0, 140)}`);
-            const normalizedMsg = msg.toLowerCase();
-            if (
-              msg.includes('Blocked') ||
-              msg.includes('Not an image') ||
-              msg.includes('Too small') ||
-              normalizedMsg.includes('fetch failed') ||
-              normalizedMsg.includes('network') ||
-              normalizedMsg.includes('econnreset') ||
-              normalizedMsg.includes('etimedout') ||
-              normalizedMsg.includes('timeout')
-            ) {
+            // Never erase a still-valid external URL on transient host/network failures.
+            if (shouldClearExternalImageUrlOnError(msg)) {
               await supabase
                 .from('sake')
                 .update({ image_url: null, updated_at: new Date().toISOString() })

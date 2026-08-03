@@ -71,6 +71,7 @@ vision = discover.get("visionChecks", 0)
 yield_rate = discover.get("yield")
 firecrawl_err = discover.get("firecrawlErrors", 0)
 promote_count = promote.get("promoted", 0)
+skipped_unusable_url = promote.get("skippedUnusableUrl", promote.get("skippedInvalidUrl"))
 openai_rec = env.get("openaiQuotaRecommendation")
 discover_rec = env.get("discoverQuotaRecommendation")
 last_status = last.get("status")
@@ -121,7 +122,7 @@ out = {
         "promoted": promote_count,
         "attempted": promote.get("attempted"),
         "skippedExisting": promote.get("skippedExisting"),
-        "skippedInvalidUrl": promote.get("skippedInvalidUrl"),
+        "skippedUnusableUrl": skipped_unusable_url,
         "status": promote.get("_status"),
         "runAt": promote.get("_timestamp"),
     },

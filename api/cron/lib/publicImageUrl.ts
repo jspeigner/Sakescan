@@ -23,6 +23,7 @@ function isPrivateIpv6(host: string): boolean {
   );
 }
 
+/** True for http(s) URLs whose hostname is not localhost / private / link-local. */
 export function isPublicHttpImageUrl(url: string | null | undefined): url is string {
   if (!url) return false;
 
@@ -38,4 +39,53 @@ export function isPublicHttpImageUrl(url: string | null | undefined): url is str
   } catch {
     return false;
   }
+}
+
+export class NonPublicUrlError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'NonPublicUrlError';
+  }
+}
+
+/**
+ * fetch() that refuses private/localhost targets and re-validates every redirect hop.
+ * Prevents classic SSRF via open redirects to 127.0.0.1 / RFC1918.
+ */
+export async function fetchPublicHttpUrl(
+  url: string,
+  init?: RequestInit & { maxRedirects?: number }
+): Promise<Response> {
+  if (!isPublicHttpImageUrl(url)) {
+    throw new NonPublicUrlError(`Blocked non-public URL: ${url}`);
+  }
+
+  const maxRedirects = init?.maxRedirects ?? 5;
+  const { maxRedirects: _ignored, redirect: _redirect, ...rest } = init ?? {};
+  let current = url.trim();
+
+  for (let hop = 0; hop <= maxRedirects; hop++) {
+    const response = await fetch(current, {
+      ...rest,
+      redirect: 'manual',
+    });
+
+    const status = response.status;
+    if (status >= 300 && status < 400) {
+      const location = response.headers.get('location');
+      if (!location) {
+        throw new NonPublicUrlError(`Redirect without Location (${status})`);
+      }
+      const next = new URL(location, current).toString();
+      if (!isPublicHttpImageUrl(next)) {
+        throw new NonPublicUrlError(`Blocked redirect to non-public URL: ${next}`);
+      }
+      current = next;
+      continue;
+    }
+
+    return response;
+  }
+
+  throw new NonPublicUrlError(`Too many redirects (>${maxRedirects})`);
 }
