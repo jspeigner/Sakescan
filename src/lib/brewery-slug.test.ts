@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { breweryNameFromSlug, pickBreweryBySlug } from "./brewery-slug.ts";
+import {
+  breweryNameFromSlug,
+  brewerySakeNamePattern,
+  pickBreweryBySlug,
+} from "./brewery-slug.ts";
 
 describe("pickBreweryBySlug", () => {
   const rows = [
@@ -30,5 +34,21 @@ describe("pickBreweryBySlug", () => {
 describe("breweryNameFromSlug", () => {
   test("turns hyphens into spaces", () => {
     expect(breweryNameFromSlug("asahi-shuzou")).toBe("asahi shuzou");
+  });
+});
+
+describe("brewerySakeNamePattern", () => {
+  test("prefix-matches corporate suffixes without substring false positives", () => {
+    expect(brewerySakeNamePattern("Akita Meijyo")).toBe("Akita Meijyo%");
+    // "Chiyo Shuzou%" must not match "Fukuchiyo shuzou…"
+    expect(brewerySakeNamePattern("Chiyo Shuzou")).toBe("Chiyo Shuzou%");
+    expect("Fukuchiyo shuzou yuugengaisha".toLowerCase().startsWith("chiyo shuzou")).toBe(
+      false
+    );
+    expect("Akita Meijyo Co.,Ltd".toLowerCase().startsWith("akita meijyo")).toBe(true);
+  });
+
+  test("strips LIKE metacharacters from brewery names", () => {
+    expect(brewerySakeNamePattern("100% Sake_Co")).toBe("100 Sake Co%");
   });
 });

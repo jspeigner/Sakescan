@@ -1,6 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { requireAdmin } from './lib/requireAdmin.js';
+import { fetchPublicHttpUrl, isPublicHttpImageUrl } from './cron/lib/publicImageUrl.js';
 
 const NON_SAKE_URL_REGEXES = [
   /johnnie|walker|jwalker|jw\s*black|jw\s*red/i,
@@ -33,7 +34,10 @@ async function downloadAndStoreImage(
   imageUrl: string,
   sakeName: string
 ): Promise<string> {
-  const imageResponse = await fetch(imageUrl, {
+  if (!isPublicHttpImageUrl(imageUrl)) {
+    throw new Error('Image URL must be a public http(s) URL');
+  }
+  const imageResponse = await fetchPublicHttpUrl(imageUrl, {
     headers: {
       'User-Agent': 'Mozilla/5.0 (compatible; SakeScan/1.0)',
       'Accept': 'image/*',
@@ -112,15 +116,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       for (const scraped of scrapedSakes) {
         // Try to find a match in existing database
         const match = existingSakes?.find(existing => {
+          const scrapedName = scraped.name?.trim().toLowerCase() ?? '';
+          const existingName = existing.name?.trim().toLowerCase() ?? '';
+          // ''.includes('') is true — never match on empty/partial blank names.
+          if (!scrapedName || !existingName) return false;
+
           // Match by name (case insensitive, partial match)
-          const nameMatch = existing.name?.toLowerCase().includes(scraped.name?.toLowerCase()) ||
-            scraped.name?.toLowerCase().includes(existing.name?.toLowerCase());
-          
+          const nameMatch =
+            existingName.includes(scrapedName) || scrapedName.includes(existingName);
+
           // Match by Japanese name if available
           const japaneseMatch = scraped.nameJapanese && existing.name_japanese &&
             (existing.name_japanese.includes(scraped.nameJapanese) ||
              scraped.nameJapanese.includes(existing.name_japanese));
-          
+
           // Match by brewery + partial name
           const breweryMatch = scraped.brewery && existing.brewery &&
             existing.brewery.toLowerCase().includes(scraped.brewery.toLowerCase());
