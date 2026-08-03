@@ -3,7 +3,7 @@
  * not whisky/wine/beer or unrelated subjects.
  */
 
-import { isPublicHttpImageUrl } from './publicImageUrl.js';
+import { fetchPublicHttpUrl, isPublicHttpImageUrl } from './publicImageUrl.js';
 
 export type SakeVisionResult = {
   isJapaneseSakeProductPhoto: boolean;
@@ -58,13 +58,12 @@ function parseVisionJson(text: string): SakeVisionResult | null {
 /** Download image and return a data URL for OpenAI (some CDNs block OpenAI fetch). */
 async function imageUrlToDataUrl(imageUrl: string): Promise<string | null> {
   try {
-    const res = await fetch(imageUrl, {
+    const res = await fetchPublicHttpUrl(imageUrl, {
       headers: {
         'User-Agent':
           'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         Accept: 'image/*,*/*;q=0.8',
       },
-      redirect: 'follow',
     });
     if (!res.ok) return null;
     const ct = res.headers.get('content-type') || 'image/jpeg';

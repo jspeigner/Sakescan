@@ -3,6 +3,8 @@ import { createClient } from '@supabase/supabase-js';
 import {
   downloadAndStore,
   isSupabaseUrl,
+  isTransientDownloadError,
+  shouldClearExternalImageUrlOnError,
   sleep,
   supabaseProjectHost,
 } from './lib/imageMirror.js';
@@ -14,6 +16,7 @@ import {
   resetFirecrawlBypassForInvocation,
   searchSakeImageCandidates,
   type SakeImageSearchMode,
+  shouldClearCatalogUrlAsNonSakeProduct,
   urlLooksLikeNonSakeProduct,
 } from './lib/sakeImageDiscovery.js';
 import { sakeVisionPasses, validateJapaneseSakeProductPhoto, isOpenAIQuotaError, isOpenAIVisionQuotaExceeded, resetOpenAIVisionQuotaForInvocation } from './lib/sakeImageVision.js';
@@ -109,19 +112,6 @@ function shuffleInPlace<T>(arr: T[]): void {
     const j = Math.floor(Math.random() * (i + 1));
     [arr[i], arr[j]] = [arr[j], arr[i]];
   }
-}
-
-function isTransientDownloadError(message: string): boolean {
-  const normalized = message.toLowerCase();
-  return (
-    normalized.includes('fetch failed') ||
-    normalized.includes('network') ||
-    normalized.includes('econnreset') ||
-    normalized.includes('etimedout') ||
-    normalized.includes('timeout') ||
-    normalized.includes('http 429') ||
-    normalized.includes('http 5')
-  );
 }
 
 async function downloadAndStoreWithRetry(
@@ -484,7 +474,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             brewery: row.brewery,
           });
           await sleep(DELAY_MS_DISCOVER);
-          if (!v.isJapaneseSakeProductPhoto || v.confidence === 'low') {
+          // Only clear when vision says the photo is not sake. Low confidence on a
+          // positive "is sake" result must not wipe a hosted catalog image.
+          if (!v.isJapaneseSakeProductPhoto) {
             await supabase
               .from('sake')
               .update({ image_url: null, updated_at: new Date().toISOString() })
@@ -771,6 +763,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 failureReason = 'placeholder_skipped';
                 continue;
               }
+              if (result.skippedDuplicate) {
+                // Already mirrored identical bytes this run — leave existing URL alone.
+                continue;
+              }
 
               await supabase
                 .from('sake')
@@ -939,16 +935,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
         if (sake.image_url && !isSupabaseUrl(sake.image_url, supabaseUrl)) {
           diagnostics.mirror.attemptedRows++;
-          // Skip obvious non-sake URLs before even attempting to download
+          // Heuristic may false-positive on sake retailer paths (/wine-and-sake/, /wine/...).
+          // Never null catalog URLs from URL text alone — defer so the queue can rotate.
           if (urlLooksLikeNonSakeProduct(sake.image_url)) {
-            await supabase
-              .from('sake')
-              .update({ image_url: null, updated_at: new Date().toISOString() })
-              .eq('id', sake.id);
-            skippedPlaceholders++;
             diagnostics.mirror.urlFiltered++;
-            diagnostics.mirror.placeholderClears++;
-            console.log(`[process-images/mirror] cleared non-sake URL for ${sake.name}: ${sake.image_url}`);
+            if (shouldClearCatalogUrlAsNonSakeProduct(sake.image_url)) {
+              await supabase
+                .from('sake')
+                .update({ image_url: null, updated_at: new Date().toISOString() })
+                .eq('id', sake.id);
+              skippedPlaceholders++;
+              diagnostics.mirror.placeholderClears++;
+              console.log(`[process-images/mirror] cleared non-sake URL for ${sake.name}: ${sake.image_url}`);
+            } else {
+              await supabase
+                .from('sake')
+                .update({ updated_at: new Date().toISOString() })
+                .eq('id', sake.id);
+              console.log(
+                `[process-images/mirror] deferred non-sake-looking URL (kept) for ${sake.name}: ${sake.image_url}`
+              );
+            }
             mirrorOpsRemaining--;
             continue;
           }
@@ -980,6 +987,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 .eq('id', sake.id);
               skippedPlaceholders++;
               diagnostics.mirror.placeholderClears++;
+            } else if (result.skippedDuplicate) {
+              // Shared product-shot bytes already stored earlier this run — keep URL.
             } else {
               await supabase
                 .from('sake')
@@ -995,17 +1004,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             diagnostics.mirror.downloadErrors++;
             const msg = err instanceof Error ? err.message : String(err);
             pushSample(diagnostics.mirror.errorSamples, `${sake.name}: ${msg.slice(0, 140)}`);
-            const normalizedMsg = msg.toLowerCase();
-            if (
-              msg.includes('Blocked') ||
-              msg.includes('Not an image') ||
-              msg.includes('Too small') ||
-              normalizedMsg.includes('fetch failed') ||
-              normalizedMsg.includes('network') ||
-              normalizedMsg.includes('econnreset') ||
-              normalizedMsg.includes('etimedout') ||
-              normalizedMsg.includes('timeout')
-            ) {
+            // Never erase a still-valid external URL on transient host/network failures.
+            if (shouldClearExternalImageUrlOnError(msg)) {
               await supabase
                 .from('sake')
                 .update({ image_url: null, updated_at: new Date().toISOString() })

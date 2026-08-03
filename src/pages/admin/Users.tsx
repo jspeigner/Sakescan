@@ -206,21 +206,29 @@ export default function AdminUsers() {
   };
 
   const handleDeleteUser = async (user: UserWithStats) => {
-    if (!confirm(`Are you sure you want to delete ${user.display_name || user.email || 'this user'}? This will also delete all their reviews and scans. This cannot be undone.`)) {
+    if (!confirm(`Are you sure you want to delete ${user.display_name || user.email || 'this user'}? This will also delete all their reviews, scans, and auth account. This cannot be undone.`)) {
       return;
     }
 
     try {
-      // Delete user's ratings first (foreign key constraint)
-      await supabase.from('ratings').delete().eq('user_id', user.id);
-      
-      // Delete user's scans
-      await supabase.from('scans').delete().eq('user_id', user.id);
-      
-      // Delete user
-      const { error } = await supabase.from('users').delete().eq('id', user.id);
+      const token = session?.access_token;
+      if (!token) {
+        throw new Error('Admin session expired. Sign in again and retry delete.');
+      }
 
-      if (error) throw error;
+      // Service-role delete also removes auth.users (client delete left orphaned logins).
+      const response = await fetch('/api/admin-update-user', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ id: user.id, action: 'delete' }),
+      });
+      const data = (await response.json()) as { error?: string };
+      if (!response.ok) {
+        throw new Error(data.error || `Delete failed (${response.status})`);
+      }
 
       if (selectedUser?.id === user.id) {
         setModalOpen(false);
@@ -230,7 +238,8 @@ export default function AdminUsers() {
       fetchUsers();
     } catch (error) {
       console.error('Error deleting user:', error);
-      alert('Failed to delete user');
+      const message = error instanceof Error ? error.message : 'Failed to delete user';
+      alert(message);
     }
   };
 
@@ -299,7 +308,10 @@ export default function AdminUsers() {
                 placeholder="Search by name or email..."
                 className="pl-9"
                 value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
+                onChange={(e) => {
+                  setSearchQuery(e.target.value);
+                  setPage(0);
+                }}
               />
             </div>
             <Button type="submit" variant="secondary">

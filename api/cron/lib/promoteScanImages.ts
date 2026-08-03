@@ -198,16 +198,21 @@ export async function promoteScanImagesBatch(
         continue;
       }
 
-      if (openaiKey) {
-        const v = await validateJapaneseSakeProductPhoto(openaiKey, scan.scanned_image_url, {
-          sakeName: sake.name,
-          brewery: sake.brewery,
-        });
-        await sleep(60);
-        if (!sakeVisionPasses(v, { allowMedium: true })) {
-          skippedVision++;
-          continue;
-        }
+      // Fail closed: never promote unverified user scans into the catalog when
+      // vision cannot run (missing OPENAI_API_KEY).
+      if (!openaiKey) {
+        skippedVision++;
+        continue;
+      }
+
+      const v = await validateJapaneseSakeProductPhoto(openaiKey, scan.scanned_image_url, {
+        sakeName: sake.name,
+        brewery: sake.brewery,
+      });
+      await sleep(60);
+      if (!sakeVisionPasses(v, { allowMedium: true })) {
+        skippedVision++;
+        continue;
       }
 
       const stored = await downloadAndStore(
@@ -218,7 +223,7 @@ export async function promoteScanImagesBatch(
         seenHashes,
         knownPlaceholderHashes
       );
-      if (stored.rateLimited || stored.skippedPlaceholder) continue;
+      if (stored.rateLimited || stored.skippedPlaceholder || stored.skippedDuplicate) continue;
 
       const payload = sakeImageUpdatePayload(stored.url, provenanceForUserScan(scan.id));
       const { error: upErr } = await supabase.from('sake').update(payload).eq('id', sakeId);

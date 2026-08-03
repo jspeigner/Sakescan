@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { createHash } from 'crypto';
+import { fetchPublicHttpUrl } from './publicImageUrl.js';
 
 export const MIN_IMAGE_BYTES = 3000;
 /** Product shots rarely need more; large files risk OOM in serverless. */
@@ -8,15 +9,6 @@ export const MAX_IMAGE_BYTES = Number.isFinite(parsedMaxImageBytes) ? parsedMaxI
 
 export function isSupabaseUrl(url: string, supabaseUrl: string): boolean {
   return url.includes(supabaseUrl.replace('https://', '')) || url.includes('supabase.co/storage');
-}
-
-export function isPublicHttpImageUrl(url: string): boolean {
-  try {
-    const parsed = new URL(url);
-    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
-  } catch {
-    return false;
-  }
 }
 
 export function supabaseProjectHost(supabaseUrl: string): string | null {
@@ -36,6 +28,8 @@ export function sleep(ms: number): Promise<void> {
 export interface DownloadResult {
   url: string;
   skippedPlaceholder?: boolean;
+  /** Same image bytes already mirrored earlier in this run — skip re-upload, do not clear URL. */
+  skippedDuplicate?: boolean;
   rateLimited?: boolean;
 }
 
@@ -47,7 +41,7 @@ export async function downloadAndStore(
   seenHashes: Set<string>,
   knownPlaceholderHashes: Set<string>
 ): Promise<DownloadResult> {
-  const response = await fetch(imageUrl, {
+  const response = await fetchPublicHttpUrl(imageUrl, {
     headers: {
       'User-Agent':
         'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -59,7 +53,6 @@ export async function downloadAndStore(
           ? 'https://export.sakurasaketen.com/'
           : 'https://japansake.or.jp/',
     },
-    redirect: 'follow',
   });
 
   if (response.status === 429) {
@@ -95,8 +88,9 @@ export async function downloadAndStore(
   }
 
   if (seenHashes.has(hash)) {
-    knownPlaceholderHashes.add(hash);
-    return { url: imageUrl, skippedPlaceholder: true };
+    // Duplicate bytes within a run are common for shared product shots.
+    // Do not treat them as placeholders (that previously nulled valid catalog URLs).
+    return { url: imageUrl, skippedDuplicate: true };
   }
   seenHashes.add(hash);
 
@@ -126,7 +120,7 @@ export async function downloadAndStore(
   return { url: data.publicUrl };
 }
 
-function isTransientDownloadError(message: string): boolean {
+export function isTransientDownloadError(message: string): boolean {
   const normalized = message.toLowerCase();
   return (
     normalized.includes('fetch failed') ||
@@ -136,6 +130,20 @@ function isTransientDownloadError(message: string): boolean {
     normalized.includes('timeout') ||
     normalized.includes('http 429') ||
     normalized.includes('http 5')
+  );
+}
+
+/**
+ * Whether a failed external-image download should null out the catalog URL.
+ * Only permanent content/access failures qualify — transient network/DNS/timeouts
+ * must leave the URL intact so a later run can retry.
+ */
+export function shouldClearExternalImageUrlOnError(message: string): boolean {
+  if (isTransientDownloadError(message)) return false;
+  return (
+    message.includes('Blocked') ||
+    message.includes('Not an image') ||
+    message.includes('Too small')
   );
 }
 

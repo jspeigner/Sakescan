@@ -246,7 +246,10 @@ export default function AdminBreweries() {
                 placeholder="Search by name, prefecture, or region..."
                 className="pl-9"
                 value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
+                onChange={(e) => {
+                  setSearchQuery(e.target.value);
+                  setPage(0);
+                }}
               />
             </div>
             <Button type="submit" variant="secondary">Search</Button>

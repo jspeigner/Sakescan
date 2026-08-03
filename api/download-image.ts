@@ -1,6 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
 import { requireAdmin } from './lib/requireAdmin.js';
+import { fetchPublicHttpUrl, isPublicHttpImageUrl } from './cron/lib/publicImageUrl.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Only allow POST
@@ -13,16 +14,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const { imageUrl, sakeName } = req.body;
 
-  if (!imageUrl) {
+  if (!imageUrl || typeof imageUrl !== 'string') {
     return res.status(400).json({ error: 'Image URL is required' });
+  }
+  if (!isPublicHttpImageUrl(imageUrl)) {
+    return res.status(400).json({ error: 'Image URL must be a public http(s) URL' });
   }
 
   // Create Supabase client with service role key for storage access
   const supabase = createClient(auth.supabaseUrl, auth.supabaseServiceKey);
 
   try {
-    // Download the image
-    const imageResponse = await fetch(imageUrl, {
+    // Download the image (blocks private hosts + unsafe redirects)
+    const imageResponse = await fetchPublicHttpUrl(imageUrl, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (compatible; SakeScan/1.0)',
         'Accept': 'image/*',

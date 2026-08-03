@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { breweryNameFromSlug, pickBreweryBySlug } from "./brewery-slug.ts";
+import {
+  breweryNameFromSlug,
+  brewerySakeNamePattern,
+  brewerySlugFromSakeBreweryField,
+  pickBreweryBySlug,
+  stripBreweryCorporateSuffix,
+} from "./brewery-slug.ts";
 
 describe("pickBreweryBySlug", () => {
   const rows = [
@@ -7,28 +13,45 @@ describe("pickBreweryBySlug", () => {
     { name: "Tamaasahi Shuzou" },
     { name: "Asahikawa Shuzou" },
     { name: "Dewazakura Shuzou" },
-    { name: "Azakura Shuzou" },
   ];
 
-  test("resolves asahi-shuzou to Asahi Shuzou, not Tamaasahi", () => {
+  test("prefers exact slugify match over substring ilike hits", () => {
     expect(pickBreweryBySlug(rows, "asahi-shuzou")?.name).toBe("Asahi Shuzou");
   });
 
-  test("resolves tamaasahi-shuzou correctly", () => {
-    expect(pickBreweryBySlug(rows, "tamaasahi-shuzou")?.name).toBe("Tamaasahi Shuzou");
+  test("returns null when no slugify match exists", () => {
+    expect(pickBreweryBySlug(rows, "not-a-real-brewery")).toBeNull();
   });
 
-  test("resolves azakura without picking Dewazakura", () => {
-    expect(pickBreweryBySlug(rows, "azakura-shuzou")?.name).toBe("Azakura Shuzou");
-  });
-
-  test("returns null when no slug matches", () => {
-    expect(pickBreweryBySlug(rows, "dassai-brewery")).toBeNull();
+  test("falls back to space-normalized exact name", () => {
+    expect(pickBreweryBySlug([{ name: "Den-en" }], "den-en")?.name).toBe("Den-en");
+    expect(breweryNameFromSlug("den-en")).toBe("den en");
   });
 });
 
-describe("breweryNameFromSlug", () => {
-  test("turns hyphens into spaces", () => {
-    expect(breweryNameFromSlug("asahi-shuzou")).toBe("asahi shuzou");
+describe("brewerySlugFromSakeBreweryField", () => {
+  test("strips Co.,Ltd so sake detail links hit the brewery page", () => {
+    expect(stripBreweryCorporateSuffix("Akita Meijyo Co.,Ltd")).toBe("Akita Meijyo");
+    expect(brewerySlugFromSakeBreweryField("Akita Meijyo Co.,Ltd")).toBe("akita-meijyo");
+  });
+
+  test("leaves names without corporate suffixes unchanged", () => {
+    expect(brewerySlugFromSakeBreweryField("Dassai")).toBe("dassai");
+  });
+});
+
+describe("brewerySakeNamePattern", () => {
+  test("prefix-matches corporate suffixes without substring false positives", () => {
+    expect(brewerySakeNamePattern("Akita Meijyo")).toBe("Akita Meijyo%");
+    // "Chiyo Shuzou%" must not match "Fukuchiyo shuzou…"
+    expect(brewerySakeNamePattern("Chiyo Shuzou")).toBe("Chiyo Shuzou%");
+    expect("Fukuchiyo shuzou yuugengaisha".toLowerCase().startsWith("chiyo shuzou")).toBe(
+      false
+    );
+  });
+
+  test("strips LIKE metacharacters from brewery names", () => {
+    expect(brewerySakeNamePattern("100% Sake_Co")).toBe("100 Sake Co%");
+    expect(brewerySakeNamePattern("Aki%ta_Meijyo")).toBe("Aki ta Meijyo%");
   });
 });

@@ -15,13 +15,17 @@ import { supabase } from "@/lib/supabase";
 import type { Sake } from "@/lib/supabase-types";
 import { withImageCacheBust } from "@/lib/image-url";
 import { sanitizePostgrestSearch } from "@/lib/postgrest-search";
+import { brewerySakeNamePattern } from "@/lib/brewery-slug";
+import { useAuth } from "@/hooks/use-auth";
 
 const PAGE_SIZE = 20;
 
 export default function AdminSakes() {
   const queryClient = useQueryClient();
+  const { session } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const breweryFilter = searchParams.get('brewery') || '';
+  const editId = searchParams.get('edit') || '';
   
   const [sakes, setSakes] = useState<Sake[]>([]);
   const [loading, setLoading] = useState(true);
@@ -37,6 +41,30 @@ export default function AdminSakes() {
     setSearchParams({});
     setPage(0);
   };
+
+  // Reviews "View Sake" navigates here with ?edit=<id> — open the editor.
+  useEffect(() => {
+    if (!editId) return;
+    let cancelled = false;
+    (async () => {
+      const { data, error } = await supabase.from('sake').select('*').eq('id', editId).maybeSingle();
+      if (cancelled) return;
+      if (error || !data) {
+        console.error('Error loading sake for edit:', error);
+        return;
+      }
+      setEditingSake(data as Sake);
+      setModalOpen(true);
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete('edit');
+        return next;
+      }, { replace: true });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [editId, setSearchParams]);
 
   const fetchSakes = useCallback(async () => {
     setLoading(true);
@@ -56,9 +84,9 @@ export default function AdminSakes() {
         }
       }
 
-      // Apply brewery filter from URL
+      // Apply brewery filter from URL (prefix match: "Akita Meijyo" → "Akita Meijyo Co.,Ltd")
       if (breweryFilter) {
-        query = query.eq('brewery', breweryFilter);
+        query = query.ilike('brewery', brewerySakeNamePattern(breweryFilter));
       }
 
       // Apply filter for missing images
@@ -79,7 +107,7 @@ export default function AdminSakes() {
         .or('image_url.is.null,image_url.eq.');
       
       if (breweryFilter) {
-        missingQuery = missingQuery.eq('brewery', breweryFilter);
+        missingQuery = missingQuery.ilike('brewery', brewerySakeNamePattern(breweryFilter));
       }
       
       const { count: missingCount } = await missingQuery;
@@ -115,16 +143,28 @@ export default function AdminSakes() {
     if (!confirm(`Are you sure you want to delete "${sake.name}"?`)) return;
 
     try {
-      const { error } = await supabase
-        .from('sake')
-        .delete()
-        .eq('id', sake.id);
+      const token = session?.access_token;
+      if (!token) {
+        throw new Error('Admin session expired. Sign in again and retry delete.');
+      }
 
-      if (error) throw error;
+      const response = await fetch('/api/admin-upsert-sake', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ id: sake.id, action: 'delete' }),
+      });
+      const body = (await response.json()) as { error?: string };
+      if (!response.ok) {
+        throw new Error(body.error || `Delete failed (${response.status})`);
+      }
       fetchSakes();
     } catch (error) {
       console.error('Error deleting sake:', error);
-      alert('Failed to delete sake');
+      const message = error instanceof Error ? error.message : 'Failed to delete sake';
+      alert(message);
     }
   };
 
@@ -183,7 +223,10 @@ export default function AdminSakes() {
                 placeholder="Search by name, Japanese name, or brewery..."
                 className="pl-9"
                 value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
+                onChange={(e) => {
+                  setSearchQuery(e.target.value);
+                  setPage(0);
+                }}
               />
             </div>
             <Button type="submit" variant="secondary">
