@@ -38,12 +38,44 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(403).json({ error: 'Forbidden' });
   }
 
-  const body = req.body as { id?: string; payload?: UserPayload };
-  if (!body?.id || !body.payload) {
-    return res.status(400).json({ error: 'id and payload are required' });
+  const body = req.body as { id?: string; payload?: UserPayload; action?: 'update' | 'delete' };
+  if (!body?.id || typeof body.id !== 'string') {
+    return res.status(400).json({ error: 'id is required' });
   }
 
   const admin = createClient(supabaseUrl, supabaseServiceKey);
+
+  if (body.action === 'delete') {
+    // Never allow an admin session to delete itself via this endpoint.
+    if (body.id === userData.user.id) {
+      return res.status(400).json({ error: 'Cannot delete the currently signed-in admin' });
+    }
+
+    await admin.from('ratings').delete().eq('user_id', body.id);
+    await admin.from('scans').delete().eq('user_id', body.id);
+
+    const { error: profileError } = await admin.from('users').delete().eq('id', body.id);
+    if (profileError) {
+      console.error('[admin-update-user] profile delete failed:', profileError);
+      return res.status(500).json({ error: profileError.message });
+    }
+
+    const { error: authDeleteError } = await admin.auth.admin.deleteUser(body.id);
+    if (authDeleteError) {
+      // Profile row is already gone; surface auth cleanup failure clearly.
+      console.error('[admin-update-user] auth delete failed:', authDeleteError);
+      return res.status(500).json({
+        error: `Profile deleted but auth user cleanup failed: ${authDeleteError.message}`,
+      });
+    }
+
+    return res.status(200).json({ success: true, id: body.id, deleted: true });
+  }
+
+  if (!body.payload) {
+    return res.status(400).json({ error: 'id and payload are required' });
+  }
+
   const { data, error } = await admin
     .from('users')
     .update(body.payload)
