@@ -8,9 +8,7 @@ import { BlogCTA } from "@/components/blog/BlogCTA";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Star, MapPin, Globe, Phone, Calendar, Wine, Loader2 } from "lucide-react";
-import { supabase } from "@/lib/supabase";
-import type { Sake } from "@/lib/supabase-types";
-import { fetchBreweryBySlug } from "@/lib/brewery-slug";
+import { fetchBreweryBySlug, fetchSakesForBreweryName } from "@/lib/brewery-slug";
 import { slugify } from "@/lib/slugify";
 import NotFound from "./NotFound";
 import { withImageCacheBust } from "@/lib/image-url";
@@ -26,19 +24,7 @@ export default function BreweryDetail() {
 
   const { data: sakes } = useQuery({
     queryKey: ["brewery-sakes", brewery?.name],
-    queryFn: async () => {
-      if (!brewery) return [];
-      const { data } = await supabase
-        .from("sake")
-        .select("id, name, type, average_rating, image_url, polishing_ratio, updated_at")
-        .eq("brewery", brewery.name)
-        .order("average_rating", { ascending: false, nullsFirst: false })
-        .limit(20);
-      return (data ?? []) as Pick<
-        Sake,
-        "id" | "name" | "type" | "average_rating" | "image_url" | "polishing_ratio" | "updated_at"
-      >[];
-    },
+    queryFn: () => fetchSakesForBreweryName(brewery!.name),
     enabled: !!brewery,
   });
 
