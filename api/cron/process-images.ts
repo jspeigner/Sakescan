@@ -26,6 +26,7 @@ import {
   sakeImageUpdatePayload,
   shouldReplaceImage,
 } from './lib/imageProvenance.js';
+import { POSTGREST_PAGE_SIZE } from '../lib/fetchAllSelectPages.js';
 import { requireCronOrAdmin } from '../lib/requireCronOrAdmin.js';
 const MIRROR_OPS_BUDGET = 220;
 /** Attempt to fill missing image_url (Firecrawl + vision + upload). */
@@ -46,7 +47,16 @@ const CHUNK_WALL_MS = 7500;
 /** Discover mode is slower (Firecrawl + vision), so allow a longer chunk budget. */
 const DISCOVER_CHUNK_WALL_MS = 25000;
 const DISCOVER_CHUNK_WALL_MS_ACCELERATED = 55000;
-const DISCOVER_POOL_LIMIT = 2000;
+/**
+ * PostgREST silently caps selects at ~1000 rows. Requesting 2000 still returns ≤1000,
+ * and if that first page is entirely in attempt-backoff, discover would idle while
+ * never-tried rows beyond the cap stay invisible. Page until we collect enough eligible.
+ */
+const DISCOVER_POOL_PAGE = POSTGREST_PAGE_SIZE;
+const DISCOVER_POOL_MAX_PAGES = 15;
+const DISCOVER_ELIGIBLE_TARGET = 120;
+/** Mirror external URLs — one PostgREST page; rotate updated_at on defer/transient fail. */
+const MIRROR_POOL_LIMIT = POSTGREST_PAGE_SIZE;
 const DISCOVER_BACKOFF_BASE_MS = 15 * 60 * 1000; // 15 minutes
 const DISCOVER_BACKOFF_MAX_MS = 72 * 60 * 60 * 1000; // 72 hours
 
@@ -71,26 +81,36 @@ async function countBreweryRemaining(
   supabase: ReturnType<typeof createClient>,
   supabaseUrl: string
 ): Promise<{ breweryMainImages: number; breweryGalleryImages: number }> {
-  const { data: breweries } = await supabase
-    .from('breweries')
-    .select('image_url')
-    .not('image_url', 'is', null)
-    .limit(3000);
+  // Page past PostgREST's ~1000-row cap so remaining counts stay honest as the
+  // brewery table grows.
   let breweryMainImages = 0;
-  (breweries || []).forEach((b) => {
-    if (b.image_url && !isSupabaseUrl(b.image_url, supabaseUrl)) breweryMainImages++;
-  });
+  for (let offset = 0; ; offset += POSTGREST_PAGE_SIZE) {
+    const { data: breweries } = await supabase
+      .from('breweries')
+      .select('image_url')
+      .not('image_url', 'is', null)
+      .range(offset, offset + POSTGREST_PAGE_SIZE - 1);
+    if (!breweries?.length) break;
+    breweries.forEach((b) => {
+      if (b.image_url && !isSupabaseUrl(b.image_url, supabaseUrl)) breweryMainImages++;
+    });
+    if (breweries.length < POSTGREST_PAGE_SIZE) break;
+  }
 
   let breweryGalleryImages = 0;
-  const { data: gCheck } = await supabase
-    .from('breweries')
-    .select('gallery_images')
-    .not('gallery_images', 'eq', '[]')
-    .limit(2000);
-  (gCheck || []).forEach((b) => {
-    const gallery: string[] = Array.isArray(b.gallery_images) ? b.gallery_images : [];
-    breweryGalleryImages += gallery.filter((url) => url && !isSupabaseUrl(url, supabaseUrl)).length;
-  });
+  for (let offset = 0; ; offset += POSTGREST_PAGE_SIZE) {
+    const { data: gCheck } = await supabase
+      .from('breweries')
+      .select('gallery_images')
+      .not('gallery_images', 'eq', '[]')
+      .range(offset, offset + POSTGREST_PAGE_SIZE - 1);
+    if (!gCheck?.length) break;
+    gCheck.forEach((b) => {
+      const gallery: string[] = Array.isArray(b.gallery_images) ? b.gallery_images : [];
+      breweryGalleryImages += gallery.filter((url) => url && !isSupabaseUrl(url, supabaseUrl)).length;
+    });
+    if (gCheck.length < POSTGREST_PAGE_SIZE) break;
+  }
 
   return { breweryMainImages, breweryGalleryImages };
 }
@@ -513,14 +533,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           pushSample(diagnostics.discover.rowErrorSamples, `backoff reset: ${msg.slice(0, 120)}`);
         }
       }
-      const { data: missingPool } = await supabase
-        .from('sake')
-        .select('id, name, name_japanese, brewery, image_url, image_quality')
-        .or('image_url.is.null,image_url.eq.,image_quality.eq.t2,image_quality.eq.t3')
-        .order('updated_at', { ascending: true })
-        .limit(DISCOVER_POOL_LIMIT);
-      diagnostics.discover.poolRows = (missingPool || []).length;
-
       // Prefer hot sakes (recently scanned) when filling gaps.
       let hotIds = new Set<string>();
       try {
@@ -538,48 +550,91 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         hotIds = new Set();
       }
 
-      const missingRows = (missingPool || []) as SakeRow[];
-      const hotBand: SakeRow[] = [];
-      const restBand: SakeRow[] = [];
-      for (const row of missingRows) {
-        if (hotIds.has(row.id)) hotBand.push(row);
-        else restBand.push(row);
-      }
-      const preferMissing = (a: SakeRow, b: SakeRow) => Number(!b.image_url) - Number(!a.image_url);
-      hotBand.sort(preferMissing);
-      restBand.sort(preferMissing);
-      shuffleInPlace(hotBand);
-      shuffleInPlace(restBand);
-      missingRows.length = 0;
-      missingRows.push(...hotBand, ...restBand);
-      diagnostics.discover.randomizedPoolRows = missingRows.length;
-      const attemptHistoryLoad = await loadAttemptHistoryBySakeIds(
-        supabase,
-        missingRows.map((r) => r.id)
-      );
-      const attemptBySakeId = attemptHistoryLoad.map;
-      diagnostics.discover.attemptHistoryBatches = attemptHistoryLoad.batches;
-      if (attemptHistoryLoad.readErrors > 0) {
-        diagnostics.discover.attemptHistoryReadErrors += attemptHistoryLoad.readErrors;
-        attemptHistoryLoad.errorSamples.forEach((m) =>
-          errors.push(`attempt-history read: ${m}`)
-        );
-      }
-
       const nowMs = Date.now();
-      const eligibleRows = missingRows.filter((row) => {
-        const history = attemptBySakeId.get(row.id);
+      const attemptBySakeId = new Map<string, SakeImageAttemptRow>();
+      const eligibleRows: SakeRow[] = [];
+      let poolRowsScanned = 0;
+      let skippedByBackoff = 0;
+
+      const isEligible = (rowId: string): boolean => {
+        const history = attemptBySakeId.get(rowId);
         if (!history?.next_retry_at) return true;
         // Rows blocked by quota/timeouts should not wait out long backoff windows.
-        if (history.last_failure_reason && isEnvironmentalDiscoverFailure(history.last_failure_reason)) {
+        if (
+          history.last_failure_reason &&
+          isEnvironmentalDiscoverFailure(history.last_failure_reason)
+        ) {
           return true;
         }
         const retryAtMs = Date.parse(history.next_retry_at);
         if (Number.isNaN(retryAtMs)) return true;
         return retryAtMs <= nowMs;
-      });
+      };
+
+      // Page past PostgREST's ~1000-row cap until we have enough eligible rows.
+      // A single capped page of oldest rows can be entirely in backoff, which used
+      // to make discover idle while never-tried catalog rows stayed invisible.
+      for (
+        let page = 0;
+        page < DISCOVER_POOL_MAX_PAGES && eligibleRows.length < DISCOVER_ELIGIBLE_TARGET;
+        page++
+      ) {
+        const from = page * DISCOVER_POOL_PAGE;
+        const to = from + DISCOVER_POOL_PAGE - 1;
+        const { data: missingPool, error: missingErr } = await supabase
+          .from('sake')
+          .select('id, name, name_japanese, brewery, image_url, image_quality')
+          .or('image_url.is.null,image_url.eq.,image_quality.eq.t2,image_quality.eq.t3')
+          .order('updated_at', { ascending: true })
+          .range(from, to);
+        if (missingErr) {
+          errors.push(`discover pool: ${missingErr.message.slice(0, 120)}`);
+          break;
+        }
+        if (!missingPool?.length) break;
+        poolRowsScanned += missingPool.length;
+
+        const pageHistory = await loadAttemptHistoryBySakeIds(
+          supabase,
+          missingPool.map((r) => r.id)
+        );
+        diagnostics.discover.attemptHistoryBatches += pageHistory.batches;
+        if (pageHistory.readErrors > 0) {
+          diagnostics.discover.attemptHistoryReadErrors += pageHistory.readErrors;
+          pageHistory.errorSamples.forEach((m) => errors.push(`attempt-history read: ${m}`));
+        }
+        pageHistory.map.forEach((v, k) => attemptBySakeId.set(k, v));
+
+        const pageRows = missingPool as SakeRow[];
+        const hotBand: SakeRow[] = [];
+        const restBand: SakeRow[] = [];
+        for (const row of pageRows) {
+          if (hotIds.has(row.id)) hotBand.push(row);
+          else restBand.push(row);
+        }
+        const preferMissing = (a: SakeRow, b: SakeRow) =>
+          Number(!b.image_url) - Number(!a.image_url);
+        hotBand.sort(preferMissing);
+        restBand.sort(preferMissing);
+        shuffleInPlace(hotBand);
+        shuffleInPlace(restBand);
+
+        for (const row of [...hotBand, ...restBand]) {
+          if (isEligible(row.id)) {
+            eligibleRows.push(row);
+            if (eligibleRows.length >= DISCOVER_ELIGIBLE_TARGET) break;
+          } else {
+            skippedByBackoff++;
+          }
+        }
+
+        if (missingPool.length < DISCOVER_POOL_PAGE) break;
+      }
+
+      diagnostics.discover.poolRows = poolRowsScanned;
+      diagnostics.discover.randomizedPoolRows = eligibleRows.length;
       diagnostics.discover.eligibleRows = eligibleRows.length;
-      diagnostics.discover.skippedByBackoff = Math.max(0, missingRows.length - eligibleRows.length);
+      diagnostics.discover.skippedByBackoff = skippedByBackoff;
       let discoverAttempts = 0;
 
       for (const row of eligibleRows) {
@@ -915,7 +970,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     sakeQuery = sakeQuery.not('image_url', 'ilike', '%supabase.co%');
 
     if (!hitTimeBudget) {
-      const { data: sakes } = await sakeQuery.order('updated_at', { ascending: true }).limit(1500);
+      // One PostgREST page (≤1000). Larger .limit() values were silently truncated.
+      const { data: sakes } = await sakeQuery
+        .order('updated_at', { ascending: true })
+        .limit(MIRROR_POOL_LIMIT);
 
       sakeExternalRowsFetched = (sakes || []).length;
       diagnostics.mirror.fetchedRows = sakeExternalRowsFetched;
@@ -989,6 +1047,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               diagnostics.mirror.placeholderClears++;
             } else if (result.skippedDuplicate) {
               // Shared product-shot bytes already stored earlier this run — keep URL.
+              // Bump updated_at so this row rotates out of the oldest mirror page.
+              await supabase
+                .from('sake')
+                .update({ updated_at: new Date().toISOString() })
+                .eq('id', sake.id);
             } else {
               await supabase
                 .from('sake')
@@ -1009,6 +1072,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               await supabase
                 .from('sake')
                 .update({ image_url: null, updated_at: new Date().toISOString() })
+                .eq('id', sake.id);
+            } else {
+              // Rotate past sticky transient failures so rows beyond the PostgREST
+              // page are not starved forever behind the same oldest ~1000 URLs.
+              await supabase
+                .from('sake')
+                .update({ updated_at: new Date().toISOString() })
                 .eq('id', sake.id);
             }
             await sleep(DELAY_MS);
