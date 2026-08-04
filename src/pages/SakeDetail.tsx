@@ -140,9 +140,13 @@ export default function SakeDetail() {
                     <span className="text-sm text-muted-foreground">({sake.total_ratings} ratings)</span>
                   </div>
                 ) : null}
-                <Link to={`/brewery/${brewerySlug}`} className="text-sm text-primary hover:underline">
-                  {sake.brewery}
-                </Link>
+                {brewerySlug ? (
+                  <Link to={`/brewery/${brewerySlug}`} className="text-sm text-primary hover:underline">
+                    {sake.brewery}
+                  </Link>
+                ) : (
+                  <span className="text-sm text-muted-foreground">{sake.brewery}</span>
+                )}
               </div>
 
               {sake.description ? (
