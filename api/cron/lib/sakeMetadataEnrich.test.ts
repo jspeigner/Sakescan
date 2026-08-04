@@ -53,4 +53,32 @@ describe("findSakuraDescription", () => {
     );
     expect(desc).toContain("Dassai 45");
   });
+
+  test("rejects name overlap when breweries disagree", () => {
+    // Regression: name-only matching attached another brewery's Sakura blurb
+    // onto a catalog row that happened to share a product-style name.
+    const desc = findSakuraDescription(
+      {
+        name: "Dassai 45",
+        brewery: "Other Brewery",
+        type: "Junmai Daiginjo",
+        taste: "fruity",
+      },
+      row
+    );
+    expect(desc).toBeNull();
+  });
+
+  test("allows brewery-compatible name overlap", () => {
+    const desc = findSakuraDescription(
+      {
+        name: "Dassai 45",
+        brewery: "Asahi Shuzo Co.,Ltd",
+        type: "Junmai Daiginjo",
+        taste: "fruity",
+      },
+      row
+    );
+    expect(desc).toContain("fruity");
+  });
 });

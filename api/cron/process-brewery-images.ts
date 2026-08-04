@@ -166,15 +166,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const remainingBreweryMain = Math.max(0, breweriesToProcess.length - breweryMainProcessed);
 
     let remainingGalleryCount = 0;
-    const { data: gCheck } = await supabase
-      .from('breweries')
-      .select('gallery_images')
-      .not('gallery_images', 'eq', '[]')
-      .limit(2000);
-    (gCheck || []).forEach((b) => {
-      const gallery: string[] = Array.isArray(b.gallery_images) ? b.gallery_images : [];
-      remainingGalleryCount += gallery.filter((url) => url && !isSupabaseUrl(url, supabaseUrl)).length;
-    });
+    // Page past PostgREST ~1000-row cap (a bare limit(2000) still returns ≤1000).
+    for (let offset = 0; ; offset += 1000) {
+      const { data: gCheck } = await supabase
+        .from('breweries')
+        .select('gallery_images')
+        .not('gallery_images', 'eq', '[]')
+        .range(offset, offset + 999);
+      if (!gCheck?.length) break;
+      gCheck.forEach((b) => {
+        const gallery: string[] = Array.isArray(b.gallery_images) ? b.gallery_images : [];
+        remainingGalleryCount += gallery.filter(
+          (url) => url && !isSupabaseUrl(url, supabaseUrl)
+        ).length;
+      });
+      if (gCheck.length < 1000) break;
+    }
 
     const projectHostForSake = supabaseProjectHost(supabaseUrl);
     let remainingSakeQuery = supabase

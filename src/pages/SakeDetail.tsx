@@ -13,6 +13,7 @@ import { supabase } from "@/lib/supabase";
 import type { Sake } from "@/lib/supabase-types";
 import { fetchSakeBySlug } from "@/lib/sake-slug";
 import { brewerySlugFromSakeBreweryField } from "@/lib/brewery-slug";
+import { sakeSlug } from "@/lib/slugify";
 import NotFound from "./NotFound";
 import { withImageCacheBust } from "@/lib/image-url";
 
@@ -140,9 +141,13 @@ export default function SakeDetail() {
                     <span className="text-sm text-muted-foreground">({sake.total_ratings} ratings)</span>
                   </div>
                 ) : null}
-                <Link to={`/brewery/${brewerySlug}`} className="text-sm text-primary hover:underline">
-                  {sake.brewery}
-                </Link>
+                {brewerySlug ? (
+                  <Link to={`/brewery/${brewerySlug}`} className="text-sm text-primary hover:underline">
+                    {sake.brewery}
+                  </Link>
+                ) : (
+                  <span className="text-sm text-muted-foreground">{sake.brewery}</span>
+                )}
               </div>
 
               {sake.description ? (
@@ -226,7 +231,7 @@ export default function SakeDetail() {
                     {relatedSakes.map((rs: { id: string; name: string; type: string | null; average_rating: number | null; image_url: string | null }) => (
                       <Link
                         key={rs.id}
-                        to={`/sake/${slugify(rs.name)}-${rs.id.slice(0, 8)}`}
+                        to={`/sake/${sakeSlug(rs.name, rs.id)}`}
                         className="group"
                       >
                         <Card className="p-3 hover:shadow-sm transition-shadow">

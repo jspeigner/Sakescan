@@ -38,23 +38,45 @@ export function brewerySakeNamePattern(breweryName: string): string {
   return `${cleaned}%`;
 }
 
+/**
+ * True when a sake.brewery field belongs to the catalog brewery name.
+ * Allows "Akita Meijyo Co.,Ltd" for catalog "Akita Meijyo", but rejects
+ * prefix collisions like catalog "Ito" → "Ito Shuzo Co.,Ltd." / "Itou Co., Ltd".
+ */
+export function sakeBreweryMatchesCatalogName(
+  sakeBreweryField: string,
+  catalogBreweryName: string
+): boolean {
+  const catalog = catalogBreweryName.trim().toLowerCase();
+  if (!catalog) return false;
+  const stripped = stripBreweryCorporateSuffix(sakeBreweryField).toLowerCase();
+  if (stripped === catalog) return true;
+  return sakeBreweryField.trim().toLowerCase() === catalog;
+}
+
 export type BrewerySakeListItem = Pick<
   Sake,
-  "id" | "name" | "type" | "average_rating" | "image_url" | "polishing_ratio" | "updated_at"
+  "id" | "name" | "type" | "average_rating" | "image_url" | "polishing_ratio" | "updated_at" | "brewery"
 >;
 
 export async function fetchSakesForBreweryName(
   breweryName: string,
   limit = 20
 ): Promise<BrewerySakeListItem[]> {
+  // Over-fetch: prefix ilike is only a candidate filter; corporate-suffix equality
+  // runs client-side so short names (Ito, Kaetsu) do not pull sibling breweries.
+  const fetchLimit = Math.min(Math.max(limit * 5, 100), 1000);
   const { data, error } = await supabase
     .from("sake")
-    .select("id, name, type, average_rating, image_url, polishing_ratio, updated_at")
+    .select("id, name, type, average_rating, image_url, polishing_ratio, updated_at, brewery")
     .ilike("brewery", brewerySakeNamePattern(breweryName))
     .order("average_rating", { ascending: false, nullsFirst: false })
-    .limit(limit);
+    .limit(fetchLimit);
   if (error) throw error;
-  return (data ?? []) as BrewerySakeListItem[];
+  const matched = ((data ?? []) as BrewerySakeListItem[]).filter((row) =>
+    sakeBreweryMatchesCatalogName(row.brewery, breweryName)
+  );
+  return matched.slice(0, limit);
 }
 
 /**
