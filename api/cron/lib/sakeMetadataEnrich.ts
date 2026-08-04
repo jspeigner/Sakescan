@@ -96,6 +96,16 @@ export function findSakuraDescription(
   // missing on either side, so the first Sakura hit could label unrelated sakes.
   if (!enMatch && !jpMatch) return null;
 
+  // Same product name across breweries is common ("Junmai Ginjo"). When both sides
+  // have a brewery, require compatibility — matchesScraped / matchesExisting already do.
+  const scrapedBrewery = scraped.brewery?.trim().toLowerCase() ?? '';
+  const rowBrewery = row.brewery?.trim().toLowerCase() ?? '';
+  if (scrapedBrewery && rowBrewery) {
+    const breweryOk =
+      rowBrewery.includes(scrapedBrewery) || scrapedBrewery.includes(rowBrewery);
+    if (!breweryOk) return null;
+  }
+
   const parts: string[] = [];
   if (scraped.type) parts.push(scraped.type);
   if (scraped.taste) parts.push(scraped.taste);
