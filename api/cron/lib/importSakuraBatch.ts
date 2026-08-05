@@ -23,6 +23,70 @@ export function normalizeName(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9\u3040-\u9faf]+/g, ' ').trim();
 }
 
+/** Grade / style tokens that may extend a product name without meaning a different SKU. */
+const PRODUCT_NAME_GRADE_TOKENS = new Set([
+  'junmai',
+  'ginjo',
+  'daiginjo',
+  'honjozo',
+  'tokubetsu',
+  'nigori',
+  'nama',
+  'sparkling',
+  'futsushu',
+  'genshu',
+  'kimoto',
+  'yamahai',
+  'muroka',
+  'sake',
+]);
+
+function hasCjk(value: string): boolean {
+  return /[\u3040-\u9faf]/.test(value);
+}
+
+/**
+ * True when two normalized product names refer to the same SKU.
+ * Rejects naive romanized substring matches ("Kubota" ⊆ "Kubota Manju",
+ * "Dassai" ⊆ "Dassai 23") that previously updated the wrong catalog row.
+ * Japanese names still allow containment — polishing phrases are commonly appended.
+ */
+export function productNamesCompatible(a: string, b: string): boolean {
+  const left = normalizeName(a);
+  const right = normalizeName(b);
+  if (!left || !right) return false;
+  if (left === right) return true;
+
+  // JP catalog strings often append 磨き / grade phrases after the brand.
+  if (hasCjk(left) && hasCjk(right)) {
+    const [shorter, longer] = left.length <= right.length ? [left, right] : [right, left];
+    return shorter.length >= 2 && longer.includes(shorter);
+  }
+
+  const tokensA = left.split(/\s+/).filter(Boolean);
+  const tokensB = right.split(/\s+/).filter(Boolean);
+  if (tokensA.length === 0 || tokensB.length === 0) return false;
+
+  const [shorter, longer] =
+    tokensA.length <= tokensB.length ? [tokensA, tokensB] : [tokensB, tokensA];
+  const shorterSet = new Set(shorter);
+  // Every token in the shorter name must appear in the longer.
+  if (!shorter.every((t) => longer.includes(t))) return false;
+
+  // Number tokens identify polishing grades / SKU lines — must agree.
+  const nums = (tokens: string[]) => tokens.filter((t) => /\d/.test(t));
+  const longerNums = nums(longer);
+  const shorterNums = new Set(nums(shorter));
+  for (const n of longerNums) {
+    if (!shorterNums.has(n)) return false;
+  }
+
+  // Extra non-numeric tokens on the longer name must be style/grade words only.
+  // "manju", "beyond", brand sub-lines → distinct products.
+  const extras = longer.filter((t) => !shorterSet.has(t) && !/\d/.test(t));
+  return extras.every((t) => PRODUCT_NAME_GRADE_TOKENS.has(t));
+}
+
 /** True when a scraped Sakura row is the same product as an existing catalog sake. */
 export function matchesExisting(
   scraped: ScrapedSake,
@@ -46,12 +110,10 @@ export function matchesExisting(
   const japaneseMatch =
     scrapedJapanese.length > 0 &&
     existingJapanese.length > 0 &&
-    (existingJapanese.includes(scrapedJapanese) || scrapedJapanese.includes(existingJapanese));
+    productNamesCompatible(scrapedJapanese, existingJapanese);
 
   const nameMatch =
-    japaneseMatch ||
-    existingName.includes(scrapedName) ||
-    scrapedName.includes(existingName);
+    japaneseMatch || productNamesCompatible(scrapedName, existingName);
 
   // Require a product-name match. Brewery-only matching incorrectly attaches every
   // new product from a known brewery onto the first existing row for that brewery,

@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { productNamesCompatible } from './importSakuraBatch.js';
 import { scrapeSakuraListing } from './scrapeSakuraCore.js';
 
 export type MetadataEnrichResult = {
@@ -78,22 +79,18 @@ export function findSakuraDescription(
   scraped: { name: string; nameJapanese?: string; brewery?: string; type?: string; taste?: string; prefecture?: string },
   row: SakeRow
 ): string | null {
-  const scrapedName = scraped.name?.trim().toLowerCase() ?? '';
-  const rowName = row.name?.trim().toLowerCase() ?? '';
-  const enMatch =
-    !!scrapedName &&
-    !!rowName &&
-    (scrapedName.includes(rowName) || rowName.includes(scrapedName));
+  const scrapedName = scraped.name?.trim() ?? '';
+  const rowName = row.name?.trim() ?? '';
+  const enMatch = productNamesCompatible(scrapedName, rowName);
 
   const scrapedJp = scraped.nameJapanese?.trim() ?? '';
   const rowJp = row.name_japanese?.trim() ?? '';
   const jpMatch =
-    !!scrapedJp &&
-    !!rowJp &&
-    (rowJp.includes(scrapedJp) || scrapedJp.includes(rowJp));
+    !!scrapedJp && !!rowJp && productNamesCompatible(scrapedJp, rowJp);
 
   // Previously: English mismatch still returned a description whenever Japanese was
   // missing on either side, so the first Sakura hit could label unrelated sakes.
+  // Also reject substring SKU collisions ("Dassai" vs "Dassai 23").
   if (!enMatch && !jpMatch) return null;
 
   const parts: string[] = [];

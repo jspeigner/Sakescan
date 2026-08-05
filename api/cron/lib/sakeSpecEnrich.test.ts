@@ -31,4 +31,13 @@ describe("matchesScraped", () => {
       )
     ).toBe(true);
   });
+
+  test("rejects substring SKU collisions from the same brewery", () => {
+    expect(
+      matchesScraped(
+        { name: "Kubota Manju", brewery: "Asahi Shuzo" },
+        { ...row, name: "Kubota" }
+      )
+    ).toBe(false);
+  });
 });
