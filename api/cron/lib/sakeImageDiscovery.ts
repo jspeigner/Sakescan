@@ -100,9 +100,11 @@ function relevanceScore(url: string, title: string | undefined, tokens: string[]
 }
 
 function sourcePriority(source: string): number {
-  if (source === 'Sakura Sake Shop') return 52;
-  if (source === 'Umami Mart') return 50;
-  if (source === 'Sake Times') return 48;
+  // Search-page extracts keep a mild priority boost but are NOT vision-exempt
+  // (multi-product SERPs often include sibling SKUs).
+  if (source === 'Sakura Search') return 42;
+  if (source === 'Umami Search') return 40;
+  if (source === 'Sake Times Search') return 38;
   if (source === 'Google Images') return 48;
   if (source === 'Bing Images') return 46;
   return 15;
@@ -465,7 +467,8 @@ async function scrapeBingImages(searchQuery: string): Promise<SearchImageRow[]> 
 
 export type SakeImageSearchMode = 'google-only' | 'google-only-fast' | 'trusted-first' | 'full';
 
-const TRUSTED_RETAILER_SOURCES = new Set(['Sakura Sake Shop', 'Umami Mart', 'Sake Times']);
+/** Product-detail sources that may skip vision. Search SERPs must not use these labels. */
+const TRUSTED_RETAILER_SOURCES = new Set<string>([]);
 
 const BROWSER_HEADERS = {
   'User-Agent':
@@ -541,7 +544,7 @@ export async function searchTrustedRetailerCandidatesDirect(
 
   if (sakuraHtml) {
     const productImages = extractProductImagesFromHtml(sakuraHtml, sakuraFilter, 5);
-    productImages.forEach((url) => results.push({ url, source: 'Sakura Sake Shop' }));
+    productImages.forEach((url) => results.push({ url, source: 'Sakura Search' }));
     debug.sourceCounts.sakura += productImages.length;
   }
 
@@ -560,7 +563,7 @@ export async function searchTrustedRetailerCandidatesDirect(
       )
       .map((url) => url.replace(/_\d+x\d*\./, '_800x.'))
       .slice(0, 4);
-    productImages.forEach((url) => results.push({ url, source: 'Umami Mart' }));
+    productImages.forEach((url) => results.push({ url, source: 'Umami Search' }));
     debug.sourceCounts.umami += productImages.length;
   }
 
@@ -574,7 +577,7 @@ export async function searchTrustedRetailerCandidatesDirect(
         (url.includes('sake') || url.includes('wp-content')),
       3
     );
-    sakeImages.forEach((url) => results.push({ url, source: 'Sake Times' }));
+    sakeImages.forEach((url) => results.push({ url, source: 'Sake Times Search' }));
     debug.sourceCounts.sakeTimes += sakeImages.length;
   }
 
@@ -586,11 +589,12 @@ export function isTrustedRetailerSource(source: string): boolean {
   return TRUSTED_RETAILER_SOURCES.has(source);
 }
 
+// Generic CDNs (website-files / shared Shopify product CDN) are intentionally
+// excluded: many unrelated shops share those hosts, so hostname alone must not
+// skip vision.
 const TRUSTED_IMAGE_HOST_PATTERNS = [
   /sakurasaketen\.com/i,
-  /website-files\.com/i,
   /umamimart\.com/i,
-  /cdn\.shopify\.com\/.*\/products\//i,
   /sake-times\.com/i,
   /kurand\.jp/i,
   /dekanta\.jp/i,
@@ -655,7 +659,7 @@ export async function searchSakeImageCandidates(
           )
           .slice(0, 5);
         productImages.forEach((url: string) => {
-          results.push({ url, source: 'Sakura Sake Shop' });
+          results.push({ url, source: 'Sakura Search' });
         });
         debug.sourceCounts.sakura += productImages.length;
 
@@ -707,7 +711,7 @@ export async function searchSakeImageCandidates(
           .map((url: string) => url.replace(/_\d+x\d*\./, '_800x.'))
           .slice(0, 4);
         productImages.forEach((url: string) => {
-          results.push({ url, source: 'Umami Mart' });
+          results.push({ url, source: 'Umami Search' });
         });
         debug.sourceCounts.umami += productImages.length;
 
@@ -758,7 +762,7 @@ export async function searchSakeImageCandidates(
             )
             .slice(0, 3);
           sakeImages.forEach((url: string) => {
-            results.push({ url, source: 'Sake Times' });
+            results.push({ url, source: 'Sake Times Search' });
           });
           debug.sourceCounts.sakeTimes += sakeImages.length;
         }

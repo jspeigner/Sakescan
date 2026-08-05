@@ -165,3 +165,11 @@ export function sakeVisionPasses(
   if (options?.allowMedium) return true;
   return result.confidence === 'high';
 }
+
+/**
+ * Destructive clears of hosted catalog images require a high-confidence "not sake"
+ * result. Low/medium negatives and unparseable model replies must not wipe URLs.
+ */
+export function shouldClearHostedImageFromAudit(result: SakeVisionResult): boolean {
+  return result.isJapaneseSakeProductPhoto === false && result.confidence === 'high';
+}

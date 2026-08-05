@@ -19,7 +19,14 @@ import {
   shouldClearCatalogUrlAsNonSakeProduct,
   urlLooksLikeNonSakeProduct,
 } from './lib/sakeImageDiscovery.js';
-import { sakeVisionPasses, validateJapaneseSakeProductPhoto, isOpenAIQuotaError, isOpenAIVisionQuotaExceeded, resetOpenAIVisionQuotaForInvocation } from './lib/sakeImageVision.js';
+import {
+  sakeVisionPasses,
+  shouldClearHostedImageFromAudit,
+  validateJapaneseSakeProductPhoto,
+  isOpenAIQuotaError,
+  isOpenAIVisionQuotaExceeded,
+  resetOpenAIVisionQuotaForInvocation,
+} from './lib/sakeImageVision.js';
 import {
   provenanceForTrustedRetailer,
   provenanceForWebDiscover,
@@ -474,9 +481,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             brewery: row.brewery,
           });
           await sleep(DELAY_MS_DISCOVER);
-          // Only clear when vision says the photo is not sake. Low confidence on a
-          // positive "is sake" result must not wipe a hosted catalog image.
-          if (!v.isJapaneseSakeProductPhoto) {
+          // Only clear on high-confidence not-sake. Low/medium negatives and
+          // unparseable model replies must not wipe hosted catalog images.
+          if (shouldClearHostedImageFromAudit(v)) {
             await supabase
               .from('sake')
               .update({ image_url: null, updated_at: new Date().toISOString() })

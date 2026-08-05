@@ -37,7 +37,9 @@ export default function SakeExplore() {
 
       const safeSearch = sanitizePostgrestSearch(search);
       if (safeSearch) {
-        query = query.or(`name.ilike.%${safeSearch}%,brewery.ilike.%${safeSearch}%`);
+        query = query.or(
+          `name.ilike.%${safeSearch}%,name_japanese.ilike.%${safeSearch}%,brewery.ilike.%${safeSearch}%`
+        );
       }
       if (typeFilter !== "all") {
         query = query.eq("type", typeFilter);
