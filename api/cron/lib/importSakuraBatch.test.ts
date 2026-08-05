@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { matchesExisting } from './importSakuraBatch.ts';
+import { matchesExisting, productNamesCompatible } from './importSakuraBatch.ts';
 import type { ScrapedSake } from './scrapeSakuraCore.ts';
 
 const baseExisting = {
@@ -12,6 +12,19 @@ const baseExisting = {
   type: 'Junmai Daiginjo',
   prefecture: 'Yamaguchi',
 };
+
+describe('productNamesCompatible', () => {
+  test('exact and grade-token extensions match', () => {
+    expect(productNamesCompatible('Dassai 23', 'Dassai 23')).toBe(true);
+    expect(productNamesCompatible('Dassai 23', 'Dassai 23 Junmai Daiginjo')).toBe(true);
+  });
+
+  test('rejects substring SKU collisions', () => {
+    expect(productNamesCompatible('Kubota', 'Kubota Manju')).toBe(false);
+    expect(productNamesCompatible('Dassai', 'Dassai 23')).toBe(false);
+    expect(productNamesCompatible('Junmai', 'Junmai Ginjo Yamadanishiki')).toBe(false);
+  });
+});
 
 describe('matchesExisting', () => {
   test('matches the same product by English name', () => {
@@ -34,6 +47,15 @@ describe('matchesExisting', () => {
       prefecture: 'Yamaguchi',
     };
     expect(matchesExisting(scraped, baseExisting)).toBe(false);
+  });
+
+  test('does not match a longer product name that merely contains a short catalog name', () => {
+    const shortExisting = { ...baseExisting, name: 'Kubota', name_japanese: null };
+    const scraped: ScrapedSake = {
+      name: 'Kubota Manju',
+      brewery: 'Asahi Shuzo',
+    };
+    expect(matchesExisting(scraped, shortExisting)).toBe(false);
   });
 
   test('rejects name match when breweries disagree', () => {

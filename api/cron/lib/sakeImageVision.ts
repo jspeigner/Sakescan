@@ -165,3 +165,12 @@ export function sakeVisionPasses(
   if (options?.allowMedium) return true;
   return result.confidence === 'high';
 }
+
+/**
+ * Whether process-images audit may permanently null a hosted catalog image_url.
+ * Fail closed on uncertainty: unparseable / low-confidence negatives must not wipe.
+ * Only a high-confidence "not sake" result is destructive.
+ */
+export function shouldClearHostedImageFromAudit(result: SakeVisionResult): boolean {
+  return result.isJapaneseSakeProductPhoto === false && result.confidence === 'high';
+}

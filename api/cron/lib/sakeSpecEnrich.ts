@@ -4,6 +4,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { productNamesCompatible } from './importSakuraBatch.js';
 import { scrapeSakuraListing, type ScrapedSake } from './scrapeSakuraCore.js';
 
 export type SpecEnrichResult = {
@@ -83,9 +84,8 @@ export function matchesScraped(scraped: ScrapedSake, row: SakeSpecRow): boolean 
   const sj = scraped.nameJapanese ? normalizeName(scraped.nameJapanese) : '';
   const ej = row.name_japanese ? normalizeName(row.name_japanese) : '';
   const nameOk =
-    (sj && ej && (sj.includes(ej) || ej.includes(sj))) ||
-    en.includes(sn) ||
-    sn.includes(en);
+    (Boolean(sj) && Boolean(ej) && productNamesCompatible(sj, ej)) ||
+    productNamesCompatible(sn, en);
   if (!nameOk) return false;
   if (!scraped.brewery || !row.brewery) return true;
   return row.brewery.toLowerCase().includes(scraped.brewery.toLowerCase()) ||

@@ -19,7 +19,14 @@ import {
   shouldClearCatalogUrlAsNonSakeProduct,
   urlLooksLikeNonSakeProduct,
 } from './lib/sakeImageDiscovery.js';
-import { sakeVisionPasses, validateJapaneseSakeProductPhoto, isOpenAIQuotaError, isOpenAIVisionQuotaExceeded, resetOpenAIVisionQuotaForInvocation } from './lib/sakeImageVision.js';
+import {
+  sakeVisionPasses,
+  shouldClearHostedImageFromAudit,
+  validateJapaneseSakeProductPhoto,
+  isOpenAIQuotaError,
+  isOpenAIVisionQuotaExceeded,
+  resetOpenAIVisionQuotaForInvocation,
+} from './lib/sakeImageVision.js';
 import {
   provenanceForTrustedRetailer,
   provenanceForWebDiscover,
@@ -474,9 +481,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             brewery: row.brewery,
           });
           await sleep(DELAY_MS_DISCOVER);
-          // Only clear when vision says the photo is not sake. Low confidence on a
-          // positive "is sake" result must not wipe a hosted catalog image.
-          if (!v.isJapaneseSakeProductPhoto) {
+          // Destructive: only high-confidence "not sake". Unparseable / low-confidence
+          // negatives (and low-confidence positives) must leave hosted catalog URLs intact.
+          if (shouldClearHostedImageFromAudit(v)) {
             await supabase
               .from('sake')
               .update({ image_url: null, updated_at: new Date().toISOString() })
@@ -484,6 +491,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             sakeAuditCleared++;
             diagnostics.audit.clearedRows++;
             console.log(`[process-images/audit] cleared ${row.name}: ${v.briefReason}`);
+          } else if (!v.isJapaneseSakeProductPhoto) {
+            console.log(
+              `[process-images/audit] kept ${row.name} (confidence=${v.confidence}): ${v.briefReason}`
+            );
           }
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
