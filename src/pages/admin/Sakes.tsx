@@ -15,10 +15,12 @@ import { supabase } from "@/lib/supabase";
 import type { Sake } from "@/lib/supabase-types";
 import { withImageCacheBust } from "@/lib/image-url";
 import { sanitizePostgrestSearch } from "@/lib/postgrest-search";
-import { brewerySakeNamePattern } from "@/lib/brewery-slug";
+import { brewerySakeNamePattern, sakeBreweryMatchesCatalogName } from "@/lib/brewery-slug";
 import { useAuth } from "@/hooks/use-auth";
 
 const PAGE_SIZE = 20;
+/** Prefix ilike can pull sibling breweries; over-fetch then exact-match filter. */
+const BREWERY_FILTER_CANDIDATE_CAP = 1000;
 
 export default function AdminSakes() {
   const queryClient = useQueryClient();
@@ -69,6 +71,49 @@ export default function AdminSakes() {
   const fetchSakes = useCallback(async () => {
     setLoading(true);
     try {
+      if (breweryFilter) {
+        // Prefix ilike is only a candidate filter ("Ito%" also hits Ito Shuzo / Itou).
+        // Fetch the candidate pool, keep corporate-suffix-equal rows, then page in memory.
+        let query = supabase
+          .from('sake')
+          .select('*')
+          .ilike('brewery', brewerySakeNamePattern(breweryFilter))
+          .order('created_at', { ascending: false })
+          .range(0, BREWERY_FILTER_CANDIDATE_CAP - 1);
+
+        if (searchQuery) {
+          const safeSearch = sanitizePostgrestSearch(searchQuery);
+          if (safeSearch) {
+            query = query.or(
+              `name.ilike.%${safeSearch}%,name_japanese.ilike.%${safeSearch}%,brewery.ilike.%${safeSearch}%`
+            );
+          }
+        }
+
+        if (filter === 'missing_images') {
+          query = query.or('image_url.is.null,image_url.eq.');
+        }
+
+        const { data, error } = await query;
+        if (error) throw error;
+
+        const matched = (data || []).filter((row) =>
+          sakeBreweryMatchesCatalogName(row.brewery, breweryFilter)
+        );
+        setTotalCount(matched.length);
+        setSakes(matched.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE));
+
+        const missingMatched = matched.filter(
+          (row) => !row.image_url || row.image_url.trim() === ''
+        );
+        setMissingImagesCount(
+          filter === 'missing_images'
+            ? matched.length
+            : missingMatched.length
+        );
+        return;
+      }
+
       let query = supabase
         .from('sake')
         .select('*', { count: 'exact' })
@@ -84,11 +129,6 @@ export default function AdminSakes() {
         }
       }
 
-      // Apply brewery filter from URL (prefix match: "Akita Meijyo" → "Akita Meijyo Co.,Ltd")
-      if (breweryFilter) {
-        query = query.ilike('brewery', brewerySakeNamePattern(breweryFilter));
-      }
-
       // Apply filter for missing images
       if (filter === 'missing_images') {
         query = query.or('image_url.is.null,image_url.eq.');
@@ -101,16 +141,11 @@ export default function AdminSakes() {
       setTotalCount(count || 0);
 
       // Fetch count of sakes with missing images (for the tab badge)
-      let missingQuery = supabase
+      const { count: missingCount } = await supabase
         .from('sake')
         .select('*', { count: 'exact', head: true })
         .or('image_url.is.null,image_url.eq.');
       
-      if (breweryFilter) {
-        missingQuery = missingQuery.ilike('brewery', brewerySakeNamePattern(breweryFilter));
-      }
-      
-      const { count: missingCount } = await missingQuery;
       setMissingImagesCount(missingCount || 0);
     } catch (error) {
       console.error('Error fetching sakes:', error);

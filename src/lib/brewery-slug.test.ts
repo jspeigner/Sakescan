@@ -4,6 +4,7 @@ import {
   brewerySakeNamePattern,
   brewerySlugFromSakeBreweryField,
   pickBreweryBySlug,
+  sakeBreweryMatchesCatalogName,
   stripBreweryCorporateSuffix,
 } from "./brewery-slug.ts";
 
@@ -53,5 +54,19 @@ describe("brewerySakeNamePattern", () => {
   test("strips LIKE metacharacters from brewery names", () => {
     expect(brewerySakeNamePattern("100% Sake_Co")).toBe("100 Sake Co%");
     expect(brewerySakeNamePattern("Aki%ta_Meijyo")).toBe("Aki ta Meijyo%");
+  });
+});
+
+describe("sakeBreweryMatchesCatalogName", () => {
+  test("allows corporate-suffix variants of the same brewery", () => {
+    expect(sakeBreweryMatchesCatalogName("Akita Meijyo Co.,Ltd", "Akita Meijyo")).toBe(true);
+    expect(sakeBreweryMatchesCatalogName("Kizakura Co.,Ltd", "Kizakura")).toBe(true);
+    expect(sakeBreweryMatchesCatalogName("Kaetsu Co.,Ltd", "Kaetsu")).toBe(true);
+  });
+
+  test("rejects longer brewery names that only share a prefix", () => {
+    expect(sakeBreweryMatchesCatalogName("Ito Shuzo Co.,Ltd.", "Ito")).toBe(false);
+    expect(sakeBreweryMatchesCatalogName("Itou Co., Ltd", "Ito")).toBe(false);
+    expect(sakeBreweryMatchesCatalogName("Kaetsu Shuzo", "Kaetsu")).toBe(false);
   });
 });
