@@ -8,8 +8,11 @@
  */
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
-import { fetchPublicHttpUrl } from './cron/lib/publicImageUrl.js';
 import { looksLikeNonSakeUrl } from './lib/nonSakeUrl.js';
+import {
+  shouldClearHostedImageFromAudit,
+  validateJapaneseSakeProductPhoto,
+} from './cron/lib/sakeImageVision.js';
 
 function supabaseProjectHost(url: string): string | null {
   try {
@@ -23,72 +26,6 @@ function isSupabaseUrl(url: string, supabaseUrl: string): boolean {
   const host = supabaseProjectHost(supabaseUrl);
   if (!host) return false;
   return url.includes(host) || url.includes('supabase.co');
-}
-
-async function imageUrlToDataUrl(imageUrl: string): Promise<string | null> {
-  try {
-    const res = await fetchPublicHttpUrl(imageUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; SakeScan/1.0)',
-        Accept: 'image/*',
-      },
-    });
-    if (!res.ok) return null;
-    const ct = res.headers.get('content-type') || 'image/jpeg';
-    if (ct.includes('text/html')) return null;
-    const buf = Buffer.from(await res.arrayBuffer());
-    if (buf.length < 500 || buf.length > 2_500_000) return null;
-    const b64 = buf.toString('base64');
-    const mime = ct.split(';')[0].trim() || 'image/jpeg';
-    return `data:${mime};base64,${b64}`;
-  } catch {
-    return null;
-  }
-}
-
-async function isNonSakeVision(openaiKey: string, imageUrl: string, sakeName: string): Promise<boolean> {
-  const dataUrl = await imageUrlToDataUrl(imageUrl);
-  if (!dataUrl) return false;
-
-  const res = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${openaiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: 'gpt-4o-mini',
-      temperature: 0.1,
-      max_tokens: 100,
-      response_format: { type: 'json_object' },
-      messages: [
-        {
-          role: 'system',
-          content: 'You verify product photos for a Japanese sake database. Reply with JSON only.',
-        },
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'text',
-              text: `Sake name: "${sakeName}". Does this image show Japanese sake (nihonshu)? Return JSON: {"isSake": boolean, "reason": "brief"}. Set isSake=false for whisky, scotch, bourbon, beer, wine, or any non-sake product.`,
-            },
-            { type: 'image_url', image_url: { url: dataUrl, detail: 'low' } },
-          ],
-        },
-      ],
-    }),
-  });
-
-  if (!res.ok) return false;
-  const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
-  const content = data.choices?.[0]?.message?.content?.trim() || '';
-  try {
-    const parsed = JSON.parse(content) as { isSake?: boolean };
-    return parsed.isSake === false;
-  } catch {
-    return false;
-  }
 }
 
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'jspeigner@gmail.com';
@@ -170,8 +107,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // --- Vision check (slower, costs tokens, only for Supabase-hosted images) ---
     if (mode === 'vision' && openaiKey && isSupabaseUrl(row.image_url, supabaseUrl)) {
       try {
-        const isNonSake = await isNonSakeVision(openaiKey, row.image_url, row.name);
-        if (isNonSake) {
+        const vision = await validateJapaneseSakeProductPhoto(openaiKey, row.image_url, {
+          sakeName: row.name,
+        });
+        // Only clear on high-confidence not-sake (same gate as process-images audit).
+        if (shouldClearHostedImageFromAudit(vision)) {
           visionBadRows.push(row.id);
           if (!dryRun) {
             await supabase
@@ -179,7 +119,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               .update({ image_url: null, updated_at: new Date().toISOString() })
               .eq('id', row.id);
             visionCleared++;
-            console.log(`[clear-bad-images/vision] cleared "${row.name}": ${row.image_url}`);
+            console.log(
+              `[clear-bad-images/vision] cleared "${row.name}": ${vision.briefReason || row.image_url}`
+            );
           }
         }
       } catch (e) {

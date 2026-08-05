@@ -1,5 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
+  isTrustedImageUrl,
+  isTrustedRetailerSource,
   shouldClearCatalogUrlAsNonSakeProduct,
   urlLooksLikeNonSakeProduct,
 } from './sakeImageDiscovery';
@@ -47,5 +49,27 @@ describe('shouldClearCatalogUrlAsNonSakeProduct', () => {
         'https://cdn.example.com/johnnie-walker-black.jpg'
       )
     ).toBe(false);
+  });
+});
+
+describe('trusted image vision exemptions', () => {
+  test('does not trust generic shared CDNs by hostname alone', () => {
+    expect(isTrustedImageUrl('https://cdn.website-files.com/abc/bottle.jpg')).toBe(false);
+    expect(
+      isTrustedImageUrl('https://cdn.shopify.com/s/files/1/0000/products/random.jpg')
+    ).toBe(false);
+  });
+
+  test('still trusts first-party retailer hosts', () => {
+    expect(isTrustedImageUrl('https://export.sakurasaketen.com/images/dassai.jpg')).toBe(true);
+    expect(isTrustedImageUrl('https://images.umamimart.com/products/dassai.jpg')).toBe(true);
+  });
+
+  test('search-page source labels are not vision-exempt', () => {
+    expect(isTrustedRetailerSource('Sakura Search')).toBe(false);
+    expect(isTrustedRetailerSource('Umami Search')).toBe(false);
+    expect(isTrustedRetailerSource('Sake Times Search')).toBe(false);
+    // Legacy product-detail labels are unused by SERP extractors now.
+    expect(isTrustedRetailerSource('Sakura Sake Shop')).toBe(false);
   });
 });
