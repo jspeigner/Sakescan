@@ -60,9 +60,15 @@ describe('trusted image vision exemptions', () => {
     ).toBe(false);
   });
 
-  test('still trusts first-party retailer hosts', () => {
-    expect(isTrustedImageUrl('https://export.sakurasaketen.com/images/dassai.jpg')).toBe(true);
-    expect(isTrustedImageUrl('https://images.umamimart.com/products/dassai.jpg')).toBe(true);
+  test('does not trust first-party retailer hosts by hostname alone', () => {
+    // Sibling SKUs on tippsy/umami/sakura SERPs must still go through vision;
+    // hostname trust previously wrote sticky wrong T1 catalog photos.
+    expect(isTrustedImageUrl('https://export.sakurasaketen.com/images/dassai.jpg')).toBe(false);
+    expect(isTrustedImageUrl('https://images.umamimart.com/products/dassai.jpg')).toBe(false);
+    expect(isTrustedImageUrl('https://www.tippsy-sake.com/products/dassai-23.jpg')).toBe(false);
+    expect(isTrustedImageUrl('https://en.sake-times.com/wp-content/uploads/bottle.jpg')).toBe(
+      false
+    );
   });
 
   test('search-page source labels are not vision-exempt', () => {
