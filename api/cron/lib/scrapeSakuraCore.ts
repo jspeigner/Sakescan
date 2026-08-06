@@ -84,83 +84,59 @@ function normalizeHtmlForUrlExtraction(html: string): string {
   return html.replace(/\\\//g, '/');
 }
 
-function collectProductImageUrls(html: string): string[] {
-  const normalized = normalizeHtmlForUrlExtraction(html);
-  const candidateUrls = new Set<string>();
+/** Collect likely product image URLs from a markdown/HTML fragment (order preserved). */
+export function collectProductImageUrls(fragment: string): string[] {
+  const normalized = normalizeHtmlForUrlExtraction(fragment);
+  const candidateUrls: string[] = [];
+  const seen = new Set<string>();
+  const push = (raw: string) => {
+    let u = decodeEscapedUrl(raw);
+    if (u.startsWith('//')) u = `https:${u}`;
+    if (u.startsWith('/')) u = `https://export.sakurasaketen.com${u}`;
+    if (!u.startsWith('http')) return;
+    if (!isLikelyProductImage(u)) return;
+    if (u.includes('google') || u.includes('gstatic')) return;
+    if (seen.has(u)) return;
+    seen.add(u);
+    candidateUrls.push(u);
+  };
+
   const srcAttrRegex = /(?:src|data-src|data-image|data-original|poster)=["']([^"']+)["']/gi;
   const srcSetRegex = /srcset=["']([^"']+)["']/gi;
+  const mdImgRegex = /!\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)/gi;
   const jsonUrlRegex = /"url"\s*:\s*"([^"]+)"/gi;
   const directUrlRegex = /https?:\/\/[^\s"'<>]+/gi;
 
+  for (const match of normalized.matchAll(mdImgRegex)) {
+    if (match[1]) push(match[1]);
+  }
+
   for (const match of normalized.matchAll(srcAttrRegex)) {
-    if (match[1]) candidateUrls.add(decodeEscapedUrl(match[1]));
+    if (match[1]) push(match[1]);
   }
 
   for (const match of normalized.matchAll(srcSetRegex)) {
     if (!match[1]) continue;
     const srcSetParts = match[1].split(',').map((part: string) => part.trim().split(' ')[0]);
-    srcSetParts.forEach((part: string) => candidateUrls.add(decodeEscapedUrl(part)));
+    srcSetParts.forEach((part: string) => push(part));
   }
 
   for (const match of normalized.matchAll(jsonUrlRegex)) {
-    if (match[1]) candidateUrls.add(decodeEscapedUrl(match[1]));
+    if (match[1]) push(match[1]);
   }
 
   const directMatches = normalized.match(directUrlRegex) || [];
-  directMatches.forEach((raw: string) => candidateUrls.add(decodeEscapedUrl(raw)));
+  directMatches.forEach((raw: string) => push(raw));
 
-  return Array.from(candidateUrls)
-    .map((u) => {
-      if (u.startsWith('//')) return `https:${u}`;
-      if (u.startsWith('/')) return `https://export.sakurasaketen.com${u}`;
-      return u;
-    })
-    .filter((u) => u.startsWith('http'))
-    .filter((u) => isLikelyProductImage(u))
-    .filter((u) => !u.includes('google') && !u.includes('gstatic'))
-    .filter((u, index, self) => index === self.findIndex((x) => x === u));
+  return candidateUrls;
 }
 
-export async function scrapeSakuraListing(
-  firecrawlApiKey: string,
-  filter?: SakuraScrapeFilter
-): Promise<{ sakes: ScrapedSake[]; url: string }> {
-  let url = 'https://export.sakurasaketen.com/sake';
-  const params = new URLSearchParams();
-
-  if (filter?.category) {
-    params.append('Select by Sake Category', filter.category);
-  }
-  if (filter?.prefecture) {
-    params.append('Select by Prefecture', filter.prefecture);
-  }
-
-  if (params.toString()) {
-    url += `?${params.toString()}`;
-  }
-
-  const response = await fetch('https://api.firecrawl.dev/v1/scrape', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${firecrawlApiKey}`,
-    },
-    body: JSON.stringify({
-      url,
-      formats: ['markdown', 'html'],
-      onlyMainContent: true,
-      waitFor: 3000,
-    }),
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Firecrawl scrape failed (${response.status}): ${errorText.slice(0, 300)}`);
-  }
-
-  const data = await response.json();
-  const html = data.data?.html || '';
-  const markdown = data.data?.markdown || '';
+/**
+ * Parse Firecrawl markdown (+ optional HTML) into scraped sakes.
+ * Images are bound only from the same product card/block — never zipped by
+ * global HTML image list index (that assigned wrong bottles to products).
+ */
+export function parseSakuraScrapeContent(markdown: string, _html = ''): ScrapedSake[] {
   const sakes: ScrapedSake[] = [];
   const sakeBlocks = markdown.split(/(?=Modern-|Classic-)/g);
 
@@ -234,6 +210,10 @@ export async function scrapeSakuraListing(
         sake.foodPairing = [...new Set(foodMatches.map((item) => String(item)))];
       }
 
+      // Bind image from this card only. Missing image is better than a sibling SKU.
+      const blockImage = collectProductImageUrls(block)[0];
+      if (blockImage) sake.imageUrl = blockImage;
+
       if (matrixMatch) {
         /* matrix label only — type may come from typeMatch */
       }
@@ -242,19 +222,54 @@ export async function scrapeSakuraListing(
     }
   }
 
-  const uniqueProductImages = collectProductImageUrls(html);
-
-  sakes.forEach((sake, index) => {
-    if (index < uniqueProductImages.length) {
-      sake.imageUrl = uniqueProductImages[index];
-    }
-  });
-
-  const uniqueSakes = sakes.filter(
+  return sakes.filter(
     (sake, index, self) => index === self.findIndex((s) => s.name === sake.name)
   );
+}
 
-  return { sakes: uniqueSakes, url };
+export async function scrapeSakuraListing(
+  firecrawlApiKey: string,
+  filter?: SakuraScrapeFilter
+): Promise<{ sakes: ScrapedSake[]; url: string }> {
+  let url = 'https://export.sakurasaketen.com/sake';
+  const params = new URLSearchParams();
+
+  if (filter?.category) {
+    params.append('Select by Sake Category', filter.category);
+  }
+  if (filter?.prefecture) {
+    params.append('Select by Prefecture', filter.prefecture);
+  }
+
+  if (params.toString()) {
+    url += `?${params.toString()}`;
+  }
+
+  const response = await fetch('https://api.firecrawl.dev/v1/scrape', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${firecrawlApiKey}`,
+    },
+    body: JSON.stringify({
+      url,
+      formats: ['markdown', 'html'],
+      onlyMainContent: true,
+      waitFor: 3000,
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Firecrawl scrape failed (${response.status}): ${errorText.slice(0, 300)}`);
+  }
+
+  const data = await response.json();
+  const html = data.data?.html || '';
+  const markdown = data.data?.markdown || '';
+  const sakes = parseSakuraScrapeContent(markdown, html);
+
+  return { sakes, url };
 }
 
 /** Rotating filters for paginated cron import. */
