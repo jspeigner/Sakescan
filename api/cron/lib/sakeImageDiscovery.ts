@@ -589,20 +589,13 @@ export function isTrustedRetailerSource(source: string): boolean {
   return TRUSTED_RETAILER_SOURCES.has(source);
 }
 
-// Generic CDNs (website-files / shared Shopify product CDN) are intentionally
-// excluded: many unrelated shops share those hosts, so hostname alone must not
-// skip vision.
-const TRUSTED_IMAGE_HOST_PATTERNS = [
-  /sakurasaketen\.com/i,
-  /umamimart\.com/i,
-  /sake-times\.com/i,
-  /kurand\.jp/i,
-  /dekanta\.jp/i,
-  /sakeshop\.co\.jp/i,
-  /tippsy-sake\.com/i,
-];
+// Hostname alone must never skip vision or grant T1. Retailer SERPs and Google
+// results on tippsy/umami/sakura hosts routinely surface sibling SKUs; treating
+// those URLs as vision-exempt wrote sticky wrong bottles that T2/T3 could not
+// replace. Product-detail sources may re-join TRUSTED_RETAILER_SOURCES later.
+const TRUSTED_IMAGE_HOST_PATTERNS: RegExp[] = [];
 
-/** Trusted hosts can skip OpenAI vision when URL passes junk filters. */
+/** @deprecated Hostname trust disabled — always false. Prefer source labels. */
 export function isTrustedImageUrl(url: string): boolean {
   return TRUSTED_IMAGE_HOST_PATTERNS.some((re) => re.test(url));
 }

@@ -10,7 +10,6 @@ import {
 } from './lib/imageMirror.js';
 import {
   isFirecrawlBypassActive,
-  isTrustedImageUrl,
   isTrustedRetailerSource,
   prefilterDiscoverCandidates,
   resetFirecrawlBypassForInvocation,
@@ -707,12 +706,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               continue;
             }
 
-            // Trusted retailer URLs skip vision; WineEngine disabled.
-            const trustedEarly =
-              isTrustedRetailerSource(img.source) || isTrustedImageUrl(img.url);
+            // Only curated product-detail source labels skip vision. Hostname
+            // alone must not — SERP/Google hits on retailer hosts are often
+            // sibling SKUs and would stick as irreplaceable T1.
+            const trustedSource = isTrustedRetailerSource(img.source);
 
             try {
-              const trustedSource = trustedEarly;
               const incomingQuality = trustedSource ? 't1' : 't3';
               if (!shouldReplaceImage(row.image_quality, row.image_url, incomingQuality)) {
                 failureReason = 'weaker_than_existing';
