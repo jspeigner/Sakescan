@@ -28,7 +28,7 @@ function decodeEscapedUrl(url: string): string {
 
 /** Matrix/UI labels from Sakura export markdown — not product names. */
 const INVALID_ENGLISH_SAKE_NAME =
-  /^(full|light|medium|rich|modern|classic|keyword|fruity|bold|fresh|sweet|meaty|white|seafood|spicy|select|filter|search|menu|burger|international wine challenge)$/i;
+  /^(full|light|medium|rich|modern|classic|keyword|fruity|bold|fresh|sweet|meaty|white|seafood|spicy|select|filter|search|menu|burger|international wine challenge|junmai daiginjo|junmai ginjo|tokubetsu junmai|junmai|daiginjo|ginjo|tokubetsu honjozo|honjozo|fruity & aromatic|light & dry|bold & aged|fresh & vivid|rich & savory|meaty food|white meats and salty food|seafood|spicy food|sweet food)$/i;
 
 const PREFECTURE_ONLY_ENGLISH_NAME =
   /^(yamagata|niigata|hyogo|kyoto|hiroshima|fukushima|nagano|yamaguchi|miyagi|osaka|fukuoka|tokyo|hokkaido|aichi|ishikawa|gifu|okayama|kagoshima|nara|shizuoka|ibaraki|tochigi|gunma|saitama|chiba|kanagawa|mie|wakayama|tottori|shimane|ehime|kochi|tokushima|kagawa|oita|miyazaki|kumamoto|saga|nagasaki|okinawa|aomori|iwate|akita|fukui|yamanashi|nagano)$/i;
@@ -84,41 +84,151 @@ function normalizeHtmlForUrlExtraction(html: string): string {
   return html.replace(/\\\//g, '/');
 }
 
-function collectProductImageUrls(html: string): string[] {
-  const normalized = normalizeHtmlForUrlExtraction(html);
-  const candidateUrls = new Set<string>();
+/** Collect likely product image URLs from a markdown/HTML fragment (order preserved). */
+export function collectProductImageUrls(fragment: string): string[] {
+  const normalized = normalizeHtmlForUrlExtraction(fragment);
+  const candidateUrls: string[] = [];
+  const seen = new Set<string>();
+  const push = (raw: string) => {
+    let u = decodeEscapedUrl(raw);
+    // Bare URL sweeps often capture a trailing markdown/HTML delimiter.
+    u = u.replace(/[),.;]+$/g, '');
+    if (u.startsWith('//')) u = `https:${u}`;
+    if (u.startsWith('/')) u = `https://export.sakurasaketen.com${u}`;
+    if (!u.startsWith('http')) return;
+    if (!isLikelyProductImage(u)) return;
+    if (u.includes('google') || u.includes('gstatic')) return;
+    if (seen.has(u)) return;
+    seen.add(u);
+    candidateUrls.push(u);
+  };
+
   const srcAttrRegex = /(?:src|data-src|data-image|data-original|poster)=["']([^"']+)["']/gi;
   const srcSetRegex = /srcset=["']([^"']+)["']/gi;
+  const mdImgRegex = /!\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)/gi;
   const jsonUrlRegex = /"url"\s*:\s*"([^"]+)"/gi;
   const directUrlRegex = /https?:\/\/[^\s"'<>]+/gi;
 
+  for (const match of normalized.matchAll(mdImgRegex)) {
+    if (match[1]) push(match[1]);
+  }
+
   for (const match of normalized.matchAll(srcAttrRegex)) {
-    if (match[1]) candidateUrls.add(decodeEscapedUrl(match[1]));
+    if (match[1]) push(match[1]);
   }
 
   for (const match of normalized.matchAll(srcSetRegex)) {
     if (!match[1]) continue;
     const srcSetParts = match[1].split(',').map((part: string) => part.trim().split(' ')[0]);
-    srcSetParts.forEach((part: string) => candidateUrls.add(decodeEscapedUrl(part)));
+    srcSetParts.forEach((part: string) => push(part));
   }
 
   for (const match of normalized.matchAll(jsonUrlRegex)) {
-    if (match[1]) candidateUrls.add(decodeEscapedUrl(match[1]));
+    if (match[1]) push(match[1]);
   }
 
   const directMatches = normalized.match(directUrlRegex) || [];
-  directMatches.forEach((raw: string) => candidateUrls.add(decodeEscapedUrl(raw)));
+  directMatches.forEach((raw: string) => push(raw));
 
-  return Array.from(candidateUrls)
-    .map((u) => {
-      if (u.startsWith('//')) return `https:${u}`;
-      if (u.startsWith('/')) return `https://export.sakurasaketen.com${u}`;
-      return u;
-    })
-    .filter((u) => u.startsWith('http'))
-    .filter((u) => isLikelyProductImage(u))
-    .filter((u) => !u.includes('google') && !u.includes('gstatic'))
-    .filter((u, index, self) => index === self.findIndex((x) => x === u));
+  return candidateUrls;
+}
+
+/**
+ * Parse Firecrawl markdown (+ optional HTML) into scraped sakes.
+ * Images are bound only from the same product card/block — never zipped by
+ * global HTML image list index (that assigned wrong bottles to products).
+ */
+export function parseSakuraScrapeContent(markdown: string, _html = ''): ScrapedSake[] {
+  const sakes: ScrapedSake[] = [];
+  const sakeBlocks = markdown.split(/(?=Modern-|Classic-)/g);
+
+  for (const block of sakeBlocks) {
+    if (block.length < 20) continue;
+
+    const matrixMatch = block.match(/(Modern|Classic)-(Light|Medium|Full|Rich)/i);
+    const lines = block.split('\n').filter((line: string) => line.trim());
+
+    let englishName = '';
+    let japaneseName = '';
+    let brewery = '';
+    let prefecture = '';
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (/^(Modern|Classic)-(Light|Medium|Full|Rich)/i.test(trimmed)) continue;
+      if (trimmed.includes('arrow') || trimmed.includes('icon') || trimmed.includes('close')) {
+        continue;
+      }
+
+      const breweryMatch = trimmed.match(
+        /^([A-Za-z\s]+(?:Shuzo|Brewery|Sake|Brewing|酒造)?)\s*\\?-\s*([A-Za-z]+)$/i
+      );
+      if (breweryMatch) {
+        brewery = breweryMatch[1].trim();
+        prefecture = breweryMatch[2].trim();
+        continue;
+      }
+
+      if (/[\u3040-\u309f\u30a0-\u30ff\u4e00-\u9faf]/.test(trimmed) && !japaneseName) {
+        japaneseName = trimmed;
+        continue;
+      }
+
+      // Allow digits (Dassai 45, Kubota Senju 2020) — prior regex dropped them and
+      // let the next type line (Junmai Daiginjo) become the product name.
+      if (
+        /^[A-Z][A-Za-z0-9\s"'().-]+$/.test(trimmed) &&
+        trimmed.length > 3 &&
+        trimmed.length < 100 &&
+        !englishName
+      ) {
+        if (!isInvalidEnglishSakeName(trimmed)) {
+          englishName = trimmed;
+        }
+      }
+    }
+
+    const displayName = resolveSakeDisplayName(englishName, japaneseName);
+    if (displayName) {
+      const sake: ScrapedSake = {
+        name: displayName,
+        nameJapanese: japaneseName || undefined,
+        brewery: brewery || undefined,
+        prefecture: prefecture || undefined,
+      };
+
+      const typeMatch = block.match(
+        /(Junmai Daiginjo|Junmai Ginjo|Tokubetsu Junmai|Junmai|Daiginjo|Ginjo|Tokubetsu Honjozo|Honjozo)/i
+      );
+      if (typeMatch) sake.type = typeMatch[1];
+
+      const tasteMatch = block.match(
+        /(Fruity & Aromatic|Light & Dry|Bold & Aged|Fresh & Vivid|Sweet|Rich & Savory)/i
+      );
+      if (tasteMatch) sake.taste = tasteMatch[1];
+
+      const foodMatches = block.match(
+        /(Meaty Food|White Meats and Salty Food|Seafood|Spicy Food|Sweet Food)/gi
+      );
+      if (foodMatches) {
+        sake.foodPairing = [...new Set(foodMatches.map((item) => String(item)))];
+      }
+
+      // Bind image from this card only. Missing image is better than a sibling SKU.
+      const blockImage = collectProductImageUrls(block)[0];
+      if (blockImage) sake.imageUrl = blockImage;
+
+      if (matrixMatch) {
+        /* matrix label only — type may come from typeMatch */
+      }
+
+      sakes.push(sake);
+    }
+  }
+
+  return sakes.filter(
+    (sake, index, self) => index === self.findIndex((s) => s.name === sake.name)
+  );
 }
 
 export async function scrapeSakuraListing(
@@ -161,100 +271,9 @@ export async function scrapeSakuraListing(
   const data = await response.json();
   const html = data.data?.html || '';
   const markdown = data.data?.markdown || '';
-  const sakes: ScrapedSake[] = [];
-  const sakeBlocks = markdown.split(/(?=Modern-|Classic-)/g);
+  const sakes = parseSakuraScrapeContent(markdown, html);
 
-  for (const block of sakeBlocks) {
-    if (block.length < 20) continue;
-
-    const matrixMatch = block.match(/(Modern|Classic)-(Light|Medium|Full|Rich)/i);
-    const lines = block.split('\n').filter((line: string) => line.trim());
-
-    let englishName = '';
-    let japaneseName = '';
-    let brewery = '';
-    let prefecture = '';
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (/^(Modern|Classic)-(Light|Medium|Full|Rich)/i.test(trimmed)) continue;
-      if (trimmed.includes('arrow') || trimmed.includes('icon') || trimmed.includes('close')) {
-        continue;
-      }
-
-      const breweryMatch = trimmed.match(
-        /^([A-Za-z\s]+(?:Shuzo|Brewery|Sake|Brewing|酒造)?)\s*\\?-\s*([A-Za-z]+)$/i
-      );
-      if (breweryMatch) {
-        brewery = breweryMatch[1].trim();
-        prefecture = breweryMatch[2].trim();
-        continue;
-      }
-
-      if (/[\u3040-\u309f\u30a0-\u30ff\u4e00-\u9faf]/.test(trimmed) && !japaneseName) {
-        japaneseName = trimmed;
-        continue;
-      }
-
-      if (
-        /^[A-Z][A-Za-z\s"'()-]+$/.test(trimmed) &&
-        trimmed.length > 3 &&
-        trimmed.length < 100 &&
-        !englishName
-      ) {
-        if (!isInvalidEnglishSakeName(trimmed)) {
-          englishName = trimmed;
-        }
-      }
-    }
-
-    const displayName = resolveSakeDisplayName(englishName, japaneseName);
-    if (displayName) {
-      const sake: ScrapedSake = {
-        name: displayName,
-        nameJapanese: japaneseName || undefined,
-        brewery: brewery || undefined,
-        prefecture: prefecture || undefined,
-      };
-
-      const typeMatch = block.match(
-        /(Junmai Daiginjo|Junmai Ginjo|Tokubetsu Junmai|Junmai|Daiginjo|Ginjo|Tokubetsu Honjozo|Honjozo)/i
-      );
-      if (typeMatch) sake.type = typeMatch[1];
-
-      const tasteMatch = block.match(
-        /(Fruity & Aromatic|Light & Dry|Bold & Aged|Fresh & Vivid|Sweet|Rich & Savory)/i
-      );
-      if (tasteMatch) sake.taste = tasteMatch[1];
-
-      const foodMatches = block.match(
-        /(Meaty Food|White Meats and Salty Food|Seafood|Spicy Food|Sweet Food)/gi
-      );
-      if (foodMatches) {
-        sake.foodPairing = [...new Set(foodMatches.map((item) => String(item)))];
-      }
-
-      if (matrixMatch) {
-        /* matrix label only — type may come from typeMatch */
-      }
-
-      sakes.push(sake);
-    }
-  }
-
-  const uniqueProductImages = collectProductImageUrls(html);
-
-  sakes.forEach((sake, index) => {
-    if (index < uniqueProductImages.length) {
-      sake.imageUrl = uniqueProductImages[index];
-    }
-  });
-
-  const uniqueSakes = sakes.filter(
-    (sake, index, self) => index === self.findIndex((s) => s.name === sake.name)
-  );
-
-  return { sakes: uniqueSakes, url };
+  return { sakes, url };
 }
 
 /** Rotating filters for paginated cron import. */
