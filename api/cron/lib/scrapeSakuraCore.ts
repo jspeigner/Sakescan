@@ -28,7 +28,7 @@ function decodeEscapedUrl(url: string): string {
 
 /** Matrix/UI labels from Sakura export markdown — not product names. */
 const INVALID_ENGLISH_SAKE_NAME =
-  /^(full|light|medium|rich|modern|classic|keyword|fruity|bold|fresh|sweet|meaty|white|seafood|spicy|select|filter|search|menu|burger|international wine challenge)$/i;
+  /^(full|light|medium|rich|modern|classic|keyword|fruity|bold|fresh|sweet|meaty|white|seafood|spicy|select|filter|search|menu|burger|international wine challenge|junmai daiginjo|junmai ginjo|tokubetsu junmai|junmai|daiginjo|ginjo|tokubetsu honjozo|honjozo|fruity & aromatic|light & dry|bold & aged|fresh & vivid|rich & savory|meaty food|white meats and salty food|seafood|spicy food|sweet food)$/i;
 
 const PREFECTURE_ONLY_ENGLISH_NAME =
   /^(yamagata|niigata|hyogo|kyoto|hiroshima|fukushima|nagano|yamaguchi|miyagi|osaka|fukuoka|tokyo|hokkaido|aichi|ishikawa|gifu|okayama|kagoshima|nara|shizuoka|ibaraki|tochigi|gunma|saitama|chiba|kanagawa|mie|wakayama|tottori|shimane|ehime|kochi|tokushima|kagawa|oita|miyazaki|kumamoto|saga|nagasaki|okinawa|aomori|iwate|akita|fukui|yamanashi|nagano)$/i;
@@ -91,6 +91,8 @@ export function collectProductImageUrls(fragment: string): string[] {
   const seen = new Set<string>();
   const push = (raw: string) => {
     let u = decodeEscapedUrl(raw);
+    // Bare URL sweeps often capture a trailing markdown/HTML delimiter.
+    u = u.replace(/[),.;]+$/g, '');
     if (u.startsWith('//')) u = `https:${u}`;
     if (u.startsWith('/')) u = `https://export.sakurasaketen.com${u}`;
     if (!u.startsWith('http')) return;
@@ -172,8 +174,10 @@ export function parseSakuraScrapeContent(markdown: string, _html = ''): ScrapedS
         continue;
       }
 
+      // Allow digits (Dassai 45, Kubota Senju 2020) — prior regex dropped them and
+      // let the next type line (Junmai Daiginjo) become the product name.
       if (
-        /^[A-Z][A-Za-z\s"'()-]+$/.test(trimmed) &&
+        /^[A-Z][A-Za-z0-9\s"'().-]+$/.test(trimmed) &&
         trimmed.length > 3 &&
         trimmed.length < 100 &&
         !englishName

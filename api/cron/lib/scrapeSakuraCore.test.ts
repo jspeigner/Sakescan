@@ -70,4 +70,17 @@ Junmai Daiginjo
     expect(sakes[0]?.name).toBe('Dassai 45');
     expect(sakes[0]?.imageUrl).toBeUndefined();
   });
+
+  test('keeps numeric English product names and does not promote type labels', () => {
+    const markdown = `
+Modern-Light
+Asahi Shuzou - Yamaguchi
+Dassai 45
+だっさい
+Junmai Daiginjo
+`;
+    const sakes = parseSakuraScrapeContent(markdown);
+    expect(sakes[0]?.name).toBe('Dassai 45');
+    expect(sakes[0]?.type).toBe('Junmai Daiginjo');
+  });
 });
