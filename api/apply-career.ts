@@ -138,6 +138,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   if (insertError) {
     console.error('[apply-career] insert', insertError);
+    // Best-effort cleanup so a failed insert does not leave orphan resumes.
+    const { error: cleanupError } = await admin.storage.from('career-resumes').remove([filePath]);
+    if (cleanupError) {
+      console.error('[apply-career] resume cleanup after insert failure', cleanupError);
+    }
     return res.status(500).json({ error: insertError.message });
   }
 

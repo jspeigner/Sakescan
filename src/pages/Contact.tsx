@@ -1,3 +1,4 @@
+import { FormEvent, useState } from "react";
 import { Header } from "@/components/landing/Header";
 import { Footer } from "@/components/landing/Footer";
 import { SEO } from "@/components/SEO";
@@ -7,8 +8,41 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Mail, MessageCircle, FileText } from "lucide-react";
+import { toast } from "@/components/ui/sonner";
+
+const SUPPORT_EMAIL = "support@sakescan.com";
 
 export default function Contact() {
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [subject, setSubject] = useState("");
+  const [message, setMessage] = useState("");
+
+  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const trimmedMessage = message.trim();
+    if (!trimmedMessage) {
+      toast.error("Please enter a message.");
+      return;
+    }
+
+    const mailSubject = encodeURIComponent(subject.trim() || "SakeScan contact");
+    const mailBody = encodeURIComponent(
+      [
+        name.trim() ? `Name: ${name.trim()}` : null,
+        email.trim() ? `Email: ${email.trim()}` : null,
+        "",
+        trimmedMessage,
+      ]
+        .filter((line) => line !== null)
+        .join("\n")
+    );
+
+    // No contact API yet — open the user's mail client with the form contents.
+    window.location.href = `mailto:${SUPPORT_EMAIL}?subject=${mailSubject}&body=${mailBody}`;
+    toast.success("Opening your email app to send the message.");
+  };
+
   return (
     <div className="min-h-screen bg-background">
       <SEO
@@ -39,8 +73,8 @@ export default function Contact() {
               <p className="text-sm text-muted-foreground mb-3">
                 For general inquiries and support
               </p>
-              <a href="mailto:support@sakescan.com" className="text-primary hover:underline text-sm">
-                support@sakescan.com
+              <a href={`mailto:${SUPPORT_EMAIL}`} className="text-primary hover:underline text-sm">
+                {SUPPORT_EMAIL}
               </a>
             </Card>
 
@@ -76,30 +110,55 @@ export default function Contact() {
           {/* Contact Form */}
           <Card className="p-6 sm:p-8">
             <h2 className="text-xl font-semibold mb-6">Send us a message</h2>
-            <form className="space-y-6">
+            <form className="space-y-6" onSubmit={handleSubmit}>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label htmlFor="name">Name</Label>
-                  <Input id="name" placeholder="Your name" />
+                  <Input
+                    id="name"
+                    name="name"
+                    placeholder="Your name"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    autoComplete="name"
+                  />
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="email">Email</Label>
-                  <Input id="email" type="email" placeholder="your@email.com" />
+                  <Input
+                    id="email"
+                    name="email"
+                    type="email"
+                    placeholder="your@email.com"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    autoComplete="email"
+                  />
                 </div>
               </div>
               <div className="space-y-2">
                 <Label htmlFor="subject">Subject</Label>
-                <Input id="subject" placeholder="How can we help?" />
+                <Input
+                  id="subject"
+                  name="subject"
+                  placeholder="How can we help?"
+                  value={subject}
+                  onChange={(e) => setSubject(e.target.value)}
+                />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="message">Message</Label>
                 <Textarea
                   id="message"
+                  name="message"
                   placeholder="Tell us more about your question or feedback..."
                   rows={5}
+                  value={message}
+                  onChange={(e) => setMessage(e.target.value)}
+                  required
                 />
               </div>
-              <Button type="submit" className="w-full sm:w-auto">
+              <Button type="submit" className="w-full sm:w-auto min-h-[44px]">
                 Send Message
               </Button>
             </form>

@@ -63,6 +63,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (!body.id) {
       return res.status(400).json({ error: 'id is required for delete' });
     }
+
+    // Capture hosted image path before the row disappears so storage is not orphaned.
+    const { data: existing, error: existingError } = await admin
+      .from('sake')
+      .select('id, image_url')
+      .eq('id', body.id)
+      .maybeSingle();
+    if (existingError) {
+      console.error('[admin-upsert-sake/delete] lookup', existingError);
+      return res.status(500).json({ error: existingError.message });
+    }
+    if (!existing?.id) {
+      return res.status(404).json({ error: 'Sake not found' });
+    }
+
     const { data, error } = await admin
       .from('sake')
       .delete()
@@ -77,6 +92,37 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (!data?.id) {
       return res.status(404).json({ error: 'Sake not found' });
     }
+
+    const imageUrl = typeof existing.image_url === 'string' ? existing.image_url : null;
+    if (imageUrl) {
+      try {
+        const projectHost = new URL(supabaseUrl).hostname;
+        const image = new URL(imageUrl);
+        const marker = '/object/public/sake-images/';
+        const markerIdx = image.pathname.indexOf(marker);
+        if (image.hostname === projectHost && markerIdx !== -1) {
+          const objectPath = decodeURIComponent(image.pathname.slice(markerIdx + marker.length));
+          // Catalog objects use varied folders (mirror/, sake-images/, …).
+          // Never touch user scan-uploads from a sake-row delete.
+          const safeCatalogPath =
+            !!objectPath &&
+            !objectPath.includes('..') &&
+            !objectPath.startsWith('scan-uploads/') &&
+            /^[a-zA-Z0-9._/-]+$/.test(objectPath);
+          if (safeCatalogPath) {
+            const { error: removeError } = await admin.storage
+              .from('sake-images')
+              .remove([objectPath]);
+            if (removeError) {
+              console.error('[admin-upsert-sake/delete] storage cleanup', removeError);
+            }
+          }
+        }
+      } catch (cleanupErr) {
+        console.error('[admin-upsert-sake/delete] storage cleanup', cleanupErr);
+      }
+    }
+
     return res.status(200).json({ success: true, id: data.id, mode: 'delete' });
   }
 
