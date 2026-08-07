@@ -9,7 +9,6 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Star, Droplets, Thermometer, Wine, Wheat, MapPin, Loader2 } from "lucide-react";
-import type { Sake } from "@/lib/supabase-types";
 import { fetchSakeBySlug } from "@/lib/sake-slug";
 import {
   brewerySlugFromSakeBreweryField,
