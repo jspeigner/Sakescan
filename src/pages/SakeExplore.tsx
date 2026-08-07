@@ -45,7 +45,12 @@ export default function SakeExplore() {
         query = query.eq("type", typeFilter);
       }
       if (regionFilter !== "all") {
-        query = query.eq("region", regionFilter);
+        // Many catalog rows store the place in prefecture with region null
+        // (live: Kyoto 20 region-only vs 25 region|prefecture).
+        const safeRegion = regionFilter.replace(/[,.()]/g, "").trim();
+        if (safeRegion) {
+          query = query.or(`region.eq.${safeRegion},prefecture.eq.${safeRegion}`);
+        }
       }
 
       const { data: sakes, count, error } = await query;
