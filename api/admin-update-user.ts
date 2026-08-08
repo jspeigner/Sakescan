@@ -1,5 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
+import { removeUserScanUploads } from './lib/deleteAccountCleanup.js';
 
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'jspeigner@gmail.com';
 
@@ -51,8 +52,30 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(400).json({ error: 'Cannot delete the currently signed-in admin' });
     }
 
-    await admin.from('ratings').delete().eq('user_id', body.id);
-    await admin.from('scans').delete().eq('user_id', body.id);
+    // Purge public scan photos before row/auth deletion. Self-serve
+    // delete_own_account / delete-account do not cover admin-driven deletes.
+    try {
+      await removeUserScanUploads(admin, body.id);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error('[admin-update-user] scan-upload cleanup failed:', msg);
+      return res.status(500).json({ error: `Failed to remove scan photos: ${msg}` });
+    }
+
+    // Best-effort avatar cleanup (matches delete-account fallback).
+    await admin.storage.from('avatars').remove([body.id, `${body.id}/avatar`]);
+
+    const { error: ratingsError } = await admin.from('ratings').delete().eq('user_id', body.id);
+    if (ratingsError) {
+      console.error('[admin-update-user] ratings delete failed:', ratingsError);
+      return res.status(500).json({ error: ratingsError.message });
+    }
+
+    const { error: scansError } = await admin.from('scans').delete().eq('user_id', body.id);
+    if (scansError) {
+      console.error('[admin-update-user] scans delete failed:', scansError);
+      return res.status(500).json({ error: scansError.message });
+    }
 
     const { error: profileError } = await admin.from('users').delete().eq('id', body.id);
     if (profileError) {
