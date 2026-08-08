@@ -1,31 +1,15 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
+import {
+  extFromMime,
+  normalizeScanImageMime,
+  sniffScanImageMime,
+} from './lib/scanImageUpload.js';
 
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'jspeigner@gmail.com';
 
 /** Stay under Vercel ~4.5MB request body limit (base64 is ~4/3 of raw). */
 const MAX_DECODED_BYTES = 2_500_000;
-
-function extFromMime(mime: string): string {
-  const m = mime.toLowerCase();
-  if (m.includes('png')) return 'png';
-  if (m.includes('webp')) return 'webp';
-  if (m.includes('gif')) return 'gif';
-  if (m.includes('heic') || m.includes('heif')) return 'heic';
-  if (m.includes('jpeg') || m.includes('jpg')) return 'jpg';
-  return 'jpg';
-}
-
-function extFromFileName(name: string | undefined): string | null {
-  if (!name) return null;
-  const m = name.match(/\.([a-zA-Z0-9]{1,8})$/);
-  if (!m) return null;
-  const e = m[1].toLowerCase();
-  if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'heic', 'heif'].includes(e)) {
-    return e === 'jpeg' ? 'jpg' : e === 'heif' ? 'heic' : e;
-  }
-  return null;
-}
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
@@ -76,7 +60,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   let buffer: Buffer;
   try {
-    buffer = Buffer.from(body.imageBase64, 'base64');
+    const raw = body.imageBase64.includes(',')
+      ? body.imageBase64.slice(body.imageBase64.indexOf(',') + 1)
+      : body.imageBase64;
+    buffer = Buffer.from(raw, 'base64');
   } catch {
     return res.status(400).json({ error: 'Invalid base64 image data' });
   }
@@ -90,10 +77,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
   }
 
-  const contentType = body.contentType?.trim() || 'image/jpeg';
-  const ext =
-    extFromFileName(body.originalFileName) ?? extFromMime(contentType);
+  const claimed = normalizeScanImageMime(body.contentType);
+  if (!claimed) {
+    return res.status(400).json({
+      error: 'Unsupported image type (use JPEG, PNG, WebP, GIF, or HEIC)',
+    });
+  }
 
+  const sniffed = sniffScanImageMime(buffer);
+  // Prefer magic bytes; allow HEIC/HEIF claims when sniff cannot confirm (mobile).
+  const contentType =
+    sniffed ?? (claimed === 'image/heic' || claimed === 'image/heif' ? claimed : null);
+  if (!contentType) {
+    return res.status(400).json({ error: 'File bytes are not a recognized image' });
+  }
+
+  const ext = extFromMime(contentType);
   const timestamp = Date.now();
   const randomStr = Math.random().toString(36).substring(2, 10);
   const filePath = `sake-images/admin-${timestamp}-${randomStr}.${ext}`;
