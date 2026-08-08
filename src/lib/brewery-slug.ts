@@ -18,40 +18,74 @@ export function stripBreweryCorporateSuffix(name: string): string {
 }
 
 /**
+ * Normalize brewery strings for equality matching / slugs.
+ * - Drops parenthetical location tags: "Asahi Shuzo (Niigata)" → "Asahi Shuzo"
+ * - Maps English "Sake Brewing/Brewery" to Shuzou (Hakutsuru Sake Brewing → Hakutsuru Shuzou)
+ * - Drops trailing English "Sake" / "Sake Company" (Gekkeikan Sake → Gekkeikan)
+ * - Collapses Shuzo ↔ Shuzou spelling
+ */
+export function normalizeBreweryNameForMatch(name: string): string {
+  let s = stripBreweryCorporateSuffix(name);
+  s = s.replace(/\s*\([^)]*\)\s*$/g, "").trim();
+  // English translation of 酒造 — apply before bare "Sake" strip.
+  s = s.replace(/\s+sake\s+brew(?:ing|ery)\.?$/i, " Shuzou").trim();
+  s = s.replace(/\s+sake\s+company\.?$/i, "").trim();
+  s = s.replace(/\s+sake$/i, "").trim();
+  s = s.replace(/\bshuzo\b/gi, "Shuzou");
+  return s.replace(/\s+/g, " ").trim();
+}
+
+/**
  * URL slug for linking from a sake row's brewery field to /brewery/:slug.
  * "Akita Meijyo Co.,Ltd" → "akita-meijyo" (matches breweries.name "Akita Meijyo").
+ * "Hakutsuru Sake Brewing Co.,Ltd." → "hakutsuru-shuzou".
+ * "Asahi Shuzo" → "asahi-shuzou".
  */
 export function brewerySlugFromSakeBreweryField(breweryField: string): string {
-  return slugify(stripBreweryCorporateSuffix(breweryField));
+  return slugify(normalizeBreweryNameForMatch(breweryField));
+}
+
+/**
+ * Brand core used for PostgREST candidate fetch (prefix ilike).
+ * "Hakutsuru Shuzou" → "Hakutsuru" so "Hakutsuru Sake Brewing…" rows are candidates.
+ */
+export function breweryBrandCore(breweryName: string): string {
+  const normalized = normalizeBreweryNameForMatch(breweryName);
+  const withoutShuzou = normalized.replace(/\s+shuzou$/i, "").trim();
+  return withoutShuzou || normalized;
 }
 
 /**
  * Pattern for matching sake.brewery to a catalog brewery name.
- * Exact equality misses common corporate suffixes
- * ("Akita Meijyo" vs "Akita Meijyo Co.,Ltd"). A case-insensitive
- * prefix match covers those without the old substring match that
- * attached unrelated names (e.g. "Chiyo Shuzou" → "Fukuchiyo…").
+ * Uses brand core + prefix so English "Sake Brewing" rows are fetched for
+ * "… Shuzou" catalog pages, then filtered with sakeBreweryMatchesCatalogName.
  */
 export function brewerySakeNamePattern(breweryName: string): string {
   // Strip LIKE wildcards from the name; trailing % is the intentional prefix.
   const cleaned = breweryName.replace(/[%_]/g, " ").replace(/\s+/g, " ").trim();
-  return `${cleaned}%`;
+  const core = breweryBrandCore(cleaned).replace(/[%_]/g, " ").replace(/\s+/g, " ").trim();
+  return `${core || cleaned}%`;
 }
 
 /**
  * True when a sake.brewery string belongs to the catalog brewery name.
  * Prefix `ilike` alone is too loose for short names ("Ito" → "Ito Shuzo",
- * "Itou"); require equality after stripping corporate suffixes on the sake side.
+ * "Itou"); require equality after normalizing corporate suffixes, English
+ * descriptors, and Shuzo/Shuzou spelling. Does not collapse bare "Kaetsu" with
+ * "Kaetsu Shuzou" — those are distinct catalog rows.
  */
 export function sakeBreweryMatchesCatalogName(
   sakeBreweryField: string,
   catalogBreweryName: string
 ): boolean {
-  const catalog = catalogBreweryName.trim().toLowerCase();
+  const catalog = normalizeBreweryNameForMatch(catalogBreweryName).toLowerCase();
   if (!catalog) return false;
+  const sakeNorm = normalizeBreweryNameForMatch(sakeBreweryField).toLowerCase();
+  if (!sakeNorm) return false;
+  if (sakeNorm === catalog) return true;
+  // Raw equality after corporate-suffix strip only (legacy path).
   const stripped = stripBreweryCorporateSuffix(sakeBreweryField).toLowerCase();
-  if (stripped === catalog) return true;
-  return sakeBreweryField.trim().toLowerCase() === catalog;
+  return stripped === catalogBreweryName.trim().toLowerCase();
 }
 
 export type BrewerySakeListItem = Pick<
@@ -61,9 +95,9 @@ export type BrewerySakeListItem = Pick<
 
 export async function fetchSakesForBreweryName(
   breweryName: string,
-  limit = 20
+  limit = 100
 ): Promise<BrewerySakeListItem[]> {
-  // Over-fetch: prefix ilike is only a candidate filter; corporate-suffix equality
+  // Over-fetch: prefix ilike is only a candidate filter; normalized equality
   // runs client-side so short names (Ito, Kaetsu) do not pull sibling breweries.
   const fetchLimit = Math.min(Math.max(limit * 5, 100), 1000);
   const { data, error } = await supabase
