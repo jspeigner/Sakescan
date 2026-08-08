@@ -196,8 +196,10 @@ export function SakeModal({ open, onOpenChange, sake, onSaved }: SakeModalProps)
       prefecture: (data.prefecture as string) || prev.prefecture,
       // Prefecture ≠ region (Explore filters by region). Only set region from a real region field.
       region: (data.region as string) || prev.region,
-      polishing_ratio: (data.polishingRatio as number) || prev.polishing_ratio,
-      alcohol_percentage: (data.alcoholPercentage as number) || prev.alcohol_percentage,
+      polishing_ratio:
+        (data.polishingRatio as number | null | undefined) ?? prev.polishing_ratio,
+      alcohol_percentage:
+        (data.alcoholPercentage as number | null | undefined) ?? prev.alcohol_percentage,
       description: (data.description as string) || prev.description,
     }));
   };
