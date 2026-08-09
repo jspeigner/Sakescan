@@ -166,8 +166,10 @@ export default function SakeExplore() {
                               {sake.average_rating.toFixed(1)}
                             </span>
                           ) : null}
-                          {sake.prefecture ? (
-                            <span className="text-[10px] text-muted-foreground">{sake.prefecture}</span>
+                          {sake.prefecture ?? sake.region ? (
+                            <span className="text-[10px] text-muted-foreground">
+                              {sake.prefecture ?? sake.region}
+                            </span>
                           ) : null}
                         </div>
                       </div>
