@@ -38,7 +38,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   let skippedPlaceholders = 0;
   let rateLimited = false;
   const errors: string[] = [];
-  const seenHashes = new Set<string>();
+  const seenHashes = new Map<string, string>();
   const knownPlaceholderHashes = new Set<string>();
 
   try {
@@ -76,7 +76,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             .update({ image_url: null, updated_at: new Date().toISOString() })
             .eq('id', brewery.id);
           skippedPlaceholders++;
-        } else if (!result.skippedDuplicate) {
+        } else if (result.url) {
+          // skippedDuplicate returns the already-hosted URL from earlier this run.
           await supabase
             .from('breweries')
             .update({ image_url: result.url, updated_at: new Date().toISOString() })
@@ -138,7 +139,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             if (result.skippedPlaceholder) {
               newGallery[i] = '';
               skippedPlaceholders++;
-            } else if (!result.skippedDuplicate) {
+            } else if (result.url) {
               newGallery[i] = result.url;
               breweryGalleryProcessed++;
             }

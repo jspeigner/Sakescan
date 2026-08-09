@@ -178,7 +178,7 @@ export async function promoteScanImagesBatch(
   }
 
   const sakeMap = new Map((sakes || []).map((s) => [s.id, s as SakeImageRow]));
-  const seenHashes = new Set<string>();
+  const seenHashes = new Map<string, string>();
   const knownPlaceholderHashes = new Set<string>();
 
   for (const sakeId of sakeIds) {
@@ -223,7 +223,8 @@ export async function promoteScanImagesBatch(
         seenHashes,
         knownPlaceholderHashes
       );
-      if (stored.rateLimited || stored.skippedPlaceholder || stored.skippedDuplicate) continue;
+      // skippedDuplicate still returns a hosted URL from an earlier upload this run.
+      if (stored.rateLimited || stored.skippedPlaceholder || !stored.url) continue;
 
       const payload = sakeImageUpdatePayload(stored.url, provenanceForUserScan(scan.id));
       const { error: upErr } = await supabase.from('sake').update(payload).eq('id', sakeId);

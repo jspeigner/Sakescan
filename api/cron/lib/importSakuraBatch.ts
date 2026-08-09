@@ -111,7 +111,7 @@ export async function runSakuraImportBatch(
   let updated = 0;
   let inserted = 0;
   let imageStored = 0;
-  const seenHashes = new Set<string>();
+  const seenHashes = new Map<string, string>();
   const knownPlaceholderHashes = new Set<string>();
 
   type ExistingSakeRow = {
@@ -168,7 +168,8 @@ export async function runSakuraImportBatch(
                 seenHashes,
                 knownPlaceholderHashes
               );
-              if (!stored.skippedPlaceholder && !stored.skippedDuplicate && !stored.rateLimited) {
+              // skippedDuplicate reuses a hosted URL from earlier in this run — still assign it.
+              if (!stored.skippedPlaceholder && !stored.rateLimited && stored.url) {
                 Object.assign(patch, sakeImageUpdatePayload(stored.url, provenanceForTrustedRetailer()));
                 imageStored++;
                 changed = true;
@@ -218,7 +219,7 @@ export async function runSakuraImportBatch(
                 seenHashes,
                 knownPlaceholderHashes
               );
-              if (!stored.skippedPlaceholder && !stored.skippedDuplicate && !stored.rateLimited) {
+              if (!stored.skippedPlaceholder && !stored.rateLimited && stored.url) {
                 imageUrl = stored.url;
                 imageStored++;
               }
