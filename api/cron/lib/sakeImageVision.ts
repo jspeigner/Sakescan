@@ -84,7 +84,17 @@ async function imageUrlToDataUrl(imageUrl: string): Promise<string | null> {
 export async function validateJapaneseSakeProductPhoto(
   openaiApiKey: string,
   imageUrl: string,
-  context: { sakeName: string; brewery?: string | null }
+  context: {
+    sakeName: string;
+    brewery?: string | null;
+    /**
+     * When true (catalog promote from user scans), also require the label/bottle
+     * to match this specific product — not merely "some Japanese sake".
+     * Without this, any authenticated user can point a scan at an arbitrary
+     * sake_id and promote a sibling bottle into the public catalog.
+     */
+    requireProductMatch?: boolean;
+  }
 ): Promise<SakeVisionResult> {
   if (!isPublicHttpImageUrl(imageUrl)) {
     return {
@@ -96,9 +106,16 @@ export async function validateJapaneseSakeProductPhoto(
 
   const system = `You verify product photos for a Japanese sake (nihonshu) database. Reply with JSON only.`;
 
+  const productMatchClause = context.requireProductMatch
+    ? `
+
+IMPORTANT: Set isJapaneseSakeProductPhoto to TRUE only if the label/bottle is clearly THIS product ("${context.sakeName}"${context.brewery ? ` from ${context.brewery}` : ''}), not a sibling SKU or different brand. If the name/grade on the label disagrees (e.g. photo is Dassai 23 but the row is Dassai 45), return FALSE with confidence high.`
+    : '';
+
   const userText = `Sake name: "${context.sakeName}"${context.brewery ? `. Brewery: "${context.brewery}".` : ''}
 
 Does this image clearly show Japanese sake (nihonshu) — bottle, label, tokkuri, or typical retail product shot?
+${productMatchClause}
 
 Return JSON: {"isJapaneseSakeProductPhoto": boolean, "confidence": "high"|"medium"|"low", "briefReason": "short English phrase"}
 

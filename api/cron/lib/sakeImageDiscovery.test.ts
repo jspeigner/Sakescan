@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   isTrustedImageUrl,
   isTrustedRetailerSource,
+  prefilterDiscoverCandidates,
   shouldClearCatalogUrlAsNonSakeProduct,
   urlLooksLikeNonSakeProduct,
 } from './sakeImageDiscovery';
@@ -71,5 +72,43 @@ describe('trusted image vision exemptions', () => {
     expect(isTrustedRetailerSource('Sake Times Search')).toBe(false);
     // Legacy product-detail labels are unused by SERP extractors now.
     expect(isTrustedRetailerSource('Sakura Sake Shop')).toBe(false);
+  });
+});
+
+describe('prefilterDiscoverCandidates SERP titles', () => {
+  test('does not treat search-query titles as relevance evidence', () => {
+    // Regression: Google/Bing rows set title=searchQuery, so every token matched
+    // and sibling-SKU URLs with no name in the path always passed minRelevance.
+    const searchQuery = 'Dassai 45 Asahi Shuzo nihonshu bottle';
+    const filtered = prefilterDiscoverCandidates(
+      [
+        {
+          url: 'https://cdn.example.com/products/random-sibling-bottle.jpg',
+          source: 'Google Images',
+          title: searchQuery,
+        },
+      ],
+      'Dassai 45',
+      undefined,
+      'Asahi Shuzo',
+      { minRelevance: 2, maxCandidates: 8 }
+    );
+    expect(filtered).toHaveLength(0);
+  });
+
+  test('keeps candidates when the URL itself carries product tokens', () => {
+    const filtered = prefilterDiscoverCandidates(
+      [
+        {
+          url: 'https://cdn.example.com/products/dassai-45-asahi-shuzo.jpg',
+          source: 'Google Images',
+        },
+      ],
+      'Dassai 45',
+      undefined,
+      'Asahi Shuzo',
+      { minRelevance: 2, maxCandidates: 8 }
+    );
+    expect(filtered).toHaveLength(1);
   });
 });
