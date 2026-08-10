@@ -55,7 +55,7 @@ export default function BreweryDetail() {
     "@type": "Organization",
     name: brewery.name,
     description: brewery.description ?? `${brewery.name} sake brewery${brewery.prefecture ? ` in ${brewery.prefecture}, Japan` : ""}`,
-    ...(brewery.website ? { url: brewery.website } : {}),
+    ...(brewery.website && /^https?:\/\//i.test(brewery.website) ? { url: brewery.website } : {}),
     ...(brewery.image_url ? { image: brewery.image_url } : {}),
     ...(brewery.address
       ? {
@@ -143,7 +143,7 @@ export default function BreweryDetail() {
                       <span className="text-muted-foreground">{brewery.phone}</span>
                     </div>
                   ) : null}
-                  {brewery.website ? (
+                  {brewery.website && /^https?:\/\//i.test(brewery.website) ? (
                     <div className="flex gap-2">
                       <span className="font-medium w-24 flex-shrink-0 flex items-center gap-1">
                         <Globe className="w-3.5 h-3.5" /> Website
