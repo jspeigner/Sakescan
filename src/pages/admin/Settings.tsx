@@ -151,9 +151,14 @@ export default function AdminSettings() {
           </div>
         </Card>
 
-        {/* Save button */}
-        <div className="flex justify-end">
-          <Button>Save Changes</Button>
+        {/* Preferences above are UI stubs — nothing is persisted yet. */}
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <p className="text-sm text-muted-foreground">
+            Notification and security toggles are not saved yet. Connection settings come from environment variables.
+          </p>
+          <Button type="button" disabled title="Settings persistence is not implemented">
+            Save Changes
+          </Button>
         </div>
       </div>
     </AdminLayout>
