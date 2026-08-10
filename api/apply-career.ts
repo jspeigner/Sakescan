@@ -22,6 +22,60 @@ function extFromMime(mime: string): string | null {
   return null;
 }
 
+function mimeForExt(ext: string): string {
+  switch (ext) {
+    case 'pdf':
+      return 'application/pdf';
+    case 'doc':
+      return 'application/msword';
+    case 'docx':
+      return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    case 'rtf':
+      return 'application/rtf';
+    case 'txt':
+    default:
+      return 'text/plain';
+  }
+}
+
+/** Magic-byte sniff so clients cannot upload exe/html labeled as resume.pdf. */
+export function sniffResumeKind(buffer: Buffer): 'pdf' | 'doc' | 'docx' | 'rtf' | 'txt' | null {
+  if (buffer.length >= 5 && buffer.subarray(0, 5).toString('ascii') === '%PDF-') {
+    return 'pdf';
+  }
+  // OLE Compound Document (legacy .doc)
+  if (
+    buffer.length >= 8 &&
+    buffer[0] === 0xd0 &&
+    buffer[1] === 0xcf &&
+    buffer[2] === 0x11 &&
+    buffer[3] === 0xe0
+  ) {
+    return 'doc';
+  }
+  // ZIP container — treat as docx (Office Open XML)
+  if (
+    buffer.length >= 4 &&
+    buffer[0] === 0x50 &&
+    buffer[1] === 0x4b &&
+    (buffer[2] === 0x03 || buffer[2] === 0x05 || buffer[2] === 0x07) &&
+    (buffer[3] === 0x04 || buffer[3] === 0x06 || buffer[3] === 0x08)
+  ) {
+    return 'docx';
+  }
+  const head = buffer.subarray(0, Math.min(buffer.length, 64)).toString('utf8').trimStart();
+  if (/^\{\\rtf/i.test(head)) return 'rtf';
+
+  // Plain text: reject NUL / obvious HTML/binary
+  const sample = buffer.subarray(0, Math.min(buffer.length, 512));
+  if (sample.includes(0)) return null;
+  const asText = sample.toString('utf8').trimStart().toLowerCase();
+  if (asText.startsWith('<!doctype') || asText.startsWith('<html') || asText.startsWith('<script')) {
+    return null;
+  }
+  return 'txt';
+}
+
 /**
  * Public career application endpoint.
  * POST /api/apply-career
@@ -93,12 +147,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(413).json({ error: 'Resume too large (max ~4MB)' });
   }
 
-  const contentType = body.resumeContentType?.trim() || 'application/pdf';
-  const ext =
-    extFromName(body.resumeFileName) ?? extFromMime(contentType) ?? 'pdf';
+  const claimedExt =
+    extFromName(body.resumeFileName) ?? extFromMime(body.resumeContentType?.trim() || '') ?? null;
+  const sniffed = sniffResumeKind(buffer);
+  if (!sniffed) {
+    return res.status(400).json({ error: 'Resume bytes are not a recognized PDF/DOC/DOCX/TXT/RTF file' });
+  }
+  // Prefer sniffed type; reject when filename/MIME claim a different family (e.g. .pdf + ZIP/exe).
+  if (claimedExt && claimedExt !== sniffed) {
+    // txt claims are loose (UTF-8 resumes); still require sniff === txt
+    return res.status(400).json({
+      error: `Resume content does not match claimed type (.${claimedExt} vs detected .${sniffed})`,
+    });
+  }
+  const ext = sniffed;
   if (!ALLOWED_EXT.has(ext)) {
     return res.status(400).json({ error: 'Resume must be PDF, DOC, DOCX, TXT, or RTF' });
   }
+  const contentType = mimeForExt(ext);
 
   const admin = createClient(supabaseUrl, supabaseServiceKey);
   const timestamp = Date.now();
@@ -138,6 +204,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   if (insertError) {
     console.error('[apply-career] insert', insertError);
+    // Best-effort cleanup so a failed insert does not leave orphan resumes.
+    const { error: cleanupError } = await admin.storage.from('career-resumes').remove([filePath]);
+    if (cleanupError) {
+      console.error('[apply-career] resume cleanup after insert failure', cleanupError);
+    }
     return res.status(500).json({ error: insertError.message });
   }
 
