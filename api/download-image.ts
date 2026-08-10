@@ -2,6 +2,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
 import { requireAdmin } from './lib/requireAdmin.js';
 import { fetchPublicHttpUrl, isPublicHttpImageUrl } from './cron/lib/publicImageUrl.js';
+import { MAX_IMAGE_BYTES } from './cron/lib/imageMirror.js';
 import { extFromMime, sniffScanImageMime } from './lib/scanImageUpload.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -49,7 +50,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(400).json({ error: 'URL did not return a raster image' });
     }
 
+    const contentLength = Number.parseInt(imageResponse.headers.get('content-length') || '', 10);
+    if (Number.isFinite(contentLength) && contentLength > MAX_IMAGE_BYTES) {
+      return res.status(413).json({
+        error: `Image too large (${contentLength} bytes > max ${MAX_IMAGE_BYTES})`,
+      });
+    }
+
     const imageBuffer = Buffer.from(await imageResponse.arrayBuffer());
+    if (imageBuffer.byteLength > MAX_IMAGE_BYTES) {
+      return res.status(413).json({
+        error: `Image too large (${imageBuffer.byteLength} bytes > max ${MAX_IMAGE_BYTES})`,
+      });
+    }
     const sniffed = sniffScanImageMime(imageBuffer);
     if (!sniffed || sniffed === 'image/heic') {
       // Admin catalog art must be browser-displayable raster bytes (not HTML/PDF/HEIC).

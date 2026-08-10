@@ -34,4 +34,8 @@ describe('sniffResumeKind', () => {
   test('rejects binary with NULs', () => {
     expect(sniffResumeKind(Buffer.from([0x00, 0x01, 0x02, 0x03, 0x04]))).toBeNull();
   });
+
+  test('rejects DOS/PE executables (MZ)', () => {
+    expect(sniffResumeKind(Buffer.from([0x4d, 0x5a, 0x90, 0x00, 0x03, 0x00]))).toBeNull();
+  });
 });

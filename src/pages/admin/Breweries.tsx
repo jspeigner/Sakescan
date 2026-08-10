@@ -495,8 +495,8 @@ export default function AdminBreweries() {
                 </div>
               )}
 
-              {/* Source */}
-              {selectedBrewery.source_url && (
+              {/* Source — only http(s); never render javascript:/data: as href */}
+              {selectedBrewery.source_url && /^https?:\/\//i.test(selectedBrewery.source_url) ? (
                 <a
                   href={selectedBrewery.source_url}
                   target="_blank"
@@ -506,7 +506,7 @@ export default function AdminBreweries() {
                   <ExternalLink className="w-3 h-3" />
                   View on JSS Directory
                 </a>
-              )}
+              ) : null}
 
               {/* Actions */}
               <div className="flex justify-end gap-2 pt-2">

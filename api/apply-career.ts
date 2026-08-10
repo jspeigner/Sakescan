@@ -40,6 +40,10 @@ function mimeForExt(ext: string): string {
 
 /** Magic-byte sniff so clients cannot upload exe/html labeled as resume.pdf. */
 export function sniffResumeKind(buffer: Buffer): 'pdf' | 'doc' | 'docx' | 'rtf' | 'txt' | null {
+  // PE/DOS executable
+  if (buffer.length >= 2 && buffer[0] === 0x4d && buffer[1] === 0x5a) {
+    return null;
+  }
   if (buffer.length >= 5 && buffer.subarray(0, 5).toString('ascii') === '%PDF-') {
     return 'pdf';
   }
