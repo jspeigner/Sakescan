@@ -191,7 +191,7 @@ Response includes `scannedImageUrl`, `uploaded`, `catalogImage`, and optional `p
 2. On accept: call `POST /api/contribute-scan-image` with `scanId` **and** `imageBase64` when the scan photo is only on-device.
 3. On decline: leave `catalog_share_opt_in` false.
 
-Cron `/api/cron/promote-scan-images` (also run by the backfill orchestrator) promotes matched scans with https photos into missing catalog images.
+Cron `/api/cron/promote-scan-images` (also run by the backfill orchestrator) promotes **only** matched scans with `catalog_share_opt_in=true` and https photos into missing catalog images. Declined scans are never auto-promoted.
 
 ---
 
@@ -285,6 +285,33 @@ const { data } = await supabase
 ## Auth
 
 Supabase Auth is enabled. Use `supabase.auth.signUp()`, `signInWithPassword()`, etc. User rows are created in the `users` table.
+
+### Password reset (Forgot Password)
+
+```javascript
+await supabase.auth.resetPasswordForEmail(email, {
+  redirectTo: 'https://www.sakescan.com/auth/callback',
+});
+```
+
+The website `/auth/callback` page deep-links into the app (`vibecode://reset-password#...`).
+
+**Supabase requirement:** custom SMTP must be configured. Without it, Auth only delivers mail to organization team members (so most users never receive the reset email). See `scripts/configure-auth-smtp.sh`.
+
+### Delete account
+
+Preferred (RPC):
+
+```javascript
+const { error } = await supabase.rpc('delete_own_account');
+```
+
+Fallback HTTP API:
+
+`POST /api/delete-account`  
+Auth: `Authorization: Bearer <supabase_access_token>`
+
+Deletes the caller's `public.users` row (cascades ratings/follows/etc.), avatar storage objects, and `auth.users` identity.
 
 ---
 

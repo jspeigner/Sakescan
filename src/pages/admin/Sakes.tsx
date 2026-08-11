@@ -14,13 +14,20 @@ import { Search, Plus, MoreHorizontal, Loader2, Pencil, Trash2, Star, ImageOff, 
 import { supabase } from "@/lib/supabase";
 import type { Sake } from "@/lib/supabase-types";
 import { withImageCacheBust } from "@/lib/image-url";
+import { sanitizePostgrestSearch } from "@/lib/postgrest-search";
+import { brewerySakeNamePattern, sakeBreweryMatchesCatalogName } from "@/lib/brewery-slug";
+import { useAuth } from "@/hooks/use-auth";
 
 const PAGE_SIZE = 20;
+/** Prefix ilike can pull sibling breweries; over-fetch then exact-match filter. */
+const BREWERY_FILTER_CANDIDATE_CAP = 1000;
 
 export default function AdminSakes() {
   const queryClient = useQueryClient();
+  const { session } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const breweryFilter = searchParams.get('brewery') || '';
+  const editId = searchParams.get('edit') || '';
   
   const [sakes, setSakes] = useState<Sake[]>([]);
   const [loading, setLoading] = useState(true);
@@ -37,9 +44,76 @@ export default function AdminSakes() {
     setPage(0);
   };
 
+  // Reviews "View Sake" navigates here with ?edit=<id> — open the editor.
+  useEffect(() => {
+    if (!editId) return;
+    let cancelled = false;
+    (async () => {
+      const { data, error } = await supabase.from('sake').select('*').eq('id', editId).maybeSingle();
+      if (cancelled) return;
+      if (error || !data) {
+        console.error('Error loading sake for edit:', error);
+        return;
+      }
+      setEditingSake(data as Sake);
+      setModalOpen(true);
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete('edit');
+        return next;
+      }, { replace: true });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [editId, setSearchParams]);
+
   const fetchSakes = useCallback(async () => {
     setLoading(true);
     try {
+      if (breweryFilter) {
+        // Prefix ilike is only a candidate filter ("Ito%" also hits Ito Shuzo / Itou).
+        // Fetch the candidate pool, keep corporate-suffix-equal rows, then page in memory.
+        let query = supabase
+          .from('sake')
+          .select('*')
+          .ilike('brewery', brewerySakeNamePattern(breweryFilter))
+          .order('created_at', { ascending: false })
+          .range(0, BREWERY_FILTER_CANDIDATE_CAP - 1);
+
+        if (searchQuery) {
+          const safeSearch = sanitizePostgrestSearch(searchQuery);
+          if (safeSearch) {
+            query = query.or(
+              `name.ilike.%${safeSearch}%,name_japanese.ilike.%${safeSearch}%,brewery.ilike.%${safeSearch}%`
+            );
+          }
+        }
+
+        if (filter === 'missing_images') {
+          query = query.or('image_url.is.null,image_url.eq.');
+        }
+
+        const { data, error } = await query;
+        if (error) throw error;
+
+        const matched = (data || []).filter((row) =>
+          sakeBreweryMatchesCatalogName(row.brewery, breweryFilter)
+        );
+        setTotalCount(matched.length);
+        setSakes(matched.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE));
+
+        const missingMatched = matched.filter(
+          (row) => !row.image_url || row.image_url.trim() === ''
+        );
+        setMissingImagesCount(
+          filter === 'missing_images'
+            ? matched.length
+            : missingMatched.length
+        );
+        return;
+      }
+
       let query = supabase
         .from('sake')
         .select('*', { count: 'exact' })
@@ -47,12 +121,12 @@ export default function AdminSakes() {
         .range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1);
 
       if (searchQuery) {
-        query = query.or(`name.ilike.%${searchQuery}%,name_japanese.ilike.%${searchQuery}%,brewery.ilike.%${searchQuery}%`);
-      }
-
-      // Apply brewery filter from URL
-      if (breweryFilter) {
-        query = query.eq('brewery', breweryFilter);
+        const safeSearch = sanitizePostgrestSearch(searchQuery);
+        if (safeSearch) {
+          query = query.or(
+            `name.ilike.%${safeSearch}%,name_japanese.ilike.%${safeSearch}%,brewery.ilike.%${safeSearch}%`
+          );
+        }
       }
 
       // Apply filter for missing images
@@ -67,16 +141,11 @@ export default function AdminSakes() {
       setTotalCount(count || 0);
 
       // Fetch count of sakes with missing images (for the tab badge)
-      let missingQuery = supabase
+      const { count: missingCount } = await supabase
         .from('sake')
         .select('*', { count: 'exact', head: true })
         .or('image_url.is.null,image_url.eq.');
       
-      if (breweryFilter) {
-        missingQuery = missingQuery.eq('brewery', breweryFilter);
-      }
-      
-      const { count: missingCount } = await missingQuery;
       setMissingImagesCount(missingCount || 0);
     } catch (error) {
       console.error('Error fetching sakes:', error);
@@ -109,16 +178,28 @@ export default function AdminSakes() {
     if (!confirm(`Are you sure you want to delete "${sake.name}"?`)) return;
 
     try {
-      const { error } = await supabase
-        .from('sake')
-        .delete()
-        .eq('id', sake.id);
+      const token = session?.access_token;
+      if (!token) {
+        throw new Error('Admin session expired. Sign in again and retry delete.');
+      }
 
-      if (error) throw error;
+      const response = await fetch('/api/admin-upsert-sake', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ id: sake.id, action: 'delete' }),
+      });
+      const body = (await response.json()) as { error?: string };
+      if (!response.ok) {
+        throw new Error(body.error || `Delete failed (${response.status})`);
+      }
       fetchSakes();
     } catch (error) {
       console.error('Error deleting sake:', error);
-      alert('Failed to delete sake');
+      const message = error instanceof Error ? error.message : 'Failed to delete sake';
+      alert(message);
     }
   };
 
@@ -177,7 +258,10 @@ export default function AdminSakes() {
                 placeholder="Search by name, Japanese name, or brewery..."
                 className="pl-9"
                 value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
+                onChange={(e) => {
+                  setSearchQuery(e.target.value);
+                  setPage(0);
+                }}
               />
             </div>
             <Button type="submit" variant="secondary">

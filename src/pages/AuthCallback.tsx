@@ -8,32 +8,78 @@ import { Button } from "@/components/ui/button";
 import { IOS_APP_STORE_URL } from "@/lib/app-links";
 import { Smartphone } from "lucide-react";
 
+type CallbackStatus = "redirecting" | "open-app" | "expired";
+
+function extractAuthFragment(hash: string, search: string): string | null {
+  const fromHash = hash.startsWith("#") ? hash.slice(1) : hash;
+  const hashParams = new URLSearchParams(fromHash);
+  if (hashParams.get("access_token") && hashParams.get("refresh_token")) {
+    return fromHash;
+  }
+
+  // Some clients / email scanners deliver tokens in the query string instead of the hash.
+  const queryParams = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
+  const accessToken = queryParams.get("access_token");
+  const refreshToken = queryParams.get("refresh_token");
+  if (accessToken && refreshToken) {
+    return queryParams.toString();
+  }
+
+  // PKCE / OTP style: code in query — still open the app with the original query.
+  if (queryParams.get("code") || queryParams.get("token_hash") || queryParams.get("type") === "recovery") {
+    return queryParams.toString();
+  }
+
+  return null;
+}
+
+/** Remove auth secrets from the address bar after we capture them for the app deep link. */
+export function stripAuthParamsFromBrowserUrl(): void {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  const sensitive = ["access_token", "refresh_token", "token", "token_hash", "code", "type"];
+  let changed = false;
+  for (const key of sensitive) {
+    if (url.searchParams.has(key)) {
+      url.searchParams.delete(key);
+      changed = true;
+    }
+  }
+  if (url.hash.includes("access_token") || url.hash.includes("refresh_token")) {
+    url.hash = "";
+    changed = true;
+  }
+  if (changed) {
+    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+  }
+}
+
 export default function AuthCallback() {
   const location = useLocation();
-  const [status, setStatus] = useState<"redirecting" | "open-app" | "expired">("redirecting");
+  const [status, setStatus] = useState<CallbackStatus>("redirecting");
 
   useEffect(() => {
-    const hash = location.hash.slice(1);
-    const params = new URLSearchParams(hash);
-    const accessToken = params.get("access_token");
-    const refreshToken = params.get("refresh_token");
-
+    const fragment = extractAuthFragment(location.hash, location.search);
     const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
 
-    if (accessToken && refreshToken) {
-      const appUrl = `vibecode://reset-password#${hash}`;
-
-      if (isMobile) {
-        window.location.href = appUrl;
-      } else {
-        setStatus("open-app");
-        // Store the link for the button
-        (window as unknown as { __authCallbackUrl?: string }).__authCallbackUrl = appUrl;
-      }
-    } else {
+    if (!fragment) {
       setStatus("expired");
+      return;
     }
-  }, [location.hash]);
+
+    const appUrl = `vibecode://reset-password#${fragment}`;
+    (window as unknown as { __authCallbackUrl?: string }).__authCallbackUrl = appUrl;
+    stripAuthParamsFromBrowserUrl();
+
+    if (isMobile) {
+      window.location.href = appUrl;
+      // If the app doesn't open, show manual open / App Store actions.
+      const timer = window.setTimeout(() => setStatus("open-app"), 1800);
+      return () => window.clearTimeout(timer);
+    }
+
+    setStatus("open-app");
+  }, [location.hash, location.search]);
 
   const handleOpenApp = () => {
     const url = (window as unknown as { __authCallbackUrl?: string }).__authCallbackUrl;
@@ -51,7 +97,7 @@ export default function AuthCallback() {
       <main className="pt-24 pb-16">
         <div className="max-w-md mx-auto px-6">
           <Card className="p-8 text-center">
-            {status === "redirecting" && (
+            {status === "redirecting" ? (
               <>
                 <div className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center mx-auto mb-6 animate-pulse">
                   <Smartphone className="w-8 h-8 text-primary" />
@@ -61,9 +107,9 @@ export default function AuthCallback() {
                   Redirecting to the app. If it doesn't open automatically, you may be on a desktop—check your phone for the reset link.
                 </p>
               </>
-            )}
+            ) : null}
 
-            {status === "open-app" && (
+            {status === "open-app" ? (
               <>
                 <div className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center mx-auto mb-6">
                   <Smartphone className="w-8 h-8 text-primary" />
@@ -83,9 +129,9 @@ export default function AuthCallback() {
                   </a>
                 </p>
               </>
-            )}
+            ) : null}
 
-            {status === "expired" && (
+            {status === "expired" ? (
               <>
                 <div className="w-16 h-16 rounded-full bg-muted flex items-center justify-center mx-auto mb-6">
                   <Smartphone className="w-8 h-8 text-muted-foreground" />
@@ -101,7 +147,7 @@ export default function AuthCallback() {
                   </Button>
                 </a>
               </>
-            )}
+            ) : null}
           </Card>
         </div>
       </main>

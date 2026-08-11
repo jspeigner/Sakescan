@@ -14,10 +14,10 @@ import { Search, Star, Wine, Loader2 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import type { Sake } from "@/lib/supabase-types";
 import { withImageCacheBust } from "@/lib/image-url";
+import { sanitizePostgrestSearch } from "@/lib/postgrest-search";
+import { slugify } from "@/lib/slugify";
 
-function slugify(name: string): string {
-  return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
-}
+export { sanitizePostgrestSearch } from "@/lib/postgrest-search";
 
 export default function SakeExplore() {
   const [search, setSearch] = useState("");
@@ -35,8 +35,11 @@ export default function SakeExplore() {
         .order("average_rating", { ascending: false, nullsFirst: false })
         .range(page * pageSize, (page + 1) * pageSize - 1);
 
-      if (search) {
-        query = query.or(`name.ilike.%${search}%,brewery.ilike.%${search}%`);
+      const safeSearch = sanitizePostgrestSearch(search);
+      if (safeSearch) {
+        query = query.or(
+          `name.ilike.%${safeSearch}%,name_japanese.ilike.%${safeSearch}%,brewery.ilike.%${safeSearch}%`
+        );
       }
       if (typeFilter !== "all") {
         query = query.eq("type", typeFilter);
@@ -54,12 +57,11 @@ export default function SakeExplore() {
   const { data: filters } = useQuery({
     queryKey: ["sake-filters"],
     queryFn: async () => {
-      const [typesRes, regionsRes] = await Promise.all([
-        supabase.from("sake").select("type").not("type", "is", null),
-        supabase.from("sake").select("region").not("region", "is", null),
+      const { fetchDistinctSakeColumn } = await import("@/lib/sake-filters");
+      const [types, regions] = await Promise.all([
+        fetchDistinctSakeColumn("type"),
+        fetchDistinctSakeColumn("region"),
       ]);
-      const types = [...new Set((typesRes.data ?? []).map((r) => r.type as string))].filter(Boolean).sort();
-      const regions = [...new Set((regionsRes.data ?? []).map((r) => r.region as string))].filter(Boolean).sort();
       return { types, regions };
     },
     staleTime: 1000 * 60 * 60,

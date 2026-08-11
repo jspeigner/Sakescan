@@ -42,10 +42,17 @@ function isInvalidEnglishSakeName(value: string): boolean {
   return false;
 }
 
+/**
+ * Prefer a valid English product name for `ScrapedSake.name` so catalog matching
+ * against English `sake.name` rows works. Japanese is always kept in nameJapanese.
+ * Preferring Japanese here caused missed matches and duplicate inserts when the
+ * catalog row had English name + null/different name_japanese.
+ */
 function resolveSakeDisplayName(englishName: string, japaneseName: string): string | null {
-  if (japaneseName.trim()) return japaneseName.trim();
   const eng = englishName.trim();
   if (eng && !isInvalidEnglishSakeName(eng)) return eng;
+  const jp = japaneseName.trim();
+  if (jp) return jp;
   return null;
 }
 

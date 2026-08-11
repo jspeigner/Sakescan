@@ -8,21 +8,11 @@
  */
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
-
-const NON_SAKE_URL_REGEXES = [
-  /johnnie|walker|jwalker|jw\s*black|jw\s*red/i,
-  /chivas|ballantine|macallan|glenfiddich|glenlivet|lagavulin|laphroaig|talisker/i,
-  /\bwhisk(e)?y\b|\bscotch\b|\bbourbon\b|\brye\s+whisk/i,
-  /\bvodka\b|\bgin\b|\brum\b|\btequila\b|\bmezcal\b|\bcognac\b|\bbrandy\b/i,
-  /\bwine\b|\bchampagne\b|\bprosecco\b|\bcabernet\b|\bmerlot\b|\bchardonnay\b/i,
-  /\bbeer\b|\blager\b|\bstout\b|\bipa\b|\bheineken\b|\bcorona\b|\bbudweiser\b/i,
-  /jack\s*daniels|jim\s*beam|hennessy|martell|remy\s*martin/i,
-];
-
-function looksLikeNonSakeUrl(url: string): boolean {
-  const lower = url.toLowerCase();
-  return NON_SAKE_URL_REGEXES.some((re) => re.test(lower));
-}
+import { looksLikeNonSakeUrl } from './lib/nonSakeUrl.js';
+import {
+  shouldClearHostedImageFromAudit,
+  validateJapaneseSakeProductPhoto,
+} from './cron/lib/sakeImageVision.js';
 
 function supabaseProjectHost(url: string): string | null {
   try {
@@ -38,83 +28,34 @@ function isSupabaseUrl(url: string, supabaseUrl: string): boolean {
   return url.includes(host) || url.includes('supabase.co');
 }
 
-async function imageUrlToDataUrl(imageUrl: string): Promise<string | null> {
-  try {
-    const res = await fetch(imageUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; SakeScan/1.0)',
-        Accept: 'image/*',
-      },
-      redirect: 'follow',
-    });
-    if (!res.ok) return null;
-    const ct = res.headers.get('content-type') || 'image/jpeg';
-    if (ct.includes('text/html')) return null;
-    const buf = Buffer.from(await res.arrayBuffer());
-    if (buf.length < 500 || buf.length > 2_500_000) return null;
-    const b64 = buf.toString('base64');
-    const mime = ct.split(';')[0].trim() || 'image/jpeg';
-    return `data:${mime};base64,${b64}`;
-  } catch {
-    return null;
-  }
-}
-
-async function isNonSakeVision(openaiKey: string, imageUrl: string, sakeName: string): Promise<boolean> {
-  const dataUrl = await imageUrlToDataUrl(imageUrl);
-  if (!dataUrl) return false;
-
-  const res = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${openaiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: 'gpt-4o-mini',
-      temperature: 0.1,
-      max_tokens: 100,
-      response_format: { type: 'json_object' },
-      messages: [
-        {
-          role: 'system',
-          content: 'You verify product photos for a Japanese sake database. Reply with JSON only.',
-        },
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'text',
-              text: `Sake name: "${sakeName}". Does this image show Japanese sake (nihonshu)? Return JSON: {"isSake": boolean, "reason": "brief"}. Set isSake=false for whisky, scotch, bourbon, beer, wine, or any non-sake product.`,
-            },
-            { type: 'image_url', image_url: { url: dataUrl, detail: 'low' } },
-          ],
-        },
-      ],
-    }),
-  });
-
-  if (!res.ok) return false;
-  const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
-  const content = data.choices?.[0]?.message?.content?.trim() || '';
-  try {
-    const parsed = JSON.parse(content) as { isSake?: boolean };
-    return parsed.isSake === false;
-  } catch {
-    return false;
-  }
-}
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'jspeigner@gmail.com';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
+  const authHeader = req.headers.authorization;
+  const jwt = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  if (!jwt) {
+    return res.status(401).json({ error: 'Missing authorization' });
+  }
+
   const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
+  const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
   const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-  if (!supabaseUrl || !supabaseServiceKey) {
+  if (!supabaseUrl || !supabaseAnonKey || !supabaseServiceKey) {
     return res.status(500).json({ error: 'Supabase not configured' });
+  }
+
+  const userClient = createClient(supabaseUrl, supabaseAnonKey);
+  const { data: userData, error: userError } = await userClient.auth.getUser(jwt);
+  if (userError || !userData.user?.email) {
+    return res.status(401).json({ error: 'Invalid session' });
+  }
+  if (userData.user.email.toLowerCase() !== ADMIN_EMAIL.toLowerCase()) {
+    return res.status(403).json({ error: 'Forbidden' });
   }
 
   const supabase = createClient(supabaseUrl, supabaseServiceKey);
@@ -166,8 +107,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // --- Vision check (slower, costs tokens, only for Supabase-hosted images) ---
     if (mode === 'vision' && openaiKey && isSupabaseUrl(row.image_url, supabaseUrl)) {
       try {
-        const isNonSake = await isNonSakeVision(openaiKey, row.image_url, row.name);
-        if (isNonSake) {
+        const vision = await validateJapaneseSakeProductPhoto(openaiKey, row.image_url, {
+          sakeName: row.name,
+        });
+        // Only clear on high-confidence not-sake (same gate as process-images audit).
+        if (shouldClearHostedImageFromAudit(vision)) {
           visionBadRows.push(row.id);
           if (!dryRun) {
             await supabase
@@ -175,7 +119,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               .update({ image_url: null, updated_at: new Date().toISOString() })
               .eq('id', row.id);
             visionCleared++;
-            console.log(`[clear-bad-images/vision] cleared "${row.name}": ${row.image_url}`);
+            console.log(
+              `[clear-bad-images/vision] cleared "${row.name}": ${vision.briefReason || row.image_url}`
+            );
           }
         }
       } catch (e) {

@@ -7,50 +7,25 @@ import { Breadcrumbs } from "@/components/blog/Breadcrumbs";
 import { BlogCTA } from "@/components/blog/BlogCTA";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Star, MapPin, Globe, Phone, Calendar, Wine, Loader2 } from "lucide-react";
-import { supabase } from "@/lib/supabase";
-import type { Brewery, Sake } from "@/lib/supabase-types";
+import { fetchBreweryBySlug, fetchSakesForBreweryName } from "@/lib/brewery-slug";
+import { slugify } from "@/lib/slugify";
 import NotFound from "./NotFound";
 import { withImageCacheBust } from "@/lib/image-url";
 
-function slugify(name: string): string {
-  return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
-}
-
 export default function BreweryDetail() {
   const { slug } = useParams<{ slug: string }>();
-  const breweryName = slug?.replace(/-/g, " ") ?? "";
 
-  const { data: brewery, isLoading } = useQuery({
+  const { data: brewery, isLoading, isError, refetch } = useQuery({
     queryKey: ["brewery-detail", slug],
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from("breweries")
-        .select("*")
-        .ilike("name", `%${breweryName}%`)
-        .limit(1)
-        .single();
-      if (error) throw error;
-      return data as Brewery;
-    },
+    queryFn: () => fetchBreweryBySlug(slug!),
     enabled: !!slug,
   });
 
   const { data: sakes } = useQuery({
     queryKey: ["brewery-sakes", brewery?.name],
-    queryFn: async () => {
-      if (!brewery) return [];
-      const { data } = await supabase
-        .from("sake")
-        .select("id, name, type, average_rating, image_url, polishing_ratio, updated_at")
-        .ilike("brewery", `%${brewery.name}%`)
-        .order("average_rating", { ascending: false, nullsFirst: false })
-        .limit(20);
-      return (data ?? []) as Pick<
-        Sake,
-        "id" | "name" | "type" | "average_rating" | "image_url" | "polishing_ratio" | "updated_at"
-      >[];
-    },
+    queryFn: () => fetchSakesForBreweryName(brewery!.name),
     enabled: !!brewery,
   });
 
@@ -58,6 +33,17 @@ export default function BreweryDetail() {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
         <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (isError) {
+    return (
+      <div className="min-h-screen bg-background flex flex-col items-center justify-center gap-4 px-4">
+        <p className="text-muted-foreground text-center">Something went wrong loading this brewery.</p>
+        <Button type="button" variant="outline" className="min-h-[44px]" onClick={() => void refetch()}>
+          Try again
+        </Button>
       </div>
     );
   }

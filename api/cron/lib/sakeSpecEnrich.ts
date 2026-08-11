@@ -75,9 +75,11 @@ function parseSpecsFromText(text: string): Partial<{
   return out;
 }
 
-function matchesScraped(scraped: ScrapedSake, row: SakeSpecRow): boolean {
+export function matchesScraped(scraped: ScrapedSake, row: SakeSpecRow): boolean {
   const sn = normalizeName(scraped.name);
   const en = normalizeName(row.name);
+  // ''.includes('') is true — empty names must not match every catalog row.
+  if (!sn || !en) return false;
   const sj = scraped.nameJapanese ? normalizeName(scraped.nameJapanese) : '';
   const ej = row.name_japanese ? normalizeName(row.name_japanese) : '';
   const nameOk =

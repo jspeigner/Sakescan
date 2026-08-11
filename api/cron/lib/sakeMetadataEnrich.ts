@@ -73,21 +73,29 @@ Prefecture: ${row.prefecture ?? 'n/a'}`;
   return text ? text.slice(0, 500) : null;
 }
 
-function findSakuraDescription(
+/** Exported for unit tests — require a positive EN or JP name match before attaching text. */
+export function findSakuraDescription(
   scraped: { name: string; nameJapanese?: string; brewery?: string; type?: string; taste?: string; prefecture?: string },
   row: SakeRow
 ): string | null {
-  const nameKey = row.name.toLowerCase();
-  if (!scraped.name.toLowerCase().includes(nameKey) && !nameKey.includes(scraped.name.toLowerCase())) {
-    if (
-      row.name_japanese &&
-      scraped.nameJapanese &&
-      !row.name_japanese.includes(scraped.nameJapanese) &&
-      !scraped.nameJapanese.includes(row.name_japanese)
-    ) {
-      return null;
-    }
-  }
+  const scrapedName = scraped.name?.trim().toLowerCase() ?? '';
+  const rowName = row.name?.trim().toLowerCase() ?? '';
+  const enMatch =
+    !!scrapedName &&
+    !!rowName &&
+    (scrapedName.includes(rowName) || rowName.includes(scrapedName));
+
+  const scrapedJp = scraped.nameJapanese?.trim() ?? '';
+  const rowJp = row.name_japanese?.trim() ?? '';
+  const jpMatch =
+    !!scrapedJp &&
+    !!rowJp &&
+    (rowJp.includes(scrapedJp) || scrapedJp.includes(rowJp));
+
+  // Previously: English mismatch still returned a description whenever Japanese was
+  // missing on either side, so the first Sakura hit could label unrelated sakes.
+  if (!enMatch && !jpMatch) return null;
+
   const parts: string[] = [];
   if (scraped.type) parts.push(scraped.type);
   if (scraped.taste) parts.push(scraped.taste);

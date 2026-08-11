@@ -22,24 +22,18 @@ export default function AdminDashboard() {
   useEffect(() => {
     async function fetchData() {
       try {
-        // Fetch counts
-        const [sakesRes, usersRes, ratingsRes] = await Promise.all([
+        // Fetch counts — use exact head counts (never page through sake rows; PostgREST caps ~1000).
+        const [sakesRes, usersRes, ratingsRes, breweriesRes] = await Promise.all([
           supabase.from('sake').select('*', { count: 'exact', head: true }),
           supabase.from('users').select('*', { count: 'exact', head: true }),
           supabase.from('ratings').select('*', { count: 'exact', head: true }),
+          supabase.from('breweries').select('*', { count: 'exact', head: true }),
         ]);
-
-        // Get unique breweries count
-        const { data: breweriesData } = await supabase
-          .from('sake')
-          .select('brewery');
-
-        const uniqueBreweries = new Set(breweriesData?.map(s => s.brewery) || []);
 
         setStats({
           totalSakes: sakesRes.count || 0,
           totalUsers: usersRes.count || 0,
-          totalBreweries: uniqueBreweries.size,
+          totalBreweries: breweriesRes.count || 0,
           totalRatings: ratingsRes.count || 0,
         });
 

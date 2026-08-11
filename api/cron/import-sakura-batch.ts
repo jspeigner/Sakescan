@@ -2,12 +2,15 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
 import { logBackfillRun } from './lib/backfillState.js';
 import { runSakuraImportBatch } from './lib/importSakuraBatch.js';
+import { requireCronOrAdmin } from '../lib/requireCronOrAdmin.js';
 
 /** Standalone Sakura import cron (also run inside backfill-orchestrator). */
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'GET' && req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
+
+  if (!(await requireCronOrAdmin(req, res))) return;
 
   const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
   const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;

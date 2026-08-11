@@ -7,10 +7,13 @@ import { Breadcrumbs } from "@/components/blog/Breadcrumbs";
 import { BlogCTA } from "@/components/blog/BlogCTA";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Star, Droplets, Thermometer, Wine, Wheat, MapPin, Loader2 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import type { Sake } from "@/lib/supabase-types";
 import { fetchSakeBySlug } from "@/lib/sake-slug";
+import { brewerySlugFromSakeBreweryField } from "@/lib/brewery-slug";
+import { sakeSlug } from "@/lib/slugify";
 import NotFound from "./NotFound";
 import { withImageCacheBust } from "@/lib/image-url";
 
@@ -18,7 +21,7 @@ export default function SakeDetail() {
   const { slug } = useParams<{ slug: string }>();
   const idFragment = slug?.split("-").pop() ?? "";
 
-  const { data: sake, isLoading } = useQuery({
+  const { data: sake, isLoading, isError, refetch } = useQuery({
     queryKey: ["sake-detail", idFragment],
     queryFn: async () => {
       if (!slug) throw new Error("Missing slug");
@@ -50,6 +53,17 @@ export default function SakeDetail() {
     );
   }
 
+  if (isError) {
+    return (
+      <div className="min-h-screen bg-background flex flex-col items-center justify-center gap-4 px-4">
+        <p className="text-muted-foreground text-center">Something went wrong loading this sake.</p>
+        <Button type="button" variant="outline" className="min-h-[44px]" onClick={() => void refetch()}>
+          Try again
+        </Button>
+      </div>
+    );
+  }
+
   if (!sake) return <NotFound />;
 
   const productSchema = {
@@ -70,9 +84,7 @@ export default function SakeDetail() {
       : {}),
   };
 
-  function slugify(name: string): string {
-    return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
-  }
+  const brewerySlug = brewerySlugFromSakeBreweryField(sake.brewery);
 
   return (
     <div className="min-h-screen bg-background">
@@ -129,9 +141,13 @@ export default function SakeDetail() {
                     <span className="text-sm text-muted-foreground">({sake.total_ratings} ratings)</span>
                   </div>
                 ) : null}
-                <Link to={`/brewery/${slugify(sake.brewery)}`} className="text-sm text-primary hover:underline">
-                  {sake.brewery}
-                </Link>
+                {brewerySlug ? (
+                  <Link to={`/brewery/${brewerySlug}`} className="text-sm text-primary hover:underline">
+                    {sake.brewery}
+                  </Link>
+                ) : (
+                  <span className="text-sm text-muted-foreground">{sake.brewery}</span>
+                )}
               </div>
 
               {sake.description ? (
@@ -215,7 +231,7 @@ export default function SakeDetail() {
                     {relatedSakes.map((rs: { id: string; name: string; type: string | null; average_rating: number | null; image_url: string | null }) => (
                       <Link
                         key={rs.id}
-                        to={`/sake/${slugify(rs.name)}-${rs.id.slice(0, 8)}`}
+                        to={`/sake/${sakeSlug(rs.name, rs.id)}`}
                         className="group"
                       >
                         <Card className="p-3 hover:shadow-sm transition-shadow">

@@ -3,6 +3,8 @@
  * not whisky/wine/beer or unrelated subjects.
  */
 
+import { fetchPublicHttpUrl, isPublicHttpImageUrl } from './publicImageUrl.js';
+
 export type SakeVisionResult = {
   isJapaneseSakeProductPhoto: boolean;
   confidence: 'high' | 'medium' | 'low';
@@ -56,13 +58,12 @@ function parseVisionJson(text: string): SakeVisionResult | null {
 /** Download image and return a data URL for OpenAI (some CDNs block OpenAI fetch). */
 async function imageUrlToDataUrl(imageUrl: string): Promise<string | null> {
   try {
-    const res = await fetch(imageUrl, {
+    const res = await fetchPublicHttpUrl(imageUrl, {
       headers: {
         'User-Agent':
           'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         Accept: 'image/*,*/*;q=0.8',
       },
-      redirect: 'follow',
     });
     if (!res.ok) return null;
     const ct = res.headers.get('content-type') || 'image/jpeg';
@@ -85,6 +86,14 @@ export async function validateJapaneseSakeProductPhoto(
   imageUrl: string,
   context: { sakeName: string; brewery?: string | null }
 ): Promise<SakeVisionResult> {
+  if (!isPublicHttpImageUrl(imageUrl)) {
+    return {
+      isJapaneseSakeProductPhoto: false,
+      confidence: 'low',
+      briefReason: 'Non-public or invalid image URL',
+    };
+  }
+
   const system = `You verify product photos for a Japanese sake (nihonshu) database. Reply with JSON only.`;
 
   const userText = `Sake name: "${context.sakeName}"${context.brewery ? `. Brewery: "${context.brewery}".` : ''}
@@ -155,4 +164,12 @@ export function sakeVisionPasses(
   if (result.confidence === 'low') return false;
   if (options?.allowMedium) return true;
   return result.confidence === 'high';
+}
+
+/**
+ * Destructive clears of hosted catalog images require a high-confidence "not sake"
+ * result. Low/medium negatives and unparseable model replies must not wipe URLs.
+ */
+export function shouldClearHostedImageFromAudit(result: SakeVisionResult): boolean {
+  return result.isJapaneseSakeProductPhoto === false && result.confidence === 'high';
 }

@@ -10,6 +10,7 @@ import {
   sakeImageUpdatePayload,
   shouldReplaceImage,
 } from './imageProvenance.js';
+import { isPublicHttpImageUrl } from './publicImageUrl.js';
 import { sakeVisionPasses, validateJapaneseSakeProductPhoto } from './sakeImageVision.js';
 import { getWineEngineConfig, wineEngineConfirmsSake } from './wineEngine.js';
 import { getWineEngineQuota, promoteSearchBudget } from './wineEngineQuota.js';
@@ -49,17 +50,46 @@ export function isPromotableScanImageUrl(url: string | null | undefined): boolea
   return /^https?:\/\//i.test(trimmed);
 }
 
+/**
+ * Catalog promote must respect `catalog_share_opt_in` by default (MOBILE_API contract).
+ * Pass requireOptIn=false only for an explicit one-time legacy backfill.
+ */
+export function resolvePromoteRequireOptIn(requireOptIn?: boolean): boolean {
+  return requireOptIn !== false;
+}
+
+/** Normalize optional scanId targeting for contribute-scan-image / one-off promote. */
+export function resolvePromoteScanIds(scanIds?: string[]): string[] {
+  if (!scanIds?.length) return [];
+  return [...new Set(scanIds.filter((id) => typeof id === 'string' && id.length > 0))];
+}
+
+/** True when this scan may be copied into the public catalog under the given opt-in policy. */
+export function isEligibleCatalogShareCandidate(
+  catalogShareOptIn: boolean | null | undefined,
+  requireOptIn: boolean
+): boolean {
+  if (!requireOptIn) return true;
+  return catalogShareOptIn === true;
+}
+
 export async function promoteScanImagesBatch(
   supabase: SupabaseClient,
   options?: {
     batchSize?: number;
     openaiKey?: string;
     requireOptIn?: boolean;
+    /** When set, only these scan rows are considered (e.g. contribute-scan-image promoteNow). */
+    scanIds?: string[];
   }
 ): Promise<PromoteScanResult> {
-  const batchSize = Math.min(Math.max(options?.batchSize ?? 25, 5), 60);
+  const targetedScanIds = resolvePromoteScanIds(options?.scanIds);
+  const targetingScans = targetedScanIds.length > 0;
+  const batchSize = targetingScans
+    ? Math.min(Math.max(options?.batchSize ?? targetedScanIds.length, 1), 60)
+    : Math.min(Math.max(options?.batchSize ?? 25, 5), 60);
   const openaiKey = options?.openaiKey;
-  const requireOptIn = options?.requireOptIn ?? false;
+  const requireOptIn = resolvePromoteRequireOptIn(options?.requireOptIn);
   const errors: string[] = [];
   let attempted = 0;
   let promoted = 0;
@@ -76,7 +106,11 @@ export async function promoteScanImagesBatch(
     .not('scanned_image_url', 'is', null)
     .neq('scanned_image_url', '')
     .order('created_at', { ascending: false })
-    .limit(batchSize * 4);
+    .limit(targetingScans ? targetedScanIds.length : batchSize * 4);
+
+  if (targetingScans) {
+    scanQuery = scanQuery.in('id', targetedScanIds);
+  }
 
   if (requireOptIn) {
     scanQuery = scanQuery.eq('catalog_share_opt_in', true);
@@ -98,7 +132,11 @@ export async function promoteScanImagesBatch(
 
   const candidates = (scans || []).filter(
     (s): s is ScanCandidate =>
-      Boolean(s.sake_id && s.scanned_image_url && (!requireOptIn || s.catalog_share_opt_in === true))
+      Boolean(
+        s.sake_id &&
+          s.scanned_image_url &&
+          isEligibleCatalogShareCandidate(s.catalog_share_opt_in, requireOptIn)
+      )
   );
 
   // Prefer HTTPS Storage URLs; skip file:// (mobile local paths) entirely.
@@ -168,16 +206,26 @@ export async function promoteScanImagesBatch(
 
     attempted++;
     try {
-      if (openaiKey) {
-        const v = await validateJapaneseSakeProductPhoto(openaiKey, scan.scanned_image_url, {
-          sakeName: sake.name,
-          brewery: sake.brewery,
-        });
-        await sleep(60);
-        if (!sakeVisionPasses(v, { allowMedium: true })) {
-          skippedVision++;
-          continue;
-        }
+      if (!isPublicHttpImageUrl(scan.scanned_image_url)) {
+        skippedVision++;
+        continue;
+      }
+
+      // Fail closed: never promote unverified user scans into the catalog when
+      // vision cannot run (missing OPENAI_API_KEY).
+      if (!openaiKey) {
+        skippedVision++;
+        continue;
+      }
+
+      const v = await validateJapaneseSakeProductPhoto(openaiKey, scan.scanned_image_url, {
+        sakeName: sake.name,
+        brewery: sake.brewery,
+      });
+      await sleep(60);
+      if (!sakeVisionPasses(v, { allowMedium: true })) {
+        skippedVision++;
+        continue;
       }
 
       // Default promote search budget is 0 (searches are scarce on Starter).
@@ -214,7 +262,7 @@ export async function promoteScanImagesBatch(
         seenHashes,
         knownPlaceholderHashes
       );
-      if (stored.rateLimited || stored.skippedPlaceholder) continue;
+      if (stored.rateLimited || stored.skippedPlaceholder || stored.skippedDuplicate) continue;
 
       const payload = sakeImageUpdatePayload(stored.url, provenanceForUserScan(scan.id));
       const { error: upErr } = await supabase.from('sake').update(payload).eq('id', sakeId);

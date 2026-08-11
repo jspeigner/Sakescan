@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { fetchAllSelectPages } from '../../lib/fetchAllSelectPages.js';
 import { downloadAndStoreWithRetry } from './imageMirror.js';
 import {
   getBackfillState,
@@ -18,11 +19,12 @@ import {
 
 const SAKURA_STATE_KEY = 'sakura_import';
 
-function normalizeName(value: string): string {
+export function normalizeName(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9\u3040-\u9faf]+/g, ' ').trim();
 }
 
-function matchesExisting(
+/** True when a scraped Sakura row is the same product as an existing catalog sake. */
+export function matchesExisting(
   scraped: ScrapedSake,
   existing: {
     id: string;
@@ -37,6 +39,8 @@ function matchesExisting(
 ): boolean {
   const scrapedName = normalizeName(scraped.name);
   const existingName = normalizeName(existing.name);
+  if (!scrapedName || !existingName) return false;
+
   const scrapedJapanese = scraped.nameJapanese ? normalizeName(scraped.nameJapanese) : '';
   const existingJapanese = existing.name_japanese ? normalizeName(existing.name_japanese) : '';
   const japaneseMatch =
@@ -49,12 +53,20 @@ function matchesExisting(
     existingName.includes(scrapedName) ||
     scrapedName.includes(existingName);
 
-  const breweryMatch =
-    scraped.brewery &&
-    existing.brewery &&
-    existing.brewery.toLowerCase().includes(scraped.brewery.toLowerCase());
+  // Require a product-name match. Brewery-only matching incorrectly attaches every
+  // new product from a known brewery onto the first existing row for that brewery,
+  // overwriting images/metadata and suppressing inserts of distinct products.
+  if (!nameMatch) return false;
 
-  return Boolean(nameMatch || (breweryMatch && scrapedName.length > 3));
+  if (scraped.brewery && existing.brewery) {
+    const scrapedBrewery = scraped.brewery.toLowerCase();
+    const existingBrewery = existing.brewery.toLowerCase();
+    return (
+      existingBrewery.includes(scrapedBrewery) || scrapedBrewery.includes(existingBrewery)
+    );
+  }
+
+  return true;
 }
 
 function buildDescriptionFromScraped(scraped: ScrapedSake): string | null {
@@ -114,19 +126,16 @@ export async function runSakuraImportBatch(
     prefecture: string | null;
   };
 
-  const existingSakes: ExistingSakeRow[] = [];
-  const existingPageSize = 5000;
-  for (let offset = 0; ; offset += existingPageSize) {
-    const { data, error: fetchError } = await supabase
+  // Must page at PostgREST max-rows (~1000). A 5000-sized range still returns ≤1000
+  // rows, so `data.length < 5000` stopped after the first page and treated the rest
+  // of the catalog as missing → duplicate inserts on every Sakura batch.
+  const existingSakes = await fetchAllSelectPages<ExistingSakeRow>(async (from, to) => {
+    const { data, error } = await supabase
       .from('sake')
       .select('id, name, name_japanese, brewery, image_url, image_quality, description, type, prefecture')
-      .range(offset, offset + existingPageSize - 1);
-
-    if (fetchError) throw new Error(fetchError.message);
-    if (!data?.length) break;
-    existingSakes.push(...(data as ExistingSakeRow[]));
-    if (data.length < existingPageSize) break;
-  }
+      .range(from, to);
+    return { data: data as ExistingSakeRow[] | null, error };
+  });
 
   let filterIndex = state.filterIndex % SAKURA_FILTER_ROTATION.length;
 
@@ -159,7 +168,7 @@ export async function runSakuraImportBatch(
                 seenHashes,
                 knownPlaceholderHashes
               );
-              if (!stored.skippedPlaceholder && !stored.rateLimited) {
+              if (!stored.skippedPlaceholder && !stored.skippedDuplicate && !stored.rateLimited) {
                 Object.assign(patch, sakeImageUpdatePayload(stored.url, provenanceForTrustedRetailer()));
                 imageStored++;
                 changed = true;
@@ -209,7 +218,7 @@ export async function runSakuraImportBatch(
                 seenHashes,
                 knownPlaceholderHashes
               );
-              if (!stored.skippedPlaceholder && !stored.rateLimited) {
+              if (!stored.skippedPlaceholder && !stored.skippedDuplicate && !stored.rateLimited) {
                 imageUrl = stored.url;
                 imageStored++;
               }

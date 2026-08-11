@@ -9,7 +9,8 @@
     "build": "vite build && bun scripts/prerender.mts",
     "build:dev": "vite build --mode development",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "bun test api/cron/lib/promoteScanImages.test.ts api/cron/lib/importSakuraBatch.test.ts api/cron/lib/imageMirror.test.ts api/cron/lib/imageMirror.duplicate.test.ts api/cron/lib/sakeMetadataEnrich.test.ts api/cron/lib/sakeSpecEnrich.test.ts api/cron/lib/sakeImageDiscovery.test.ts api/cron/lib/sakeImageVision.test.ts api/cron/lib/publicImageUrl.test.ts api/lib/scanImageUpload.test.ts api/lib/nonSakeUrl.test.ts api/lib/fetchAllSelectPages.test.ts src/lib/postgrest-search.test.ts src/lib/brewery-slug.test.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

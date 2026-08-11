@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useAuth } from "@/hooks/use-auth";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -53,6 +54,7 @@ export function ImageSearchModal({
   onSelectImage,
   onImportData,
 }: ImageSearchModalProps) {
+  const { session } = useAuth();
   const [loading, setLoading] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -68,10 +70,15 @@ export function ImageSearchModal({
     setDataToImport(new Set());
 
     try {
+      const token = session?.access_token;
+      if (!token) {
+        throw new Error('Admin session expired. Sign in again and retry.');
+      }
       const response = await fetch('/api/search-sake', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
           name: sakeName,
@@ -112,11 +119,16 @@ export function ImageSearchModal({
     setError(null);
 
     try {
+      const token = session?.access_token;
+      if (!token) {
+        throw new Error('Admin session expired. Sign in again and retry.');
+      }
       // Download and save image to Supabase storage
       const response = await fetch('/api/download-image', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
           imageUrl: selectedImage,

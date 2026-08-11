@@ -1,5 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { scrapeSakuraListing } from './cron/lib/scrapeSakuraCore.js';
+import { requireAdmin } from './lib/requireAdmin.js';
 
 interface ScrapeResult {
   sakes: Awaited<ReturnType<typeof scrapeSakuraListing>>['sakes'];
@@ -12,6 +13,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
+
+  const auth = await requireAdmin(req, res);
+  if (!auth.ok) return;
 
   const { page = 1, category, prefecture } = req.body;
 

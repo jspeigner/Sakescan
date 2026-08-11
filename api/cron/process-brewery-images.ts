@@ -6,6 +6,7 @@ import {
   sleep,
   supabaseProjectHost,
 } from './lib/imageMirror.js';
+import { requireCronOrAdmin } from '../lib/requireCronOrAdmin.js';
 
 /** Low volume: brewery assets change rarely. */
 const BREWERY_MAIN_BUDGET = 8;
@@ -16,6 +17,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'GET' && req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
+
+  if (!(await requireCronOrAdmin(req, res))) return;
 
   const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
   const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -73,7 +76,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             .update({ image_url: null, updated_at: new Date().toISOString() })
             .eq('id', brewery.id);
           skippedPlaceholders++;
-        } else {
+        } else if (!result.skippedDuplicate) {
           await supabase
             .from('breweries')
             .update({ image_url: result.url, updated_at: new Date().toISOString() })
@@ -135,7 +138,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             if (result.skippedPlaceholder) {
               newGallery[i] = '';
               skippedPlaceholders++;
-            } else {
+            } else if (!result.skippedDuplicate) {
               newGallery[i] = result.url;
               breweryGalleryProcessed++;
             }

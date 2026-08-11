@@ -1,10 +1,14 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { searchSakeImageCandidates } from './cron/lib/sakeImageDiscovery.js';
+import { requireAdmin } from './lib/requireAdmin.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
+
+  const auth = await requireAdmin(req, res);
+  if (!auth.ok) return;
 
   const { name, nameJapanese, brewery } = req.body;
 

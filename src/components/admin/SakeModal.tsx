@@ -194,7 +194,8 @@ export function SakeModal({ open, onOpenChange, sake, onSaved }: SakeModalProps)
       ...prev,
       type: (data.type as string) || prev.type,
       prefecture: (data.prefecture as string) || prev.prefecture,
-      region: (data.prefecture as string) || prev.region,
+      // Prefecture ≠ region (Explore filters by region). Only set region from a real region field.
+      region: (data.region as string) || prev.region,
       polishing_ratio: (data.polishingRatio as number) || prev.polishing_ratio,
       alcohol_percentage: (data.alcoholPercentage as number) || prev.alcohol_percentage,
       description: (data.description as string) || prev.description,
@@ -213,9 +214,16 @@ export function SakeModal({ open, onOpenChange, sake, onSaved }: SakeModalProps)
     }
 
     try {
+      const token = session?.access_token;
+      if (!token) {
+        throw new Error('Admin session expired. Sign in again and retry.');
+      }
       const response = await fetch('/api/download-image', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify({
           imageUrl,
           sakeName: form.name,
@@ -465,7 +473,7 @@ export function SakeModal({ open, onOpenChange, sake, onSaved }: SakeModalProps)
               <Input
                 id="polishing_ratio"
                 type="number"
-                value={form.polishing_ratio || ""}
+                value={form.polishing_ratio ?? ""}
                 onChange={(e) => setForm(prev => ({ ...prev, polishing_ratio: e.target.value ? Number(e.target.value) : null }))}
                 placeholder="50"
               />
@@ -476,7 +484,7 @@ export function SakeModal({ open, onOpenChange, sake, onSaved }: SakeModalProps)
                 id="alcohol_percentage"
                 type="number"
                 step="0.1"
-                value={form.alcohol_percentage || ""}
+                value={form.alcohol_percentage ?? ""}
                 onChange={(e) => setForm(prev => ({ ...prev, alcohol_percentage: e.target.value ? Number(e.target.value) : null }))}
                 placeholder="16"
               />
@@ -486,7 +494,7 @@ export function SakeModal({ open, onOpenChange, sake, onSaved }: SakeModalProps)
               <Input
                 id="smv"
                 type="number"
-                value={form.smv || ""}
+                value={form.smv ?? ""}
                 onChange={(e) => setForm(prev => ({ ...prev, smv: e.target.value ? Number(e.target.value) : null }))}
                 placeholder="+3"
               />
@@ -497,7 +505,7 @@ export function SakeModal({ open, onOpenChange, sake, onSaved }: SakeModalProps)
                 id="acidity"
                 type="number"
                 step="0.1"
-                value={form.acidity || ""}
+                value={form.acidity ?? ""}
                 onChange={(e) => setForm(prev => ({ ...prev, acidity: e.target.value ? Number(e.target.value) : null }))}
                 placeholder="1.4"
               />

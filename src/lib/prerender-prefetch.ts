@@ -1,6 +1,7 @@
 import { QueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import type { Brewery, Sake } from "@/lib/supabase-types";
+import { fetchBreweryBySlug, fetchSakesForBreweryName } from "@/lib/brewery-slug";
 import { fetchSakeBySlug } from "@/lib/sake-slug";
 
 const EXPLORE_PAGE_SIZE = 24;
@@ -12,28 +13,6 @@ async function fetchRelatedSakes(sake: Sake) {
     .eq("brewery", sake.brewery)
     .neq("id", sake.id)
     .limit(4);
-  return data ?? [];
-}
-
-async function fetchBreweryBySlug(slug: string): Promise<Brewery> {
-  const breweryName = slug.replace(/-/g, " ");
-  const { data, error } = await supabase
-    .from("breweries")
-    .select("*")
-    .ilike("name", `%${breweryName}%`)
-    .limit(1)
-    .single();
-  if (error) throw error;
-  return data as Brewery;
-}
-
-async function fetchBrewerySakes(breweryName: string) {
-  const { data } = await supabase
-    .from("sake")
-    .select("id, name, type, average_rating, image_url, polishing_ratio, updated_at")
-    .ilike("brewery", `%${breweryName}%`)
-    .order("average_rating", { ascending: false, nullsFirst: false })
-    .limit(20);
   return data ?? [];
 }
 
@@ -91,7 +70,7 @@ export async function prefetchForUrl(url: string, queryClient: QueryClient): Pro
     if (brewery) {
       await queryClient.prefetchQuery({
         queryKey: ["brewery-sakes", brewery.name],
-        queryFn: () => fetchBrewerySakes(brewery.name),
+        queryFn: () => fetchSakesForBreweryName(brewery.name),
       });
     }
   }
