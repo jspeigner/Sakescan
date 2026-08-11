@@ -13,6 +13,12 @@ import { enrichSakeMetadataBatch } from './lib/sakeMetadataEnrich.js';
 import { enrichSakeSpecsBatch } from './lib/sakeSpecEnrich.js';
 import { promoteScanImagesBatch } from './lib/promoteScanImages.js';
 import { discoverBreweryImagesBatch } from './lib/discoverBreweryImages.js';
+import { runWineEngineSyncBatch } from './lib/wineEngineSyncBatch.js';
+import { getWineEngineConfig } from './lib/wineEngine.js';
+import { getWineEngineQuota } from './lib/wineEngineQuota.js';
+import { getWineEngineCacheStats } from './lib/wineEngineSearchCache.js';
+import { getEmbeddingCoverage } from './lib/sakeImageEmbed.js';
+import { embedSakeImagesBatch } from './lib/embedSakeImagesBatch.js';
 import { isFirecrawlBypassActive } from './lib/sakeImageDiscovery.js';
 import processImagesHandler from './process-images.js';
 import { requireCronOrAdmin } from '../lib/requireCronOrAdmin.js';
@@ -297,7 +303,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       env: {
         firecrawl: Boolean(firecrawlKey),
         openai: Boolean(openaiKey),
-        wineEngine: false,
+        wineEngine: Boolean(getWineEngineConfig()),
+        wineEngineQuota: getWineEngineConfig()
+          ? await getWineEngineQuota(supabase).catch(() => null)
+          : null,
+        wineEngineCache: await getWineEngineCacheStats(supabase, 24).catch(() => null),
+        embeddingCoverage: await getEmbeddingCoverage(supabase).catch(() => null),
         skipFlags,
         firecrawlBypassActive: isFirecrawlBypassActive(),
         lastDiscoverFirecrawlErrors,
@@ -619,13 +630,95 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (inv.error) runErrors.push(`mirror: ${inv.error}`);
   }
 
-  // Phase 5: WineEngine sync — disabled (subscription not renewed)
-  phases.push({
-    phase: 'wineengine-sync',
-    status: 'skipped',
-    durationMs: 0,
-    errors: ['WineEngine disabled — subscription not active'],
-  });
+  // Phase 5: WineEngine sync (Starter plan: max 8 image adds/run, monthly soft caps)
+  if (!shouldStop() && getWineEngineConfig() && !envFlag('BACKFILL_SKIP_WINEENGINE')) {
+    const t0 = Date.now();
+    try {
+      const we = await runWineEngineSyncBatch(supabase, supabaseUrl, {
+        batchSize: 8,
+      });
+      phases.push({
+        phase: 'wineengine-sync',
+        status:
+          we.errors.length > 0 && we.processed > 0
+            ? 'partial'
+            : we.errors.length && we.processed === 0
+              ? 'skipped'
+              : we.errors.length
+                ? 'failed'
+                : 'ok',
+        durationMs: Date.now() - t0,
+        stats: {
+          offset: we.offset,
+          processed: we.processed,
+          added: we.added,
+          failed: we.failed,
+          skippedQuota: we.skippedQuota,
+          collectionCount: we.collectionCount,
+          hasMore: we.hasMore,
+          quota: we.quota
+            ? {
+                images: we.quota.state.images,
+                searches: we.quota.state.searches,
+                remainingImagesToday: we.quota.remainingImagesToday,
+                remainingSearchesToday: we.quota.remainingSearchesToday,
+              }
+            : null,
+        },
+        errors: we.errors.length ? we.errors.slice(0, 6) : undefined,
+      });
+      if (we.errors.length && we.added === 0 && we.skippedQuota === 0) {
+        runErrors.push(...we.errors.slice(0, 3));
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      phases.push({ phase: 'wineengine-sync', status: 'failed', durationMs: Date.now() - t0, errors: [msg] });
+      runErrors.push(`wineengine: ${msg.slice(0, 120)}`);
+    }
+  } else {
+    phases.push({
+      phase: 'wineengine-sync',
+      status: 'skipped',
+      durationMs: 0,
+      errors: [
+        envFlag('BACKFILL_SKIP_WINEENGINE')
+          ? 'BACKFILL_SKIP_WINEENGINE is set'
+          : 'WineEngine disabled or credentials missing (set WINEENGINE_USERNAME/PASSWORD; use WINEENGINE_ENABLED=false to pause)',
+      ],
+    });
+  }
+
+  // Phase 5b: local identify embedding backfill (OpenAI vision extract + embeddings)
+  if (!shouldStop() && openaiKey && !envFlag('BACKFILL_SKIP_EMBED')) {
+    const t0 = Date.now();
+    try {
+      const emb = await embedSakeImagesBatch(supabase, openaiKey, { batchSize: 20 });
+      phases.push({
+        phase: 'embed-sake-images',
+        status: emb.quotaExceeded ? 'partial' : emb.errors.length && emb.embedded === 0 ? 'failed' : 'ok',
+        durationMs: Date.now() - t0,
+        stats: {
+          candidates: emb.candidates,
+          embedded: emb.embedded,
+          failed: emb.failed,
+          quotaExceeded: emb.quotaExceeded,
+          coverage: emb.coverage,
+        },
+        errors: emb.errors.length ? emb.errors.slice(0, 6) : undefined,
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      phases.push({ phase: 'embed-sake-images', status: 'failed', durationMs: Date.now() - t0, errors: [msg] });
+      runErrors.push(`embed: ${msg.slice(0, 120)}`);
+    }
+  } else if (!openaiKey) {
+    phases.push({
+      phase: 'embed-sake-images',
+      status: 'skipped',
+      durationMs: 0,
+      errors: ['OPENAI_API_KEY missing'],
+    });
+  }
 
   // Phase 6: brewery image discover (gallery promote + website og:image)
   if (!shouldStop() && !envFlag('BACKFILL_SKIP_BREWERY_DISCOVER')) {
@@ -722,7 +815,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       missingImage: gaps.missingImage > 0 ? 'continue discover cron' : 'images caught up',
       missingDescription: gaps.missingDescription > 0 ? 'metadata enrich continues' : 'descriptions caught up',
       externalImages: gaps.externalImages > 0 ? 'mirror continues' : 'mirror caught up',
-      wineEngine: 'disabled — subscription not active',
+      wineEngine: getWineEngineConfig()
+        ? 'Starter plan caps: 5k images / 1k searches per month (soft 4800/900); sync ≤8 adds/run; SHA-256 search cache'
+        : 'disabled — credentials missing or WINEENGINE_ENABLED=false',
+      localIdentify: 'POST /api/identify-sake (hash + embeddings, WineEngine fallback)',
+      embedImages: 'orchestrator phase embed-sake-images (≤20/run)',
       promoteScans: 'runs every orchestrator tick',
       breweryImages: 'discover + daily mirror cron',
     },

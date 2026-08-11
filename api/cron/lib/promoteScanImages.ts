@@ -12,6 +12,10 @@ import {
 } from './imageProvenance.js';
 import { isPublicHttpImageUrl } from './publicImageUrl.js';
 import { sakeVisionPasses, validateJapaneseSakeProductPhoto } from './sakeImageVision.js';
+import { getWineEngineConfig, wineEngineConfirmsSake } from './wineEngine.js';
+import { getWineEngineQuota, promoteSearchBudget } from './wineEngineQuota.js';
+import { searchWineEngineCached } from './wineEngineCachedSearch.js';
+import { embedSakeCatalogImage } from './sakeImageEmbed.js';
 
 export type PromoteScanResult = {
   candidates: number;
@@ -180,6 +184,15 @@ export async function promoteScanImagesBatch(
   const sakeMap = new Map((sakes || []).map((s) => [s.id, s as SakeImageRow]));
   const seenHashes = new Set<string>();
   const knownPlaceholderHashes = new Set<string>();
+  const wineEngineCfg = getWineEngineConfig();
+  let wineEngineSearchesLeft = 0;
+  if (wineEngineCfg) {
+    try {
+      wineEngineSearchesLeft = promoteSearchBudget(await getWineEngineQuota(supabase));
+    } catch {
+      wineEngineSearchesLeft = 0;
+    }
+  }
 
   for (const sakeId of sakeIds) {
     const scan = bySake.get(sakeId);
@@ -215,6 +228,32 @@ export async function promoteScanImagesBatch(
         continue;
       }
 
+      // Default promote search budget is 0 (searches are scarce on Starter).
+      // Set WINEENGINE_PROMOTE_SEARCH_MAX>0 to enable. Cache hits do not burn quota.
+      if (wineEngineCfg && wineEngineSearchesLeft > 0) {
+        try {
+          const cached = await searchWineEngineCached(supabase, scan.scanned_image_url, {
+            source: 'promote',
+            limit: 1,
+            cfg: wineEngineCfg,
+          });
+          if (!cached.cacheHit && !cached.quotaSkipped) {
+            wineEngineSearchesLeft = Math.max(0, wineEngineSearchesLeft - 1);
+          }
+          if (cached.quotaSkipped && cached.reason?.includes('quota')) {
+            wineEngineSearchesLeft = 0;
+          }
+          const we = cached.response;
+          const confirm = wineEngineConfirmsSake(we, sakeId, { minScoreText: 45, minScore: 15 });
+          if (we.status === 'ok' && we.result?.length && confirm.reason === 'matched_other_sake') {
+            skippedWineEngine++;
+            continue;
+          }
+        } catch {
+          /* WineEngine optional */
+        }
+      }
+
       const stored = await downloadAndStore(
         supabase,
         scan.scanned_image_url,
@@ -231,6 +270,14 @@ export async function promoteScanImagesBatch(
         errors.push(`${sake.name}: ${upErr.message.slice(0, 100)}`);
       } else {
         promoted++;
+        if (openaiKey) {
+          embedSakeCatalogImage(supabase, openaiKey, {
+            id: sake.id,
+            name: sake.name,
+            brewery: sake.brewery,
+            image_url: stored.url,
+          }).catch(() => undefined);
+        }
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);

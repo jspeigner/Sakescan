@@ -315,6 +315,32 @@ Deletes the caller's `public.users` row (cascades ratings/follows/etc.), avatar 
 
 ---
 
+## Identify sake from an image (local-first)
+
+Preferred backend identify (no mobile change required until you switch the client):
+
+`POST /api/identify-sake`  
+Auth: `Authorization: Bearer <supabase_access_token>`
+
+```json
+{
+  "imageUrl": "https://...",
+  "limit": 5,
+  "allowWineEngineFallback": true
+}
+```
+
+Order of matching:
+1. Exact image SHA-256 hit in `sake_image_embeddings`
+2. OpenAI vision label extract → `text-embedding-3-small` → pgvector KNN
+3. Optional WineEngine fallback (SHA-256 cached; Starter plan search quota)
+
+Legacy WineEngine-only endpoint: `POST /api/wineengine-identify` (same auth + `imageUrl`).
+
+Catalog embeddings are backfilled by cron (`/api/cron/embed-sake-images` and the orchestrator `embed-sake-images` phase).
+
+---
+
 ## Data Stats (as of Feb 2026)
 
 - 35,961+ sakes; each row has a single optional `image_url` (replaces former `label_image_url` / `bottle_image_url`)
