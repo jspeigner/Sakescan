@@ -33,6 +33,7 @@ import {
 import {
   discoverSearchBudget,
   getWineEngineQuota,
+  releaseWineEngineQuota,
   reserveWineEngineQuota,
   type WineEngineQuotaSnapshot,
 } from './lib/wineEngineQuota.js';
@@ -744,7 +745,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               try {
                 const reserved = await reserveWineEngineQuota(supabase, { searches: 1 });
                 if (reserved.ok) {
-                  wineEngineSearchesLeft = discoverSearchBudget(reserved.snapshot);
+                  // Count down per-run budget; do not reset from discoverSearchBudget (always ≤2).
+                  wineEngineSearchesLeft = Math.max(0, wineEngineSearchesLeft - 1);
                   wineEngineQuota = reserved.snapshot;
                   diagnostics.discover.wineEngineChecks++;
                   const weSearch = await wineEngineSearchByUrl(wineEngineCfg, img.url, { limit: 1 });
@@ -839,17 +841,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               placed = true;
               failureReason = '';
               if (wineEngineCfg) {
-                reserveWineEngineQuota(supabase, { images: 1 })
-                  .then((reserved) => {
-                    if (!reserved.ok) return;
+                try {
+                  const reserved = await reserveWineEngineQuota(supabase, { images: 1 });
+                  if (reserved.ok) {
                     wineEngineQuota = reserved.snapshot;
-                    return wineEngineAddByUrl(wineEngineCfg, { sakeId: row.id, imageUrl: result.url }).then(
-                      () => {
+                    try {
+                      const indexed = await wineEngineAddByUrl(wineEngineCfg, {
+                        sakeId: row.id,
+                        imageUrl: result.url,
+                      });
+                      if (indexed.status === 'ok') {
                         diagnostics.discover.wineEngineIndexed++;
+                      } else {
+                        await releaseWineEngineQuota(supabase, { images: 1 });
                       }
-                    );
-                  })
-                  .catch(() => undefined);
+                    } catch {
+                      await releaseWineEngineQuota(supabase, { images: 1 });
+                    }
+                  }
+                } catch {
+                  /* WineEngine index optional — catalog image already placed */
+                }
               }
               break;
             } catch (inner) {

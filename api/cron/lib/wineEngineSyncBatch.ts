@@ -16,6 +16,7 @@ import {
 } from './wineEngine.js';
 import {
   getWineEngineQuota,
+  releaseWineEngineQuota,
   reserveWineEngineQuota,
   syncBatchImageBudget,
   type WineEngineQuotaSnapshot,
@@ -106,12 +107,14 @@ export async function runWineEngineSyncBatch(
       if (result.status === 'ok') added++;
       else {
         failed++;
+        await releaseWineEngineQuota(supabase, { images: 1 });
         if (errors.length < 6) {
           errors.push(`${row.name}: ${(result.error || []).join('; ').slice(0, 100)}`);
         }
       }
     } catch (e) {
       failed++;
+      await releaseWineEngineQuota(supabase, { images: 1 });
       const msg = e instanceof Error ? e.message : String(e);
       if (errors.length < 6) errors.push(`${row.name}: ${msg.slice(0, 100)}`);
     }
@@ -119,7 +122,9 @@ export async function runWineEngineSyncBatch(
 
   const processed = (rows || []).length;
   const hasMore = processed === batchSize && skippedQuota === 0;
-  const nextOffset = hasMore ? offset + batchSize : skippedQuota > 0 ? offset + added + failed : 0;
+  // Advance past processed rows; do not wrap to 0 on a successful last page (re-adds burn image quota).
+  const nextOffset =
+    skippedQuota > 0 ? offset + added + failed : offset + processed;
 
   await setBackfillState(supabase, WINEENGINE_STATE_KEY, { offset: nextOffset });
 

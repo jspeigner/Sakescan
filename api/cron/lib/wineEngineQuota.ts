@@ -7,7 +7,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { getBackfillState, setBackfillState } from './backfillState.js';
+import { getBackfillState } from './backfillState.js';
 
 export const WINEENGINE_MONTHLY_IMAGE_LIMIT = 5000;
 export const WINEENGINE_MONTHLY_SEARCH_LIMIT = 1000;
@@ -27,6 +27,7 @@ export const WINEENGINE_PROMOTE_SEARCH_MAX = 0; // searches are scarce; promote 
 export const WINEENGINE_IDENTIFY_SEARCH_RESERVE = 100;
 
 const QUOTA_STATE_KEY = 'wineengine_quota';
+const QUOTA_CAS_ATTEMPTS = 8;
 
 export type WineEngineQuotaState = {
   period: string; // YYYY-MM (UTC)
@@ -105,6 +106,55 @@ function toSnapshot(state: WineEngineQuotaState): WineEngineQuotaSnapshot {
   };
 }
 
+async function readQuotaRow(
+  supabase: SupabaseClient
+): Promise<{ state: WineEngineQuotaState; rowUpdatedAt: string | null }> {
+  const { data, error } = await supabase
+    .from('backfill_state')
+    .select('value, updated_at')
+    .eq('key', QUOTA_STATE_KEY)
+    .maybeSingle();
+  if (error) throw new Error(`wineengine_quota read: ${error.message}`);
+  if (!data?.value) {
+    return { state: emptyState(), rowUpdatedAt: null };
+  }
+  return {
+    state: normalizeState(data.value as WineEngineQuotaState),
+    rowUpdatedAt: typeof data.updated_at === 'string' ? data.updated_at : null,
+  };
+}
+
+/** Compare-and-swap write; returns false when another writer won the race. */
+async function casWriteQuota(
+  supabase: SupabaseClient,
+  next: WineEngineQuotaState,
+  expectedRowUpdatedAt: string | null
+): Promise<boolean> {
+  const updatedAt = next.updatedAt || new Date().toISOString();
+  const payload = {
+    key: QUOTA_STATE_KEY,
+    value: next,
+    updated_at: updatedAt,
+  };
+
+  if (expectedRowUpdatedAt == null) {
+    const { error } = await supabase.from('backfill_state').insert(payload);
+    if (!error) return true;
+    // Unique violation — row appeared concurrently.
+    if ((error as { code?: string }).code === '23505') return false;
+    throw new Error(`wineengine_quota insert: ${error.message}`);
+  }
+
+  const { data, error } = await supabase
+    .from('backfill_state')
+    .update({ value: next, updated_at: updatedAt })
+    .eq('key', QUOTA_STATE_KEY)
+    .eq('updated_at', expectedRowUpdatedAt)
+    .select('key');
+  if (error) throw new Error(`wineengine_quota cas: ${error.message}`);
+  return Boolean(data && data.length > 0);
+}
+
 export async function getWineEngineQuota(supabase: SupabaseClient): Promise<WineEngineQuotaSnapshot> {
   const raw = await getBackfillState<WineEngineQuotaState>(supabase, QUOTA_STATE_KEY, emptyState());
   return toSnapshot(normalizeState(raw));
@@ -116,28 +166,67 @@ export async function reserveWineEngineQuota(
 ): Promise<{ ok: boolean; snapshot: WineEngineQuotaSnapshot; reason?: string }> {
   const images = Math.max(0, usage.images ?? 0);
   const searches = Math.max(0, usage.searches ?? 0);
-  const snapshot = await getWineEngineQuota(supabase);
 
-  if (images > snapshot.remainingImagesToday) {
-    return { ok: false, snapshot, reason: 'wineengine_image_quota_exhausted' };
-  }
-  if (searches > snapshot.remainingSearchesToday) {
-    return { ok: false, snapshot, reason: 'wineengine_search_quota_exhausted' };
-  }
   if (images === 0 && searches === 0) {
-    return { ok: true, snapshot };
+    return { ok: true, snapshot: await getWineEngineQuota(supabase) };
   }
 
-  const next: WineEngineQuotaState = {
-    ...snapshot.state,
-    images: snapshot.state.images + images,
-    searches: snapshot.state.searches + searches,
-    imagesToday: snapshot.state.imagesToday + images,
-    searchesToday: snapshot.state.searchesToday + searches,
-    updatedAt: new Date().toISOString(),
-  };
-  await setBackfillState(supabase, QUOTA_STATE_KEY, next);
-  return { ok: true, snapshot: toSnapshot(next) };
+  for (let attempt = 0; attempt < QUOTA_CAS_ATTEMPTS; attempt++) {
+    const { state, rowUpdatedAt } = await readQuotaRow(supabase);
+    const snapshot = toSnapshot(state);
+
+    if (images > snapshot.remainingImagesToday) {
+      return { ok: false, snapshot, reason: 'wineengine_image_quota_exhausted' };
+    }
+    if (searches > snapshot.remainingSearchesToday) {
+      return { ok: false, snapshot, reason: 'wineengine_search_quota_exhausted' };
+    }
+
+    const next: WineEngineQuotaState = {
+      ...state,
+      images: state.images + images,
+      searches: state.searches + searches,
+      imagesToday: state.imagesToday + images,
+      searchesToday: state.searchesToday + searches,
+      updatedAt: new Date().toISOString(),
+    };
+
+    const wrote = await casWriteQuota(supabase, next, rowUpdatedAt);
+    if (wrote) {
+      return { ok: true, snapshot: toSnapshot(next) };
+    }
+  }
+
+  const snapshot = await getWineEngineQuota(supabase);
+  return { ok: false, snapshot, reason: 'wineengine_quota_contention' };
+}
+
+/** Roll back a prior reservation when the TinEye call did not succeed. */
+export async function releaseWineEngineQuota(
+  supabase: SupabaseClient,
+  usage: { images?: number; searches?: number }
+): Promise<WineEngineQuotaSnapshot> {
+  const images = Math.max(0, usage.images ?? 0);
+  const searches = Math.max(0, usage.searches ?? 0);
+  if (images === 0 && searches === 0) {
+    return getWineEngineQuota(supabase);
+  }
+
+  for (let attempt = 0; attempt < QUOTA_CAS_ATTEMPTS; attempt++) {
+    const { state, rowUpdatedAt } = await readQuotaRow(supabase);
+    const next: WineEngineQuotaState = {
+      ...state,
+      images: Math.max(0, state.images - images),
+      searches: Math.max(0, state.searches - searches),
+      imagesToday: Math.max(0, state.imagesToday - images),
+      searchesToday: Math.max(0, state.searchesToday - searches),
+      updatedAt: new Date().toISOString(),
+    };
+    const wrote = await casWriteQuota(supabase, next, rowUpdatedAt);
+    if (wrote) return toSnapshot(next);
+  }
+
+  return getWineEngineQuota(supabase);
 }
 
 /** How many image adds a sync batch may attempt this run. */
