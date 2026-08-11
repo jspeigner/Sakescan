@@ -28,7 +28,6 @@ import {
   wineEngineAddByUrl,
   wineEngineCount,
   wineEngineRejectsCandidate,
-  wineEngineSearchByUrl,
 } from './lib/wineEngine.js';
 import {
   discoverSearchBudget,
@@ -37,6 +36,9 @@ import {
   reserveWineEngineQuota,
   type WineEngineQuotaSnapshot,
 } from './lib/wineEngineQuota.js';
+import { searchWineEngineCached } from './lib/wineEngineCachedSearch.js';
+import { markWineEngineIndexed } from './lib/wineEngineSearchCache.js';
+import { embedSakeCatalogImage } from './lib/sakeImageEmbed.js';
 const MIRROR_OPS_BUDGET = 220;
 /** Attempt to fill missing image_url (Firecrawl + vision + upload). */
 const DISCOVER_ROW_CAP = 40;
@@ -742,45 +744,33 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             const trustedEarly =
               isTrustedRetailerSource(img.source) || isTrustedImageUrl(img.url);
             if (wineEngineActive && wineEngineCfg && !trustedEarly && wineEngineSearchesLeft > 0) {
-              let searchReserved = false;
               try {
-                const reserved = await reserveWineEngineQuota(supabase, { searches: 1 });
-                if (reserved.ok) {
-                  searchReserved = true;
-                  // Count down per-run budget; do not reset from discoverSearchBudget (always ≤2).
+                diagnostics.discover.wineEngineChecks++;
+                const cached = await searchWineEngineCached(supabase, img.url, {
+                  source: 'discover',
+                  limit: 1,
+                  cfg: wineEngineCfg,
+                });
+                if (!cached.cacheHit && !cached.quotaSkipped) {
                   wineEngineSearchesLeft = Math.max(0, wineEngineSearchesLeft - 1);
-                  wineEngineQuota = reserved.snapshot;
-                  diagnostics.discover.wineEngineChecks++;
-                  const weSearch = await wineEngineSearchByUrl(wineEngineCfg, img.url, { limit: 1 });
-                  if (weSearch.status !== 'ok') {
-                    const released = await releaseWineEngineQuota(supabase, { searches: 1 });
-                    searchReserved = false;
-                    wineEngineSearchesLeft += 1;
-                    wineEngineQuota = released.snapshot;
-                    // WineEngine optional — fall through to vision
-                  } else if (wineEngineRejectsCandidate(weSearch, row.id)) {
-                    diagnostics.discover.wineEngineRejected++;
-                    failureReason = 'wineengine_matched_other_sake';
-                    continue;
-                  } else {
-                    const matchedId = weSearch.result?.[0]?.metadata?.image_id;
-                    if (matchedId === row.id && (weSearch.result?.[0]?.score_text ?? 0) >= 55) {
-                      diagnostics.discover.wineEngineConfirmed++;
-                    }
-                  }
-                } else {
+                }
+                if (cached.quotaSkipped && cached.reason?.includes('quota')) {
                   wineEngineSearchesLeft = 0;
                 }
-              } catch {
-                if (searchReserved) {
-                  try {
-                    const released = await releaseWineEngineQuota(supabase, { searches: 1 });
-                    wineEngineSearchesLeft += 1;
-                    wineEngineQuota = released.snapshot;
-                  } catch {
-                    /* best-effort rollback */
+                wineEngineQuota = await getWineEngineQuota(supabase).catch(() => wineEngineQuota);
+                const weSearch = cached.response;
+                if (weSearch.status === 'ok' && wineEngineRejectsCandidate(weSearch, row.id)) {
+                  diagnostics.discover.wineEngineRejected++;
+                  failureReason = 'wineengine_matched_other_sake';
+                  continue;
+                }
+                if (weSearch.status === 'ok') {
+                  const matchedId = weSearch.result?.[0]?.metadata?.image_id;
+                  if (matchedId === row.id && (weSearch.result?.[0]?.score_text ?? 0) >= 55) {
+                    diagnostics.discover.wineEngineConfirmed++;
                   }
                 }
+              } catch {
                 /* WineEngine optional — continue with vision */
               }
             }
@@ -870,6 +860,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                       });
                       if (indexed.status === 'ok') {
                         diagnostics.discover.wineEngineIndexed++;
+                        await markWineEngineIndexed(supabase, row.id);
                       } else {
                         const released = await releaseWineEngineQuota(supabase, { images: 1 });
                         if (released.ok) wineEngineQuota = released.snapshot;
@@ -882,6 +873,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 } catch {
                   /* WineEngine index optional — catalog image already placed */
                 }
+              }
+              if (openaiKey) {
+                embedSakeCatalogImage(supabase, openaiKey, {
+                  id: row.id,
+                  name: row.name,
+                  brewery: row.brewery,
+                  image_url: result.url,
+                }).catch(() => undefined);
               }
               break;
             } catch (inner) {

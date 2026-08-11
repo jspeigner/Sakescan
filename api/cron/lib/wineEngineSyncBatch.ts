@@ -21,6 +21,7 @@ import {
   syncBatchImageBudget,
   type WineEngineQuotaSnapshot,
 } from './wineEngineQuota.js';
+import { markWineEngineIndexed } from './wineEngineSearchCache.js';
 
 const WINEENGINE_STATE_KEY = 'wineengine_sync';
 
@@ -76,16 +77,26 @@ export async function runWineEngineSyncBatch(
   });
   const offset = state.offset;
 
+  // Prefer rows not yet marked indexed on TinEye.
   const query = supabase
     .from('sake')
-    .select('id, name, image_url, image_quality')
+    .select('id, name, image_url, image_quality, wineengine_indexed_at')
     .not('image_url', 'is', null)
     .neq('image_url', '')
     .ilike('image_url', '%supabase.co%')
+    .is('wineengine_indexed_at', null)
     .order('updated_at', { ascending: true });
 
-  const { data: rows, error } = await query.range(offset, offset + batchSize - 1);
+  let { data: rows, error } = await query.range(offset, offset + batchSize - 1);
   if (error) throw new Error(error.message);
+
+  // If cursor passed the unindexed set, wrap once and retry from start.
+  if ((rows || []).length === 0 && offset > 0) {
+    await setBackfillState(supabase, WINEENGINE_STATE_KEY, { offset: 0 });
+    const retry = await query.range(0, batchSize - 1);
+    if (retry.error) throw new Error(retry.error.message);
+    rows = retry.data;
+  }
 
   let added = 0;
   let failed = 0;
@@ -108,6 +119,7 @@ export async function runWineEngineSyncBatch(
       if (result.status === 'ok') {
         added++;
         addSucceeded = true;
+        await markWineEngineIndexed(supabase, row.id);
       } else {
         failed++;
         if (errors.length < 6) {

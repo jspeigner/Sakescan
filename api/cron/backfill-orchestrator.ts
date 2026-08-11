@@ -16,6 +16,9 @@ import { discoverBreweryImagesBatch } from './lib/discoverBreweryImages.js';
 import { runWineEngineSyncBatch } from './lib/wineEngineSyncBatch.js';
 import { getWineEngineConfig } from './lib/wineEngine.js';
 import { getWineEngineQuota } from './lib/wineEngineQuota.js';
+import { getWineEngineCacheStats } from './lib/wineEngineSearchCache.js';
+import { getEmbeddingCoverage } from './lib/sakeImageEmbed.js';
+import { embedSakeImagesBatch } from './lib/embedSakeImagesBatch.js';
 import { isFirecrawlBypassActive } from './lib/sakeImageDiscovery.js';
 import processImagesHandler from './process-images.js';
 
@@ -297,6 +300,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         wineEngineQuota: getWineEngineConfig()
           ? await getWineEngineQuota(supabase).catch(() => null)
           : null,
+        wineEngineCache: await getWineEngineCacheStats(supabase, 24).catch(() => null),
+        embeddingCoverage: await getEmbeddingCoverage(supabase).catch(() => null),
         skipFlags,
         firecrawlBypassActive: isFirecrawlBypassActive(),
         lastDiscoverFirecrawlErrors,
@@ -675,6 +680,38 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
   }
 
+  // Phase 5b: local identify embedding backfill (OpenAI vision extract + embeddings)
+  if (!shouldStop() && openaiKey && !envFlag('BACKFILL_SKIP_EMBED')) {
+    const t0 = Date.now();
+    try {
+      const emb = await embedSakeImagesBatch(supabase, openaiKey, { batchSize: 20 });
+      phases.push({
+        phase: 'embed-sake-images',
+        status: emb.quotaExceeded ? 'partial' : emb.errors.length && emb.embedded === 0 ? 'failed' : 'ok',
+        durationMs: Date.now() - t0,
+        stats: {
+          candidates: emb.candidates,
+          embedded: emb.embedded,
+          failed: emb.failed,
+          quotaExceeded: emb.quotaExceeded,
+          coverage: emb.coverage,
+        },
+        errors: emb.errors.length ? emb.errors.slice(0, 6) : undefined,
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      phases.push({ phase: 'embed-sake-images', status: 'failed', durationMs: Date.now() - t0, errors: [msg] });
+      runErrors.push(`embed: ${msg.slice(0, 120)}`);
+    }
+  } else if (!openaiKey) {
+    phases.push({
+      phase: 'embed-sake-images',
+      status: 'skipped',
+      durationMs: 0,
+      errors: ['OPENAI_API_KEY missing'],
+    });
+  }
+
   // Phase 6: brewery image discover (gallery promote + website og:image)
   if (!shouldStop() && !envFlag('BACKFILL_SKIP_BREWERY_DISCOVER')) {
     const t0 = Date.now();
@@ -771,8 +808,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       missingDescription: gaps.missingDescription > 0 ? 'metadata enrich continues' : 'descriptions caught up',
       externalImages: gaps.externalImages > 0 ? 'mirror continues' : 'mirror caught up',
       wineEngine: getWineEngineConfig()
-        ? 'Starter plan caps: 5k images / 1k searches per month (soft 4800/900); sync ≤8 adds/run'
+        ? 'Starter plan caps: 5k images / 1k searches per month (soft 4800/900); sync ≤8 adds/run; SHA-256 search cache'
         : 'disabled — credentials missing or WINEENGINE_ENABLED=false',
+      localIdentify: 'POST /api/identify-sake (hash + embeddings, WineEngine fallback)',
+      embedImages: 'orchestrator phase embed-sake-images (≤20/run)',
       promoteScans: 'runs every orchestrator tick',
       breweryImages: 'discover + daily mirror cron',
     },

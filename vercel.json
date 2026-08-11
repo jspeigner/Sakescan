@@ -30,6 +30,12 @@
     },
     "api/cron/process-brewery-images.ts": {
       "maxDuration": 120
+    },
+    "api/cron/embed-sake-images.ts": {
+      "maxDuration": 120
+    },
+    "api/identify-sake.ts": {
+      "maxDuration": 60
     }
   },
   "crons": [

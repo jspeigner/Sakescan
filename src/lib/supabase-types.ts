@@ -57,6 +57,7 @@ export interface Database {
           image_quality: string | null;
           image_verified_at: string | null;
           image_contributor_scan_id: string | null;
+          wineengine_indexed_at: string | null;
           average_rating: number | null;
           total_ratings: number;
           yeasts: string | null;
@@ -88,6 +89,7 @@ export interface Database {
           image_quality?: string | null;
           image_verified_at?: string | null;
           image_contributor_scan_id?: string | null;
+          wineengine_indexed_at?: string | null;
           average_rating?: number | null;
           total_ratings?: number;
           yeasts?: string | null;
@@ -119,6 +121,7 @@ export interface Database {
           image_quality?: string | null;
           image_verified_at?: string | null;
           image_contributor_scan_id?: string | null;
+          wineengine_indexed_at?: string | null;
           average_rating?: number | null;
           total_ratings?: number;
           yeasts?: string | null;
@@ -128,6 +131,79 @@ export interface Database {
           gallery_images?: string[];
           external_id?: string | null;
           created_at?: string;
+          updated_at?: string;
+        };
+      };
+      wineengine_search_log: {
+        Row: {
+          id: string;
+          query_sha256: string;
+          query_image_url: string | null;
+          source: string;
+          status: string;
+          top_sake_id: string | null;
+          top_score: number | null;
+          top_score_text: number | null;
+          match_count: number;
+          raw_result: unknown;
+          cache_hit: boolean;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          query_sha256: string;
+          query_image_url?: string | null;
+          source: string;
+          status: string;
+          top_sake_id?: string | null;
+          top_score?: number | null;
+          top_score_text?: number | null;
+          match_count?: number;
+          raw_result?: unknown;
+          cache_hit?: boolean;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          query_sha256?: string;
+          query_image_url?: string | null;
+          source?: string;
+          status?: string;
+          top_sake_id?: string | null;
+          top_score?: number | null;
+          top_score_text?: number | null;
+          match_count?: number;
+          raw_result?: unknown;
+          cache_hit?: boolean;
+          created_at?: string;
+        };
+      };
+      sake_image_embeddings: {
+        Row: {
+          sake_id: string;
+          image_url: string;
+          image_sha256: string;
+          label_text: string | null;
+          embedding: number[];
+          model: string;
+          updated_at: string;
+        };
+        Insert: {
+          sake_id: string;
+          image_url: string;
+          image_sha256: string;
+          label_text?: string | null;
+          embedding: number[];
+          model: string;
+          updated_at?: string;
+        };
+        Update: {
+          sake_id?: string;
+          image_url?: string;
+          image_sha256?: string;
+          label_text?: string | null;
+          embedding?: number[];
+          model?: string;
           updated_at?: string;
         };
       };
