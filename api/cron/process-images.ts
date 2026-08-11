@@ -757,16 +757,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                     searchReserved = false;
                     wineEngineSearchesLeft += 1;
                     wineEngineQuota = released.snapshot;
-                    continue;
-                  }
-                  if (wineEngineRejectsCandidate(weSearch, row.id)) {
+                    // WineEngine optional — fall through to vision
+                  } else if (wineEngineRejectsCandidate(weSearch, row.id)) {
                     diagnostics.discover.wineEngineRejected++;
                     failureReason = 'wineengine_matched_other_sake';
                     continue;
-                  }
-                  const matchedId = weSearch.result?.[0]?.metadata?.image_id;
-                  if (matchedId === row.id && (weSearch.result?.[0]?.score_text ?? 0) >= 55) {
-                    diagnostics.discover.wineEngineConfirmed++;
+                  } else {
+                    const matchedId = weSearch.result?.[0]?.metadata?.image_id;
+                    if (matchedId === row.id && (weSearch.result?.[0]?.score_text ?? 0) >= 55) {
+                      diagnostics.discover.wineEngineConfirmed++;
+                    }
                   }
                 } else {
                   wineEngineSearchesLeft = 0;
