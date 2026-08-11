@@ -21,6 +21,7 @@ import { getEmbeddingCoverage } from './lib/sakeImageEmbed.js';
 import { embedSakeImagesBatch } from './lib/embedSakeImagesBatch.js';
 import { isFirecrawlBypassActive } from './lib/sakeImageDiscovery.js';
 import processImagesHandler from './process-images.js';
+import { requireAdmin } from '../lib/requireAdmin.js';
 import { requireCronOrAdmin } from '../lib/requireCronOrAdmin.js';
 
 const RUN_BUDGET_MS = 180_000;
@@ -344,6 +345,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   if (!statsOnly && !(await requireCronOrAdmin(req, res))) return;
 
+  // Privileged stats (full lastRun / recentLogs / env) for cron secret or admin JWT.
+  // Unauthenticated ?stats=1 stays public; only validate admin when a Bearer token is present.
+  let hasPrivilegedAuth = hasCronAuth;
+  if (
+    statsOnly &&
+    !hasPrivilegedAuth &&
+    typeof req.headers.authorization === 'string' &&
+    req.headers.authorization.startsWith('Bearer ')
+  ) {
+    const admin = await requireAdmin(req, res);
+    if (!admin.ok) return;
+    hasPrivilegedAuth = true;
+  }
+
   const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
   const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
@@ -387,11 +402,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       ? 'OpenAI vision quota exceeded on the last discover run. Restore OpenAI billing/credits; trusted retailer images (Sakura/Umami/Sake Times) can still be placed without vision.'
       : undefined;
 
+    // Public health checks need run status/errors; keep the rest of lastRun privileged.
+    const publicLastRun = {
+      status: typeof lastRun.status === 'string' ? lastRun.status : null,
+      errors: Array.isArray(lastRun.errors) ? lastRun.errors : [],
+      adaptiveDiscover: lastRun.adaptiveDiscover ?? null,
+      prioritizeDiscover: lastRun.prioritizeDiscover ?? null,
+      environmentalBackoffCleared:
+        typeof lastRun.environmentalBackoffCleared === 'number'
+          ? lastRun.environmentalBackoffCleared
+          : 0,
+    };
+
     const publicStats = {
       success: true,
       statsOnly: true,
       gaps,
       discoverHealth,
+      lastRun: publicLastRun,
       latestDiscover: latestDiscoverSummary(orchestratorLogs),
       latestPromote: latestPromoteSummary(orchestratorLogs),
       env: {
@@ -407,7 +435,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     return res.status(200).json({
       ...publicStats,
-      ...(hasCronAuth
+      ...(hasPrivilegedAuth
         ? {
             lastRun,
             recentLogs: recentLogs ?? [],
