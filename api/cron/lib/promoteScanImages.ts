@@ -11,6 +11,12 @@ import {
   shouldReplaceImage,
 } from './imageProvenance.js';
 import { sakeVisionPasses, validateJapaneseSakeProductPhoto } from './sakeImageVision.js';
+import {
+  getWineEngineConfig,
+  wineEngineConfirmsSake,
+  wineEngineSearchByUrl,
+} from './wineEngine.js';
+import { getWineEngineQuota, promoteSearchBudget, reserveWineEngineQuota } from './wineEngineQuota.js';
 
 export type PromoteScanResult = {
   candidates: number;
@@ -142,6 +148,15 @@ export async function promoteScanImagesBatch(
   const sakeMap = new Map((sakes || []).map((s) => [s.id, s as SakeImageRow]));
   const seenHashes = new Set<string>();
   const knownPlaceholderHashes = new Set<string>();
+  const wineEngineCfg = getWineEngineConfig();
+  let wineEngineSearchesLeft = 0;
+  if (wineEngineCfg) {
+    try {
+      wineEngineSearchesLeft = promoteSearchBudget(await getWineEngineQuota(supabase));
+    } catch {
+      wineEngineSearchesLeft = 0;
+    }
+  }
 
   for (const sakeId of sakeIds) {
     const scan = bySake.get(sakeId);
@@ -164,6 +179,27 @@ export async function promoteScanImagesBatch(
         if (!sakeVisionPasses(v, { allowMedium: true })) {
           skippedVision++;
           continue;
+        }
+      }
+
+      // Default promote search budget is 0 (searches are scarce on Starter).
+      // Set WINEENGINE_PROMOTE_SEARCH_MAX>0 to enable.
+      if (wineEngineCfg && wineEngineSearchesLeft > 0) {
+        try {
+          const reserved = await reserveWineEngineQuota(supabase, { searches: 1 });
+          if (reserved.ok) {
+            wineEngineSearchesLeft = promoteSearchBudget(reserved.snapshot);
+            const we = await wineEngineSearchByUrl(wineEngineCfg, scan.scanned_image_url, { limit: 1 });
+            const confirm = wineEngineConfirmsSake(we, sakeId, { minScoreText: 45, minScore: 15 });
+            if (we.status === 'ok' && we.result?.length && confirm.reason === 'matched_other_sake') {
+              skippedWineEngine++;
+              continue;
+            }
+          } else {
+            wineEngineSearchesLeft = 0;
+          }
+        } catch {
+          /* WineEngine optional */
         }
       }
 
