@@ -5,7 +5,12 @@ import {
   wineEngineConfirmsSake,
   wineEngineSearchByUrl,
 } from './cron/lib/wineEngine.js';
-import { getWineEngineQuota, identifySearchBudget, reserveWineEngineQuota } from './cron/lib/wineEngineQuota.js';
+import {
+  getWineEngineQuota,
+  identifySearchBudget,
+  releaseWineEngineQuota,
+  reserveWineEngineQuota,
+} from './cron/lib/wineEngineQuota.js';
 
 /**
  * Identify sake from a label/product image URL using WineEngine collection search.
@@ -80,12 +85,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
 
     if (search.status !== 'ok') {
+      const released = await releaseWineEngineQuota(supabase, { searches: 1 });
       return res.status(200).json({
         matched: false,
         status: search.status,
         errors: search.error,
         matches: [],
-        quota: reserved.snapshot,
+        quota: released.snapshot,
       });
     }
 
@@ -115,6 +121,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       quota: reserved.snapshot,
     });
   } catch (e) {
+    try {
+      await releaseWineEngineQuota(supabase, { searches: 1 });
+    } catch {
+      /* best-effort rollback */
+    }
     const msg = e instanceof Error ? e.message : String(e);
     console.error('[wineengine-identify]', msg);
     return res.status(500).json({ error: 'WineEngine identify failed', details: msg });

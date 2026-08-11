@@ -102,21 +102,29 @@ export async function runWineEngineSyncBatch(
       break;
     }
 
+    let addSucceeded = false;
     try {
       const result = await wineEngineAddByUrl(cfg, { sakeId: row.id, imageUrl: row.image_url });
-      if (result.status === 'ok') added++;
-      else {
+      if (result.status === 'ok') {
+        added++;
+        addSucceeded = true;
+      } else {
         failed++;
-        await releaseWineEngineQuota(supabase, { images: 1 });
         if (errors.length < 6) {
           errors.push(`${row.name}: ${(result.error || []).join('; ').slice(0, 100)}`);
         }
       }
     } catch (e) {
       failed++;
-      await releaseWineEngineQuota(supabase, { images: 1 });
       const msg = e instanceof Error ? e.message : String(e);
       if (errors.length < 6) errors.push(`${row.name}: ${msg.slice(0, 100)}`);
+    }
+
+    if (!addSucceeded) {
+      const released = await releaseWineEngineQuota(supabase, { images: 1 });
+      if (!released.ok && errors.length < 6) {
+        errors.push(`${row.name}: ${released.reason || 'wineengine_quota_release_failed'}`);
+      }
     }
   }
 

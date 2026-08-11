@@ -205,11 +205,11 @@ export async function reserveWineEngineQuota(
 export async function releaseWineEngineQuota(
   supabase: SupabaseClient,
   usage: { images?: number; searches?: number }
-): Promise<WineEngineQuotaSnapshot> {
+): Promise<{ ok: boolean; snapshot: WineEngineQuotaSnapshot; reason?: string }> {
   const images = Math.max(0, usage.images ?? 0);
   const searches = Math.max(0, usage.searches ?? 0);
   if (images === 0 && searches === 0) {
-    return getWineEngineQuota(supabase);
+    return { ok: true, snapshot: await getWineEngineQuota(supabase) };
   }
 
   for (let attempt = 0; attempt < QUOTA_CAS_ATTEMPTS; attempt++) {
@@ -223,10 +223,11 @@ export async function releaseWineEngineQuota(
       updatedAt: new Date().toISOString(),
     };
     const wrote = await casWriteQuota(supabase, next, rowUpdatedAt);
-    if (wrote) return toSnapshot(next);
+    if (wrote) return { ok: true, snapshot: toSnapshot(next) };
   }
 
-  return getWineEngineQuota(supabase);
+  const snapshot = await getWineEngineQuota(supabase);
+  return { ok: false, snapshot, reason: 'wineengine_quota_contention' };
 }
 
 /** How many image adds a sync batch may attempt this run. */

@@ -742,14 +742,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             const trustedEarly =
               isTrustedRetailerSource(img.source) || isTrustedImageUrl(img.url);
             if (wineEngineActive && wineEngineCfg && !trustedEarly && wineEngineSearchesLeft > 0) {
+              let searchReserved = false;
               try {
                 const reserved = await reserveWineEngineQuota(supabase, { searches: 1 });
                 if (reserved.ok) {
+                  searchReserved = true;
                   // Count down per-run budget; do not reset from discoverSearchBudget (always ≤2).
                   wineEngineSearchesLeft = Math.max(0, wineEngineSearchesLeft - 1);
                   wineEngineQuota = reserved.snapshot;
                   diagnostics.discover.wineEngineChecks++;
                   const weSearch = await wineEngineSearchByUrl(wineEngineCfg, img.url, { limit: 1 });
+                  if (weSearch.status !== 'ok') {
+                    const released = await releaseWineEngineQuota(supabase, { searches: 1 });
+                    searchReserved = false;
+                    wineEngineSearchesLeft += 1;
+                    wineEngineQuota = released.snapshot;
+                    continue;
+                  }
                   if (wineEngineRejectsCandidate(weSearch, row.id)) {
                     diagnostics.discover.wineEngineRejected++;
                     failureReason = 'wineengine_matched_other_sake';
@@ -763,6 +772,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                   wineEngineSearchesLeft = 0;
                 }
               } catch {
+                if (searchReserved) {
+                  try {
+                    const released = await releaseWineEngineQuota(supabase, { searches: 1 });
+                    wineEngineSearchesLeft += 1;
+                    wineEngineQuota = released.snapshot;
+                  } catch {
+                    /* best-effort rollback */
+                  }
+                }
                 /* WineEngine optional — continue with vision */
               }
             }
@@ -853,10 +871,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                       if (indexed.status === 'ok') {
                         diagnostics.discover.wineEngineIndexed++;
                       } else {
-                        await releaseWineEngineQuota(supabase, { images: 1 });
+                        const released = await releaseWineEngineQuota(supabase, { images: 1 });
+                        if (released.ok) wineEngineQuota = released.snapshot;
                       }
                     } catch {
-                      await releaseWineEngineQuota(supabase, { images: 1 });
+                      const released = await releaseWineEngineQuota(supabase, { images: 1 });
+                      if (released.ok) wineEngineQuota = released.snapshot;
                     }
                   }
                 } catch {
