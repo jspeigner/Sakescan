@@ -123,6 +123,97 @@ type PhaseResult = {
   errors?: string[];
 };
 
+type OrchestratorPhaseLog = {
+  phase?: string;
+  status?: string;
+  stats?: Record<string, unknown>;
+};
+
+type OrchestratorRunLog = {
+  job?: string;
+  status?: string;
+  stats?: Record<string, unknown>;
+  created_at?: string;
+};
+
+type DiscoverSummary = {
+  placed: number;
+  visionChecks: number;
+  yield: number | null;
+  firecrawlErrors: number;
+  stopReason: unknown;
+  runAt: string | null;
+};
+
+type PromoteSummary = {
+  promoted: number;
+  attempted: unknown;
+  skippedExisting: unknown;
+  skippedUnusableUrl: unknown;
+  status: string | null;
+  runAt: string | null;
+};
+
+function phasesFromLog(log: OrchestratorRunLog | null | undefined): OrchestratorPhaseLog[] {
+  const phases = log?.stats?.phases;
+  return Array.isArray(phases) ? (phases as OrchestratorPhaseLog[]) : [];
+}
+
+function latestDiscoverSummary(logs: OrchestratorRunLog[]): DiscoverSummary {
+  for (const log of logs) {
+    if (log.job !== 'backfill-orchestrator') continue;
+    const phase = phasesFromLog(log).find((p) => p.phase === 'images-discover');
+    if (!phase) continue;
+
+    const stats = phase.stats ?? {};
+    const health = (stats.discoverHealth as Record<string, unknown> | undefined) ?? {};
+    return {
+      placed: typeof health.placed === 'number' ? health.placed : 0,
+      visionChecks: typeof health.visionChecks === 'number' ? health.visionChecks : 0,
+      yield: typeof health.yield === 'number' ? health.yield : null,
+      firecrawlErrors: typeof health.firecrawlErrors === 'number' ? health.firecrawlErrors : 0,
+      stopReason: stats.stopReason ?? null,
+      runAt: log.created_at ?? null,
+    };
+  }
+
+  return {
+    placed: 0,
+    visionChecks: 0,
+    yield: null,
+    firecrawlErrors: 0,
+    stopReason: null,
+    runAt: null,
+  };
+}
+
+function latestPromoteSummary(logs: OrchestratorRunLog[]): PromoteSummary {
+  for (const log of logs) {
+    if (log.job !== 'backfill-orchestrator') continue;
+    const phase = phasesFromLog(log).find((p) => p.phase === 'promote-scan-images');
+    if (!phase) continue;
+
+    const stats = phase.stats ?? {};
+    return {
+      promoted: typeof stats.promoted === 'number' ? stats.promoted : 0,
+      attempted: stats.attempted ?? null,
+      skippedExisting: stats.skippedExisting ?? null,
+      skippedUnusableUrl: stats.skippedUnusableUrl ?? stats.skippedInvalidUrl ?? null,
+      status: phase.status ?? null,
+      runAt: log.created_at ?? null,
+    };
+  }
+
+  return {
+    promoted: 0,
+    attempted: null,
+    skippedExisting: null,
+    skippedUnusableUrl: null,
+    status: null,
+    runAt: null,
+  };
+}
+
 /** Run process-images in-process (avoids Vercel Deployment Protection on self-fetch). */
 async function invokeProcessImages(
   query: Record<string, string>,
@@ -246,10 +337,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  if (!(await requireCronOrAdmin(req, res))) return;
-
   const q = req.query as Record<string, string | string[] | undefined>;
   const statsOnly = req.method === 'GET' && q.stats === '1';
+  const cronSecret = process.env.CRON_SECRET;
+  const hasCronAuth = Boolean(cronSecret && req.headers.authorization === `Bearer ${cronSecret}`);
+
+  if (!statsOnly && !(await requireCronOrAdmin(req, res))) return;
 
   const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
   const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -279,8 +372,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .select('job, status, stats, created_at')
       .order('created_at', { ascending: false })
       .limit(8);
+    const orchestratorLogs = (recentLogs ?? []) as OrchestratorRunLog[];
 
-    const lastOrchestratorLog = (recentLogs ?? []).find((l) => l.job === 'backfill-orchestrator');
+    const lastOrchestratorLog = orchestratorLogs.find((l) => l.job === 'backfill-orchestrator');
     const lastDiscoverFirecrawlErrors =
       firecrawlErrorsFromOrchestratorLog(lastOrchestratorLog) || firecrawlErrorsFromLastRun(lastRun);
     const lastDiscoverOpenaiQuotaExceeded =
@@ -293,22 +387,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       ? 'OpenAI vision quota exceeded on the last discover run. Restore OpenAI billing/credits; trusted retailer images (Sakura/Umami/Sake Times) can still be placed without vision.'
       : undefined;
 
-    return res.status(200).json({
+    const publicStats = {
       success: true,
       statsOnly: true,
       gaps,
       discoverHealth,
-      lastRun,
-      recentLogs: recentLogs ?? [],
+      latestDiscover: latestDiscoverSummary(orchestratorLogs),
+      latestPromote: latestPromoteSummary(orchestratorLogs),
       env: {
-        firecrawl: Boolean(firecrawlKey),
-        openai: Boolean(openaiKey),
-        wineEngine: Boolean(getWineEngineConfig()),
-        wineEngineQuota: getWineEngineConfig()
-          ? await getWineEngineQuota(supabase).catch(() => null)
-          : null,
-        wineEngineCache: await getWineEngineCacheStats(supabase, 24).catch(() => null),
-        embeddingCoverage: await getEmbeddingCoverage(supabase).catch(() => null),
         skipFlags,
         firecrawlBypassActive: isFirecrawlBypassActive(),
         lastDiscoverFirecrawlErrors,
@@ -317,6 +403,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         openaiQuotaRecommendation,
       },
       timestamp: new Date().toISOString(),
+    };
+
+    return res.status(200).json({
+      ...publicStats,
+      ...(hasCronAuth
+        ? {
+            lastRun,
+            recentLogs: recentLogs ?? [],
+            env: {
+              ...publicStats.env,
+              firecrawl: Boolean(firecrawlKey),
+              openai: Boolean(openaiKey),
+              wineEngine: Boolean(getWineEngineConfig()),
+              wineEngineQuota: getWineEngineConfig()
+                ? await getWineEngineQuota(supabase).catch(() => null)
+                : null,
+              wineEngineCache: await getWineEngineCacheStats(supabase, 24).catch(() => null),
+              embeddingCoverage: await getEmbeddingCoverage(supabase).catch(() => null),
+            },
+          }
+        : {}),
     });
   }
 

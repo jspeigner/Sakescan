@@ -45,8 +45,8 @@ streak = dh.get("lowYieldStreak", 0)
 skip = env.get("skipFlags") or last.get("skipFlags") or {}
 backoff_cleared = last.get("environmentalBackoffCleared", 0)
 
-discover = {}
-promote = {}
+discover = d.get("latestDiscover") if isinstance(d.get("latestDiscover"), dict) else {}
+promote = d.get("latestPromote") if isinstance(d.get("latestPromote"), dict) else {}
 for log in logs:
     if log.get("job") != "backfill-orchestrator":
         continue
@@ -76,6 +76,10 @@ openai_rec = env.get("openaiQuotaRecommendation")
 discover_rec = env.get("discoverQuotaRecommendation")
 last_status = last.get("status")
 errors = last.get("errors") or []
+discover_stop_reason = discover.get("stopReason", discover.get("_stopReason"))
+discover_run_at = discover.get("runAt", discover.get("_timestamp"))
+promote_status = promote.get("status", promote.get("_status"))
+promote_run_at = promote.get("runAt", promote.get("_timestamp"))
 
 alerts = []
 if endpoint_error:
@@ -115,16 +119,16 @@ out = {
         "visionChecks": vision,
         "yield": yield_rate,
         "firecrawlErrors": firecrawl_err,
-        "stopReason": discover.get("_stopReason"),
-        "runAt": discover.get("_timestamp"),
+        "stopReason": discover_stop_reason,
+        "runAt": discover_run_at,
     },
     "latestPromote": {
         "promoted": promote_count,
         "attempted": promote.get("attempted"),
         "skippedExisting": promote.get("skippedExisting"),
         "skippedUnusableUrl": skipped_unusable_url,
-        "status": promote.get("_status"),
-        "runAt": promote.get("_timestamp"),
+        "status": promote_status,
+        "runAt": promote_run_at,
     },
     "skipFlags": skip,
     "environmentalBackoffCleared": backoff_cleared,
