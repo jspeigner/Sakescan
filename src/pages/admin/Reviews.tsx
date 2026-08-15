@@ -82,14 +82,45 @@ export default function AdminReviews() {
         query = query.eq('rating', parseInt(ratingFilter));
       }
 
-      // Get all for search filtering (we'll filter client-side after enrichment)
-      const { data: reviewsData, error: reviewsError, count } = await query;
+      // Text search stays client-side (needs joined sake/user names), so page through
+      // PostgREST's ~1000-row cap. Unsearched views use a single server page.
+      const searching = searchQuery.trim().length > 0;
+      type RatingRow = {
+        id: string;
+        user_id: string;
+        sake_id: string;
+        rating: number;
+        review_text: string | null;
+        created_at: string;
+        updated_at: string;
+      };
+      let fetched: RatingRow[] = [];
+      let exactCount: number | null = null;
 
-      if (reviewsError) throw reviewsError;
+      if (searching) {
+        const pageSize = 1000;
+        let from = 0;
+        while (true) {
+          const { data, error: reviewsError, count } = await query.range(from, from + pageSize - 1);
+          if (reviewsError) throw reviewsError;
+          if (exactCount === null) exactCount = count;
+          const batch = (data || []) as RatingRow[];
+          fetched = fetched.concat(batch);
+          if (batch.length < pageSize) break;
+          from += pageSize;
+        }
+      } else {
+        const from = page * PAGE_SIZE;
+        const to = from + PAGE_SIZE - 1;
+        const { data, error: reviewsError, count } = await query.range(from, to);
+        if (reviewsError) throw reviewsError;
+        fetched = (data || []) as RatingRow[];
+        exactCount = count;
+      }
 
       // Get sake details for each review
-      const sakeIds = [...new Set(reviewsData?.map(r => r.sake_id) || [])];
-      const userIds = [...new Set(reviewsData?.map(r => r.user_id) || [])];
+      const sakeIds = [...new Set(fetched.map(r => r.sake_id))];
+      const userIds = [...new Set(fetched.map(r => r.user_id))];
 
       const [sakesRes, usersRes] = await Promise.all([
         sakeIds.length > 0
@@ -103,33 +134,30 @@ export default function AdminReviews() {
       const sakesMap = new Map((sakesRes.data || []).map(s => [s.id, s]));
       const usersMap = new Map((usersRes.data || []).map(u => [u.id, u]));
 
-      let enrichedReviews: ReviewWithDetails[] = (reviewsData || []).map(review => ({
+      let enrichedReviews: ReviewWithDetails[] = fetched.map(review => ({
         ...review,
         sake: sakesMap.get(review.sake_id),
         user: usersMap.get(review.user_id)
       }));
 
       // Apply search filter (client-side after enrichment)
-      if (searchQuery) {
-        const query = searchQuery.toLowerCase();
+      if (searching) {
+        const q = searchQuery.toLowerCase();
         enrichedReviews = enrichedReviews.filter(r => 
-          r.sake?.name?.toLowerCase().includes(query) ||
-          r.sake?.brewery?.toLowerCase().includes(query) ||
-          r.user?.display_name?.toLowerCase().includes(query) ||
-          r.user?.email?.toLowerCase().includes(query) ||
-          r.review_text?.toLowerCase().includes(query)
+          r.sake?.name?.toLowerCase().includes(q) ||
+          r.sake?.brewery?.toLowerCase().includes(q) ||
+          r.user?.display_name?.toLowerCase().includes(q) ||
+          r.user?.email?.toLowerCase().includes(q) ||
+          r.review_text?.toLowerCase().includes(q)
         );
+        setTotalCount(enrichedReviews.length);
+        setReviews(
+          enrichedReviews.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)
+        );
+      } else {
+        setTotalCount(exactCount || 0);
+        setReviews(enrichedReviews);
       }
-
-      setTotalCount(enrichedReviews.length);
-
-      // Paginate
-      const paginatedReviews = enrichedReviews.slice(
-        page * PAGE_SIZE,
-        (page + 1) * PAGE_SIZE
-      );
-
-      setReviews(paginatedReviews);
 
       // Get user name if filtering by user
       if (userFilter && enrichedReviews.length > 0 && enrichedReviews[0].user) {

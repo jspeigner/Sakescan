@@ -1043,51 +1043,57 @@ function BadImageCleanupPanel() {
         throw new Error('Admin session expired. Sign in again and retry.');
       }
 
-      if (mode === 'vision') {
-        // Page through in small batches of 30 to avoid Vercel timeouts
-        let offset = 0;
-        let totalScanned = 0;
-        let totalCleared = 0;
-        let totalBad = 0;
-        let batches = 0;
-        let lastResult: CleanupResult | null = null;
+      // Page through batches for both modes — PostgREST caps each select ~1000 rows.
+      let offset = 0;
+      let totalScanned = 0;
+      let totalCleared = 0;
+      let totalUrlBad = 0;
+      let totalVisionBad = 0;
+      let batches = 0;
+      let lastResult: CleanupResult | null = null;
 
-        while (true) {
-          const data = await fetchCleanupJson(mode, dryRun, offset, token);
-          totalScanned += data.totalScanned;
-          totalCleared += data.totalCleared;
-          totalBad += data.visionBadFound;
-          batches++;
-          lastResult = data;
-          setVisionProgress({ batches, cleared: totalCleared, scanned: totalScanned });
-          toast.loading(`Vision scan — batch ${batches} (${totalScanned} checked, ${totalCleared} cleared)…`, {
+      while (true) {
+        const data = await fetchCleanupJson(mode, dryRun, offset, token);
+        totalScanned += data.totalScanned;
+        totalCleared += data.totalCleared;
+        totalUrlBad += data.urlBadFound;
+        totalVisionBad += data.visionBadFound;
+        batches++;
+        lastResult = data;
+        setVisionProgress({ batches, cleared: totalCleared, scanned: totalScanned });
+        toast.loading(
+          `${mode === 'vision' ? 'Vision' : 'URL'} scan — batch ${batches} (${totalScanned} checked, ${totalCleared} cleared)…`,
+          {
             id: toastId,
             duration: 300_000,
-          });
-          if (!data.hasMore) break;
-          offset = data.nextOffset ?? offset + data.totalScanned;
-        }
+          }
+        );
+        if (!data.hasMore) break;
+        offset = data.nextOffset ?? offset + data.totalScanned;
+      }
 
-        const summary: CleanupResult = {
-          ...(lastResult!),
-          totalScanned,
-          totalCleared,
-          visionBadFound: totalBad,
-          note: `Scanned ${totalScanned} images across ${batches} batches. Cleared ${totalCleared} non-sake image(s).`,
-        };
-        setResult(summary);
-        toast.success(dryRun ? 'Vision scan complete' : 'Vision cleanup complete', {
+      const summary: CleanupResult = {
+        ...(lastResult!),
+        totalScanned,
+        totalCleared,
+        urlBadFound: totalUrlBad,
+        visionBadFound: totalVisionBad,
+        note: `Scanned ${totalScanned} images across ${batches} batches. Cleared ${totalCleared} non-sake image(s).`,
+      };
+      setResult(summary);
+      toast.success(
+        dryRun
+          ? mode === 'vision'
+            ? 'Vision scan complete'
+            : 'Scan complete'
+          : mode === 'vision'
+            ? 'Vision cleanup complete'
+            : 'Cleanup complete',
+        {
           id: toastId,
           description: summary.note,
-        });
-      } else {
-        const data = await fetchCleanupJson(mode, dryRun, 0, token);
-        setResult(data);
-        toast.success(dryRun ? 'Scan complete' : 'Cleanup complete', {
-          id: toastId,
-          description: data.note,
-        });
-      }
+        }
+      );
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Cleanup failed';
       setError(msg);
@@ -1579,7 +1585,7 @@ function ImageProcessorPanel() {
         <Card className="p-4">
           <div className="text-center space-y-1">
             <p className="text-3xl font-bold">
-              {status ? (status.remaining.sakeImages || '?') : '?'}
+              {status ? (status.remaining.sakeImages ?? '?') : '?'}
             </p>
             <p className="text-sm font-medium text-foreground">Sake — external URL</p>
             <p className="text-xs text-muted-foreground leading-snug px-1">
