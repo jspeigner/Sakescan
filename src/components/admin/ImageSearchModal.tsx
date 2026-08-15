@@ -141,11 +141,15 @@ export function ImageSearchModal({
         throw new Error(errorData.error || 'Failed to download image');
       }
 
-      const data = await response.json();
-      
-      // Pass the Supabase storage URL to the parent
+      const data = (await response.json()) as { url?: string; error?: string };
+      if (!data.url || typeof data.url !== 'string') {
+        throw new Error(data.error || 'Download did not return a storage URL');
+      }
+
+      // Pass the hosted Supabase storage URL (never the remote SERP URL) to the parent
       onSelectImage(data.url);
       setSelectedImage(null);
+      onOpenChange(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save image');
     } finally {

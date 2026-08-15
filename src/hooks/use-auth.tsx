@@ -2,8 +2,9 @@ import { createContext, useContext, useEffect, useState, ReactNode } from 'react
 import { User, Session } from '@supabase/supabase-js';
 import { supabase } from '@/lib/supabase';
 
-// The only admin email allowed
-const ADMIN_EMAIL = 'jspeigner@gmail.com';
+// Must match server ADMIN_EMAIL (expose the same value as VITE_ADMIN_EMAIL at build time).
+const ADMIN_EMAIL =
+  (import.meta.env.VITE_ADMIN_EMAIL as string | undefined)?.trim() || 'jspeigner@gmail.com';
 
 interface AuthContextType {
   user: User | null;

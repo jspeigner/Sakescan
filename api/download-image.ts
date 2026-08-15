@@ -2,6 +2,8 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
 import { requireAdmin } from './lib/requireAdmin.js';
 import { fetchPublicHttpUrl, isPublicHttpImageUrl } from './cron/lib/publicImageUrl.js';
+import { MAX_IMAGE_BYTES } from './cron/lib/imageMirror.js';
+import { extFromMime, sniffScanImageMime } from './lib/scanImageUpload.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Only allow POST
@@ -37,14 +39,39 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       throw new Error(`Failed to download image: ${imageResponse.status}`);
     }
 
-    const contentType = imageResponse.headers.get('content-type') || 'image/jpeg';
-    const imageBuffer = await imageResponse.arrayBuffer();
+    const claimedType = (imageResponse.headers.get('content-type') || '').split(';')[0]?.trim().toLowerCase() || '';
+    // Reject HTML/JSON/SVG even when a remote host lies about content-type (ImageSearchModal uses this path).
+    if (
+      claimedType.includes('text/html') ||
+      claimedType.includes('application/json') ||
+      claimedType === 'image/svg+xml' ||
+      (claimedType && !claimedType.startsWith('image/'))
+    ) {
+      return res.status(400).json({ error: 'URL did not return a raster image' });
+    }
 
-    // Determine file extension from content type
-    let extension = 'jpg';
-    if (contentType.includes('png')) extension = 'png';
-    else if (contentType.includes('webp')) extension = 'webp';
-    else if (contentType.includes('gif')) extension = 'gif';
+    const contentLength = Number.parseInt(imageResponse.headers.get('content-length') || '', 10);
+    if (Number.isFinite(contentLength) && contentLength > MAX_IMAGE_BYTES) {
+      return res.status(413).json({
+        error: `Image too large (${contentLength} bytes > max ${MAX_IMAGE_BYTES})`,
+      });
+    }
+
+    const imageBuffer = Buffer.from(await imageResponse.arrayBuffer());
+    if (imageBuffer.byteLength > MAX_IMAGE_BYTES) {
+      return res.status(413).json({
+        error: `Image too large (${imageBuffer.byteLength} bytes > max ${MAX_IMAGE_BYTES})`,
+      });
+    }
+    const sniffed = sniffScanImageMime(imageBuffer);
+    if (!sniffed || sniffed === 'image/heic') {
+      // Admin catalog art must be browser-displayable raster bytes (not HTML/PDF/HEIC).
+      return res.status(400).json({ error: 'Downloaded bytes are not a JPEG/PNG/WebP/GIF image' });
+    }
+    const contentType = sniffed;
+
+    // Determine file extension from sniffed type
+    const extension = extFromMime(contentType);
 
     // Generate unique filename
     const timestamp = Date.now();

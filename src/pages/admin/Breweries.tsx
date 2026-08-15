@@ -352,12 +352,12 @@ export default function AdminBreweries() {
                             <Wine className="w-4 h-4 mr-2" />
                             View Sakes
                           </DropdownMenuItem>
-                          {brewery.website && (
-                            <DropdownMenuItem onClick={() => window.open(brewery.website!, '_blank')}>
+                          {brewery.website && /^https?:\/\//i.test(brewery.website) ? (
+                            <DropdownMenuItem onClick={() => window.open(brewery.website!, '_blank', 'noopener,noreferrer')}>
                               <Globe className="w-4 h-4 mr-2" />
                               Visit Website
                             </DropdownMenuItem>
-                          )}
+                          ) : null}
                         </DropdownMenuContent>
                       </DropdownMenu>
                     </TableCell>
@@ -460,14 +460,14 @@ export default function AdminBreweries() {
                     <a href={`mailto:${selectedBrewery.email}`} className="text-primary hover:underline">{selectedBrewery.email}</a>
                   </div>
                 )}
-                {selectedBrewery.website && (
+                {selectedBrewery.website && /^https?:\/\//i.test(selectedBrewery.website) ? (
                   <div className="flex items-center gap-2 text-sm">
                     <Globe className="w-4 h-4 text-muted-foreground" />
                     <a href={selectedBrewery.website} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline truncate">
                       {selectedBrewery.website.replace(/^https?:\/\//, '')}
                     </a>
                   </div>
-                )}
+                ) : null}
               </div>
 
               {/* Visiting Info */}
@@ -495,8 +495,8 @@ export default function AdminBreweries() {
                 </div>
               )}
 
-              {/* Source */}
-              {selectedBrewery.source_url && (
+              {/* Source — only http(s); never render javascript:/data: as href */}
+              {selectedBrewery.source_url && /^https?:\/\//i.test(selectedBrewery.source_url) ? (
                 <a
                   href={selectedBrewery.source_url}
                   target="_blank"
@@ -506,7 +506,7 @@ export default function AdminBreweries() {
                   <ExternalLink className="w-3 h-3" />
                   View on JSS Directory
                 </a>
-              )}
+              ) : null}
 
               {/* Actions */}
               <div className="flex justify-end gap-2 pt-2">
