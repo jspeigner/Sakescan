@@ -44,6 +44,16 @@ async function fetchOgImage(pageUrl: string): Promise<string | null> {
   }
 }
 
+async function touchBreweryUpdatedAt(
+  supabase: SupabaseClient,
+  breweryId: string
+): Promise<void> {
+  await supabase
+    .from('breweries')
+    .update({ updated_at: new Date().toISOString() })
+    .eq('id', breweryId);
+}
+
 export async function discoverBreweryImagesBatch(
   supabase: SupabaseClient,
   options?: { batchSize?: number }
@@ -69,6 +79,7 @@ export async function discoverBreweryImagesBatch(
 
   for (const brewery of rows || []) {
     attempted++;
+    let succeeded = false;
     try {
       const gallery: string[] = Array.isArray(brewery.gallery_images) ? brewery.gallery_images : [];
       const galleryFirst = gallery.find((u) => typeof u === 'string' && u.startsWith('http'));
@@ -88,37 +99,50 @@ export async function discoverBreweryImagesBatch(
             .update({ image_url: stored.url, updated_at: new Date().toISOString() })
             .eq('id', brewery.id);
           fromGallery++;
+          succeeded = true;
           await sleep(120);
-          continue;
         }
       }
 
-      const pageUrl = (brewery.website || brewery.source_url || '').trim();
-      if (!pageUrl.startsWith('http')) continue;
-
-      const og = await fetchOgImage(pageUrl);
-      await sleep(200);
-      if (!og) continue;
-
-      const stored = await downloadAndStore(
-        supabase,
-        og,
-        'brewery-images',
-        brewery.name,
-        seenHashes,
-        knownPlaceholderHashes
-      );
-      if (stored.rateLimited || stored.skippedPlaceholder || stored.skippedDuplicate) continue;
-
-      await supabase
-        .from('breweries')
-        .update({ image_url: stored.url, updated_at: new Date().toISOString() })
-        .eq('id', brewery.id);
-      fromWebsite++;
-      await sleep(120);
+      if (!succeeded) {
+        const pageUrl = (brewery.website || brewery.source_url || '').trim();
+        if (pageUrl.startsWith('http')) {
+          const og = await fetchOgImage(pageUrl);
+          await sleep(200);
+          if (og) {
+            const stored = await downloadAndStore(
+              supabase,
+              og,
+              'brewery-images',
+              brewery.name,
+              seenHashes,
+              knownPlaceholderHashes
+            );
+            if (!stored.rateLimited && !stored.skippedPlaceholder && !stored.skippedDuplicate) {
+              await supabase
+                .from('breweries')
+                .update({ image_url: stored.url, updated_at: new Date().toISOString() })
+                .eq('id', brewery.id);
+              fromWebsite++;
+              succeeded = true;
+              await sleep(120);
+            }
+          }
+        }
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (errors.length < 8) errors.push(`${brewery.name}: ${msg.slice(0, 100)}`);
+    }
+
+    // Always rotate unsuccessful rows — otherwise empty website / bad og / transient
+    // skips pin the oldest PostgREST page forever (e.g. Hakodate Jouzou since Feb).
+    if (!succeeded) {
+      try {
+        await touchBreweryUpdatedAt(supabase, brewery.id);
+      } catch {
+        /* best-effort rotation */
+      }
     }
   }
 
