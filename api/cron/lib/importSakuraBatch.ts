@@ -23,6 +23,58 @@ export function normalizeName(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9\u3040-\u9faf]+/g, ' ').trim();
 }
 
+const CORPORATE_SUFFIX_RE =
+  /\s*(?:co\.?\s*,?\s*ltd\.?|co\.?|ltd\.?|inc\.?|llc|corp\.?|kk|株式会社|有限会社)\.?$/i;
+
+/** Tokens that are too generic to prove two brewery strings are the same house. */
+const GENERIC_BREWERY_TOKENS = new Set([
+  'sake',
+  'brewery',
+  'brewing',
+  'company',
+  'shuzo',
+  'shuzou',
+  'syuzo',
+  '酒造',
+]);
+
+/**
+ * True when two brewery labels refer to the same house.
+ * Rejects substring traps ("Asahi" ⊆ "Tamaasahi", "Ito" ⊆ "Itou") that
+ * bidirectional `includes()` previously accepted.
+ */
+export function breweryNamesCompatible(a: string, b: string): boolean {
+  const normalizeBrewery = (value: string): string => {
+    const stripped = value.trim().replace(CORPORATE_SUFFIX_RE, '').replace(/[.,\s]+$/g, '').trim();
+    return normalizeName(stripped || value)
+      .replace(/\bshuzou\b/g, 'shuzo')
+      .replace(/\bsyuzo\b/g, 'shuzo');
+  };
+
+  const left = normalizeBrewery(a);
+  const right = normalizeBrewery(b);
+  if (!left || !right) return false;
+  if (left === right) return true;
+
+  const tokens = (value: string): string[] =>
+    value
+      .split(/\s+/)
+      .map((t) => t.trim())
+      .filter((t) => t.length >= 2 && !GENERIC_BREWERY_TOKENS.has(t));
+
+  const leftTokens = tokens(left);
+  const rightTokens = tokens(right);
+  if (leftTokens.length === 0 || rightTokens.length === 0) return false;
+
+  const [shorter, longer] =
+    leftTokens.length <= rightTokens.length
+      ? [leftTokens, rightTokens]
+      : [rightTokens, leftTokens];
+
+  // Every distinctive token of the shorter label must appear as a whole token.
+  return shorter.every((t) => longer.includes(t));
+}
+
 /** True when a scraped Sakura row is the same product as an existing catalog sake. */
 export function matchesExisting(
   scraped: ScrapedSake,
@@ -58,15 +110,15 @@ export function matchesExisting(
   // overwriting images/metadata and suppressing inserts of distinct products.
   if (!nameMatch) return false;
 
-  if (scraped.brewery && existing.brewery) {
-    const scrapedBrewery = scraped.brewery.toLowerCase();
-    const existingBrewery = existing.brewery.toLowerCase();
-    return (
-      existingBrewery.includes(scrapedBrewery) || scrapedBrewery.includes(existingBrewery)
-    );
-  }
+  // Destructive image/metadata writes — require brewery on both sides.
+  // Missing brewery previously returned true (name-only), and Sakura often fails
+  // to parse the brewery line, so the first English-name hit was updated instead
+  // of inserting a new row (insert path also requires brewery).
+  const scrapedBrewery = scraped.brewery?.trim() ?? '';
+  const existingBrewery = existing.brewery?.trim() ?? '';
+  if (!scrapedBrewery || !existingBrewery) return false;
 
-  return true;
+  return breweryNamesCompatible(scrapedBrewery, existingBrewery);
 }
 
 function buildDescriptionFromScraped(scraped: ScrapedSake): string | null {

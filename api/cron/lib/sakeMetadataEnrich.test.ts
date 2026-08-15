@@ -53,4 +53,17 @@ describe("findSakuraDescription", () => {
     );
     expect(desc).toContain("Dassai 45");
   });
+
+  test("rejects name overlap from a different brewery", () => {
+    const desc = findSakuraDescription(
+      {
+        name: "Dassai 45",
+        brewery: "Other Brewery",
+        type: "Junmai Daiginjo",
+        taste: "fruity",
+      },
+      row
+    );
+    expect(desc).toBeNull();
+  });
 });

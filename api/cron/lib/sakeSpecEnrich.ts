@@ -4,6 +4,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { breweryNamesCompatible } from './importSakuraBatch.js';
 import { scrapeSakuraListing, type ScrapedSake } from './scrapeSakuraCore.js';
 
 export type SpecEnrichResult = {
@@ -87,9 +88,12 @@ export function matchesScraped(scraped: ScrapedSake, row: SakeSpecRow): boolean 
     en.includes(sn) ||
     sn.includes(en);
   if (!nameOk) return false;
-  if (!scraped.brewery || !row.brewery) return true;
-  return row.brewery.toLowerCase().includes(scraped.brewery.toLowerCase()) ||
-    scraped.brewery.toLowerCase().includes(row.brewery.toLowerCase());
+  // Spec writes are destructive — require brewery on both sides and reject
+  // substring traps ("Asahi" ⊆ "Tamaasahi") that raw includes() accepted.
+  const scrapedBrewery = scraped.brewery?.trim() ?? '';
+  const rowBrewery = row.brewery?.trim() ?? '';
+  if (!scrapedBrewery || !rowBrewery) return false;
+  return breweryNamesCompatible(scrapedBrewery, rowBrewery);
 }
 
 export async function enrichSakeSpecsBatch(

@@ -2,7 +2,7 @@
  * Firecrawl-backed image discovery for sake rows (used by /api/search-sake and sake cron).
  */
 
-import { isPublicHttpImageUrl } from './publicImageUrl.js';
+import { fetchPublicHttpUrl, isPublicHttpImageUrl } from './publicImageUrl.js';
 
 export type SearchImageRow = {
   url: string;
@@ -196,6 +196,11 @@ function buildSakeImageSearchQueries(
   return queries.slice(0, maxQueries);
 }
 
+/** Google/Bing scrapers historically set title=searchQuery; never score those titles. */
+function isSerpImageSource(source: string): boolean {
+  return source === 'Google Images' || source === 'Bing Images';
+}
+
 /** Drop weak Bing/Google hits before expensive vision checks. */
 export function prefilterDiscoverCandidates(
   images: SearchImageRow[],
@@ -208,15 +213,19 @@ export function prefilterDiscoverCandidates(
   const maxCandidates = options?.maxCandidates ?? 12;
   const tokens = searchTokens(name, nameJapanese, brewery);
   const scored = images
-    .map((img) => ({
-      img,
-      score: relevanceScore(img.url, img.title, tokens) + sourcePriority(img.source),
-      trusted: isTrustedRetailerSource(img.source),
-    }))
-    .filter(
-      (x) =>
-        x.trusted || relevanceScore(x.img.url, x.img.title, tokens) >= minRel
-    )
+    .map((img) => {
+      // SERP titles are not page titles — score URL only so a synthetic
+      // title=searchQuery cannot force every candidate past minRelevance.
+      const titleForScore = isSerpImageSource(img.source) ? undefined : img.title;
+      const rel = relevanceScore(img.url, titleForScore, tokens);
+      return {
+        img,
+        score: rel + sourcePriority(img.source),
+        rel,
+        trusted: isTrustedRetailerSource(img.source),
+      };
+    })
+    .filter((x) => x.trusted || x.rel >= minRel)
     .sort((a, b) => {
       if (a.trusted !== b.trusted) return a.trusted ? -1 : 1;
       return b.score - a.score;
@@ -355,25 +364,32 @@ function extractImageUrlsFromGoogleHtml(htmlContent: string): string[] {
   return [...foundUrls];
 }
 
+/**
+ * SERP scrapers must not set `title` to the search query. Doing so makes
+ * `relevanceScore` / `prefilterDiscoverCandidates` always pass (the query
+ * contains every name/brewery token), so unrelated sibling-SKU image URLs
+ * skip the cheap filter and reach vision / storage.
+ */
+function serpImageRow(url: string, source: string): SearchImageRow {
+  return { url, source };
+}
+
 async function scrapeGoogleImagesDirect(searchQuery: string): Promise<SearchImageRow[]> {
   const googleImagesUrl = `https://www.google.com/search?q=${encodeURIComponent(searchQuery)}&tbm=isch`;
   try {
-    const res = await fetch(googleImagesUrl, {
+    const res = await fetchPublicHttpUrl(googleImagesUrl, {
       headers: {
         'User-Agent':
           'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         Accept: 'text/html,application/xhtml+xml',
         'Accept-Language': 'en-US,en;q=0.9,ja;q=0.8',
       },
-      redirect: 'follow',
     });
     if (!res.ok) return [];
     const html = await res.text();
-    return extractImageUrlsFromGoogleHtml(html).slice(0, 24).map((url) => ({
-      url,
-      source: 'Google Images',
-      title: searchQuery,
-    }));
+    return extractImageUrlsFromGoogleHtml(html)
+      .slice(0, 24)
+      .map((url) => serpImageRow(url, 'Google Images'));
   } catch {
     return [];
   }
@@ -402,11 +418,7 @@ async function scrapeGoogleImages(
     const urls = extractImageUrlsFromGoogleHtml(data.html);
     if (urls.length > 0) {
       return {
-        rows: urls.slice(0, 24).map((url) => ({
-          url,
-          source: 'Google Images',
-          title: searchQuery,
-        })),
+        rows: urls.slice(0, 24).map((url) => serpImageRow(url, 'Google Images')),
       };
     }
   }
@@ -428,14 +440,13 @@ function decodeHtmlEntities(input: string): string {
 
 async function scrapeBingImages(searchQuery: string): Promise<SearchImageRow[]> {
   const bingUrl = `https://www.bing.com/images/search?q=${encodeURIComponent(searchQuery)}`;
-  const res = await fetch(bingUrl, {
+  const res = await fetchPublicHttpUrl(bingUrl, {
     headers: {
       'User-Agent':
         'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
       Accept: 'text/html,application/xhtml+xml',
       'Accept-Language': 'en-US,en;q=0.9,ja;q=0.8',
     },
-    redirect: 'follow',
   });
   if (!res.ok) return [];
   const html = await res.text();
@@ -458,11 +469,7 @@ async function scrapeBingImages(searchQuery: string): Promise<SearchImageRow[]> 
     });
   }
 
-  return [...foundUrls].slice(0, 24).map((url) => ({
-    url,
-    source: 'Bing Images',
-    title: searchQuery,
-  }));
+  return [...foundUrls].slice(0, 24).map((url) => serpImageRow(url, 'Bing Images'));
 }
 
 export type SakeImageSearchMode = 'google-only' | 'google-only-fast' | 'trusted-first' | 'full';
@@ -479,7 +486,9 @@ const BROWSER_HEADERS = {
 
 async function fetchHtmlDirect(url: string): Promise<string | null> {
   try {
-    const res = await fetch(url, { headers: BROWSER_HEADERS, redirect: 'follow' });
+    // Validate every redirect hop — bare fetch({ redirect: 'follow' }) could SSRF
+    // via an open redirect on a trusted retailer host to a private IP.
+    const res = await fetchPublicHttpUrl(url, { headers: BROWSER_HEADERS });
     if (!res.ok) return null;
     return await res.text();
   } catch {

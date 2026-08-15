@@ -31,4 +31,19 @@ describe("matchesScraped", () => {
       )
     ).toBe(true);
   });
+
+  test("rejects name-only overlap when brewery is missing", () => {
+    expect(
+      matchesScraped({ name: "Dassai 45", alcoholPercentage: 16 }, row)
+    ).toBe(false);
+  });
+
+  test("rejects brewery substring collisions", () => {
+    expect(
+      matchesScraped(
+        { name: "Dassai 45", brewery: "Asahi", alcoholPercentage: 16 },
+        { ...row, brewery: "Tamaasahi Shuzou" }
+      )
+    ).toBe(false);
+  });
 });

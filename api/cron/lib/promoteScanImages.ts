@@ -221,9 +221,13 @@ export async function promoteScanImagesBatch(
       const v = await validateJapaneseSakeProductPhoto(openaiKey, scan.scanned_image_url, {
         sakeName: sake.name,
         brewery: sake.brewery,
+        // Scans.sake_id is client-writable under RLS — require label identity,
+        // not merely "some sake bottle", before copying into the public catalog.
+        requireProductMatch: true,
       });
       await sleep(60);
-      if (!sakeVisionPasses(v, { allowMedium: true })) {
+      // Product-identity promote: do not accept medium confidence (sibling SKUs).
+      if (!sakeVisionPasses(v, { allowMedium: false })) {
         skippedVision++;
         continue;
       }

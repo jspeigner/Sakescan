@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { breweryNamesCompatible } from './importSakuraBatch.js';
 import { scrapeSakuraListing } from './scrapeSakuraCore.js';
 
 export type MetadataEnrichResult = {
@@ -95,6 +96,13 @@ export function findSakuraDescription(
   // Previously: English mismatch still returned a description whenever Japanese was
   // missing on either side, so the first Sakura hit could label unrelated sakes.
   if (!enMatch && !jpMatch) return null;
+
+  // When both sides have a brewery, require compatibility — matchesExisting already does.
+  const scrapedBrewery = scraped.brewery?.trim() ?? '';
+  const rowBrewery = row.brewery?.trim() ?? '';
+  if (scrapedBrewery && rowBrewery && !breweryNamesCompatible(scrapedBrewery, rowBrewery)) {
+    return null;
+  }
 
   const parts: string[] = [];
   if (scraped.type) parts.push(scraped.type);
