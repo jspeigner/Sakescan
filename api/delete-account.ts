@@ -1,9 +1,14 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
+import {
+  clearUserScanImageUrls,
+  removeUserScanUploads,
+} from './lib/deleteAccountCleanup.js';
 
 /**
  * Authenticated self-serve account deletion (B09).
  * Prefers the delete_own_account() RPC; falls back to service-role cleanup.
+ * Always purges public scan-uploads/<userId>/ objects (RPC may lag on migration).
  */
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
@@ -33,6 +38,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   const userId = userData.user.id;
+  const admin = createClient(supabaseUrl, supabaseServiceKey);
+
+  // Purge public scan photos before RPC/fallback so account deletion cannot leave
+  // world-readable user media under scan-uploads/<userId>/ even if the RPC
+  // migration has not been applied yet.
+  try {
+    await removeUserScanUploads(admin, userId);
+    await clearUserScanImageUrls(admin, userId);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error('[delete-account] scan-upload cleanup failed:', msg);
+    return res.status(500).json({ error: `Failed to remove scan photos: ${msg}` });
+  }
 
   const { error: rpcError } = await userClient.rpc('delete_own_account');
   if (!rpcError) {
@@ -41,7 +59,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   // Fallback if RPC is not deployed yet.
   console.warn('[delete-account] RPC failed, using service-role fallback:', rpcError.message);
-  const admin = createClient(supabaseUrl, supabaseServiceKey);
 
   // Best-effort avatar cleanup (RPC also deletes storage.objects by path prefix).
   await admin.storage.from('avatars').remove([userId, `${userId}/avatar`]);
