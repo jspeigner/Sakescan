@@ -88,6 +88,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const row: Record<string, unknown> = { ...payload };
   if (payload.image_url) {
     Object.assign(row, sakeImageUpdatePayload(payload.image_url, provenanceForAdmin()));
+  } else if (payload.image_url === null || payload.image_url === '') {
+    // Clearing the image must also clear sticky T1/admin provenance metadata.
+    Object.assign(row, {
+      image_url: null,
+      image_source: null,
+      image_quality: null,
+      image_verified_at: null,
+      image_contributor_scan_id: null,
+    });
   }
 
   if (body?.id) {

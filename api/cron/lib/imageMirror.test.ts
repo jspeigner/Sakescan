@@ -1,8 +1,41 @@
 import { describe, expect, test } from 'bun:test';
 import {
+  isSupabaseUrl,
   isTransientDownloadError,
   shouldClearExternalImageUrlOnError,
 } from './imageMirror.ts';
+
+describe('isSupabaseUrl', () => {
+  const project = 'https://qpsdebikkmcdzddhphlk.supabase.co';
+
+  test('accepts this project host only', () => {
+    expect(
+      isSupabaseUrl(
+        'https://qpsdebikkmcdzddhphlk.supabase.co/storage/v1/object/public/sake-images/x.jpg',
+        project
+      )
+    ).toBe(true);
+  });
+
+  test('rejects attacker hosts that embed the project host as a substring', () => {
+    expect(
+      isSupabaseUrl(
+        'https://evil.example/qpsdebikkmcdzddhphlk.supabase.co/storage/v1/object/public/x.jpg',
+        project
+      )
+    ).toBe(false);
+    expect(
+      isSupabaseUrl('https://qpsdebikkmcdzddhphlk.supabase.co.attacker.test/x.jpg', project)
+    ).toBe(false);
+  });
+
+  test('rejects other supabase projects', () => {
+    expect(
+      isSupabaseUrl('https://otherproject.supabase.co/storage/v1/object/public/x.jpg', project)
+    ).toBe(false);
+  });
+});
+
 
 describe('shouldClearExternalImageUrlOnError', () => {
   test('clears permanent content/access failures', () => {

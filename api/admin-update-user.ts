@@ -76,6 +76,36 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(400).json({ error: 'id and payload are required' });
   }
 
+  // Keep Auth login identity in sync when admin edits profile email.
+  const nextEmail = body.payload.email?.trim();
+  if (nextEmail) {
+    const { data: existingProfile, error: existingError } = await admin
+      .from('users')
+      .select('email')
+      .eq('id', body.id)
+      .maybeSingle();
+    if (existingError) {
+      console.error('[admin-update-user] profile lookup failed:', existingError);
+      return res.status(500).json({ error: existingError.message });
+    }
+    if (!existingProfile) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const prevEmail = (existingProfile.email ?? '').trim().toLowerCase();
+    if (prevEmail !== nextEmail.toLowerCase()) {
+      const { error: authEmailError } = await admin.auth.admin.updateUserById(body.id, {
+        email: nextEmail,
+      });
+      if (authEmailError) {
+        console.error('[admin-update-user] auth email update failed:', authEmailError);
+        return res.status(500).json({
+          error: `Auth email update failed: ${authEmailError.message}`,
+        });
+      }
+    }
+  }
+
   const { data, error } = await admin
     .from('users')
     .update(body.payload)

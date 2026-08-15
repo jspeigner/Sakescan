@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
+  breweryBrandCore,
   breweryNameFromSlug,
   brewerySakeNamePattern,
   brewerySlugFromSakeBreweryField,
+  normalizeBreweryNameForMatch,
   pickBreweryBySlug,
   sakeBreweryMatchesCatalogName,
   stripBreweryCorporateSuffix,
@@ -39,20 +41,43 @@ describe("brewerySlugFromSakeBreweryField", () => {
   test("leaves names without corporate suffixes unchanged", () => {
     expect(brewerySlugFromSakeBreweryField("Dassai")).toBe("dassai");
   });
+
+  test("maps Shuzo and English Sake Brewing to catalog shuzou slugs", () => {
+    expect(brewerySlugFromSakeBreweryField("Asahi Shuzo")).toBe("asahi-shuzou");
+    expect(brewerySlugFromSakeBreweryField("Asahi Shuzo Co.,Ltd")).toBe("asahi-shuzou");
+    expect(brewerySlugFromSakeBreweryField("Hakutsuru Sake Brewing Co.,Ltd.")).toBe(
+      "hakutsuru-shuzou"
+    );
+    expect(brewerySlugFromSakeBreweryField("Gekkeikan Sake Co.,Ltd")).toBe("gekkeikan");
+  });
+});
+
+describe("normalizeBreweryNameForMatch", () => {
+  test("drops parenthetical location tags", () => {
+    expect(normalizeBreweryNameForMatch("Asahi Shuzo (Niigata)")).toBe("Asahi Shuzou");
+  });
+
+  test("maps English sake brewing to Shuzou", () => {
+    expect(normalizeBreweryNameForMatch("Hakutsuru Sake Brewing Co.,Ltd.")).toBe(
+      "Hakutsuru Shuzou"
+    );
+  });
 });
 
 describe("brewerySakeNamePattern", () => {
-  test("prefix-matches corporate suffixes without substring false positives", () => {
+  test("prefix-matches via brand core so English variants are candidates", () => {
     expect(brewerySakeNamePattern("Akita Meijyo")).toBe("Akita Meijyo%");
-    // "Chiyo Shuzou%" must not match "Fukuchiyo shuzou…"
-    expect(brewerySakeNamePattern("Chiyo Shuzou")).toBe("Chiyo Shuzou%");
-    expect("Fukuchiyo shuzou yuugengaisha".toLowerCase().startsWith("chiyo shuzou")).toBe(
-      false
-    );
+    expect(brewerySakeNamePattern("Hakutsuru Shuzou")).toBe("Hakutsuru%");
+    expect(breweryBrandCore("Hakutsuru Shuzou")).toBe("Hakutsuru");
+    // "Chiyo%" must not match "Fukuchiyo…" as a prefix of the pattern itself —
+    // candidate fetch is broader; equality filter rejects unrelated names.
+    expect(brewerySakeNamePattern("Chiyo Shuzou")).toBe("Chiyo%");
+    expect("Fukuchiyo shuzou yuugengaisha".toLowerCase().startsWith("chiyo")).toBe(false);
   });
 
   test("strips LIKE metacharacters from brewery names", () => {
-    expect(brewerySakeNamePattern("100% Sake_Co")).toBe("100 Sake Co%");
+    // "%" / "_" removed first; corporate "Co" + trailing "Sake" then normalize to brand core.
+    expect(brewerySakeNamePattern("100% Sake_Co")).toBe("100%");
     expect(brewerySakeNamePattern("Aki%ta_Meijyo")).toBe("Aki ta Meijyo%");
   });
 });
@@ -64,9 +89,23 @@ describe("sakeBreweryMatchesCatalogName", () => {
     expect(sakeBreweryMatchesCatalogName("Kaetsu Co.,Ltd", "Kaetsu")).toBe(true);
   });
 
+  test("matches Shuzo spelling and English Sake Brewing / Sake Company forms", () => {
+    expect(sakeBreweryMatchesCatalogName("Asahi Shuzo", "Asahi Shuzou")).toBe(true);
+    expect(sakeBreweryMatchesCatalogName("Asahi Shuzo Co.,Ltd", "Asahi Shuzou")).toBe(true);
+    expect(sakeBreweryMatchesCatalogName("Asahi Shuzo (Niigata)", "Asahi Shuzou")).toBe(true);
+    expect(
+      sakeBreweryMatchesCatalogName("Hakutsuru Sake Brewing Co.,Ltd.", "Hakutsuru Shuzou")
+    ).toBe(true);
+    expect(sakeBreweryMatchesCatalogName("Gekkeikan Sake Co.,Ltd", "Gekkeikan")).toBe(true);
+    expect(sakeBreweryMatchesCatalogName("Gekkeikan Sake Company", "Gekkeikan")).toBe(true);
+  });
+
   test("rejects longer brewery names that only share a prefix", () => {
     expect(sakeBreweryMatchesCatalogName("Ito Shuzo Co.,Ltd.", "Ito")).toBe(false);
     expect(sakeBreweryMatchesCatalogName("Itou Co., Ltd", "Ito")).toBe(false);
     expect(sakeBreweryMatchesCatalogName("Kaetsu Shuzo", "Kaetsu")).toBe(false);
+    // Distinct catalog siblings must not cross-match.
+    expect(sakeBreweryMatchesCatalogName("Kaetsu Co.,Ltd", "Kaetsu Shuzou")).toBe(false);
+    expect(sakeBreweryMatchesCatalogName("Ito Shuzo Co.,Ltd.", "Ito Shuzou")).toBe(true);
   });
 });

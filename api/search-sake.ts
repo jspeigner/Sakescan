@@ -1,5 +1,8 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { searchSakeImageCandidates } from './cron/lib/sakeImageDiscovery.js';
+import {
+  resetFirecrawlBypassForInvocation,
+  searchSakeImageCandidates,
+} from './cron/lib/sakeImageDiscovery.js';
 import { requireAdmin } from './lib/requireAdmin.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -21,6 +24,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (!firecrawlApiKey) {
     return res.status(500).json({ error: 'Firecrawl API key not configured' });
   }
+
+  // Warm serverless isolates keep module state — clear sticky 429 bypass each request.
+  resetFirecrawlBypassForInvocation();
 
   try {
     const { images, sakeData } = await searchSakeImageCandidates(

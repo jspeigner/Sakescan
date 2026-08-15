@@ -9,10 +9,12 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Star, Droplets, Thermometer, Wine, Wheat, MapPin, Loader2 } from "lucide-react";
-import { supabase } from "@/lib/supabase";
-import type { Sake } from "@/lib/supabase-types";
 import { fetchSakeBySlug } from "@/lib/sake-slug";
-import { brewerySlugFromSakeBreweryField } from "@/lib/brewery-slug";
+import {
+  brewerySlugFromSakeBreweryField,
+  fetchBreweryBySlug,
+  fetchSakesForBreweryName,
+} from "@/lib/brewery-slug";
 import { sakeSlug } from "@/lib/slugify";
 import NotFound from "./NotFound";
 import { withImageCacheBust } from "@/lib/image-url";
@@ -31,18 +33,17 @@ export default function SakeDetail() {
   });
 
   const { data: relatedSakes } = useQuery({
-    queryKey: ["related-sake", sake?.brewery, sake?.type],
+    queryKey: ["related-sake", sake?.brewery],
     queryFn: async () => {
-      if (!sake) return [];
-      const { data } = await supabase
-        .from("sake")
-        .select("id, name, type, average_rating, image_url")
-        .eq("brewery", sake.brewery)
-        .neq("id", sake.id)
-        .limit(4);
-      return data ?? [];
+      if (!sake?.brewery) return [];
+      // Resolve to catalog brewery name so "Asahi Shuzo" / "Gekkeikan Sake Co.,Ltd"
+      // share a lineup with their Shuzou / bare-name catalog page.
+      const brewerySlug = brewerySlugFromSakeBreweryField(sake.brewery);
+      const catalog = brewerySlug ? await fetchBreweryBySlug(brewerySlug) : null;
+      const rows = await fetchSakesForBreweryName(catalog?.name ?? sake.brewery, 8);
+      return rows.filter((row) => row.id !== sake.id).slice(0, 4);
     },
-    enabled: !!sake,
+    enabled: !!sake?.brewery,
   });
 
   if (isLoading) {
@@ -164,7 +165,7 @@ export default function SakeDetail() {
                     </div>
                   </Card>
                 ) : null}
-                {sake.alcohol_percentage ? (
+                {sake.alcohol_percentage !== null && sake.alcohol_percentage !== undefined ? (
                   <Card className="p-3 flex items-center gap-3">
                     <Wine className="w-5 h-5 text-primary flex-shrink-0" />
                     <div>
@@ -182,7 +183,7 @@ export default function SakeDetail() {
                     </div>
                   </Card>
                 ) : null}
-                {sake.acidity ? (
+                {sake.acidity !== null && sake.acidity !== undefined ? (
                   <Card className="p-3 flex items-center gap-3">
                     <Droplets className="w-5 h-5 text-primary flex-shrink-0" />
                     <div>
@@ -200,13 +201,15 @@ export default function SakeDetail() {
                     <span className="text-sm text-muted-foreground">{sake.rice_variety}</span>
                   </div>
                 ) : null}
-                {sake.prefecture ? (
+                {sake.prefecture || sake.region ? (
                   <div className="flex items-start gap-2">
                     <span className="text-sm font-medium w-32 flex-shrink-0 flex items-center gap-1">
                       <MapPin className="w-3.5 h-3.5" /> Region
                     </span>
                     <span className="text-sm text-muted-foreground">
-                      {sake.prefecture}{sake.region ? `, ${sake.region}` : ""}
+                      {sake.prefecture && sake.region
+                        ? `${sake.prefecture}, ${sake.region}`
+                        : (sake.prefecture ?? sake.region)}
                     </span>
                   </div>
                 ) : null}

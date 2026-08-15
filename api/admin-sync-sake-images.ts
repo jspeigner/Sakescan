@@ -43,10 +43,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const admin = createClient(supabaseUrl, supabaseServiceKey);
 
+  const cleared = image_url == null || image_url === '';
   const { data, error } = await admin
     .from('sake')
     .update({
-      image_url: image_url ?? null,
+      image_url: cleared ? null : image_url,
+      ...(cleared
+        ? {
+            image_source: null,
+            image_quality: null,
+            image_verified_at: null,
+            image_contributor_scan_id: null,
+          }
+        : {}),
       updated_at: new Date().toISOString(),
     })
     .eq('id', sakeId)
