@@ -4,6 +4,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { hashImageUrl } from './imageHash.js';
+import { fetchPublicHttpUrl, isPublicHttpImageUrl } from './publicImageUrl.js';
 import { isOpenAIQuotaError, OpenAIVisionQuotaError } from './sakeImageVision.js';
 
 export const EMBEDDING_MODEL = 'text-embedding-3-small';
@@ -27,13 +28,12 @@ export type SakeEmbedRow = {
 
 async function imageUrlToDataUrl(imageUrl: string): Promise<string | null> {
   try {
-    const res = await fetch(imageUrl, {
+    const res = await fetchPublicHttpUrl(imageUrl, {
       headers: {
         'User-Agent':
           'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         Accept: 'image/*,*/*;q=0.8',
       },
-      redirect: 'follow',
     });
     if (!res.ok) return null;
     const ct = res.headers.get('content-type') || 'image/jpeg';
@@ -53,6 +53,10 @@ export async function extractLabelTextFromImage(
   imageUrl: string,
   context?: { sakeName?: string; brewery?: string | null }
 ): Promise<LabelExtractResult> {
+  if (!isPublicHttpImageUrl(imageUrl)) {
+    return { labelText: '', brandGuess: null, breweryGuess: null, rawLines: [] };
+  }
+
   const system =
     'You read Japanese sake bottle labels for a product database. Reply with JSON only.';
   const hint =
@@ -74,6 +78,7 @@ If the image is not a sake label, still return best-effort empty-ish fields.`;
 
   let imagePart: { type: 'image_url'; image_url: { url: string; detail: 'low' } };
   const dataUrl = await imageUrlToDataUrl(imageUrl);
+  // Never fall back to a raw URL OpenAI would fetch unless it already passed the public check.
   imagePart = {
     type: 'image_url',
     image_url: { url: dataUrl || imageUrl, detail: 'low' },
