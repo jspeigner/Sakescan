@@ -1,6 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
 import { hashImageUrl } from './cron/lib/imageHash.js';
+import { isPublicHttpImageUrl, NonPublicUrlError } from './cron/lib/publicImageUrl.js';
 import {
   buildEmbedInput,
   embedText,
@@ -57,8 +58,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     allowWineEngineFallback?: boolean;
   };
   const imageUrl = typeof body.imageUrl === 'string' ? body.imageUrl.trim() : '';
-  if (!imageUrl.startsWith('http')) {
-    return res.status(400).json({ error: 'imageUrl must be a valid http(s) URL' });
+  if (!isPublicHttpImageUrl(imageUrl)) {
+    return res.status(400).json({
+      error: 'imageUrl must be a public http(s) URL',
+      hint: 'Localhost, private, and link-local addresses are not allowed.',
+    });
   }
 
   const allowWineEngineFallback = body.allowWineEngineFallback !== false;
@@ -160,6 +164,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       embedInput,
     });
   } catch (e) {
+    if (e instanceof NonPublicUrlError) {
+      return res.status(400).json({ error: 'imageUrl must be a public http(s) URL' });
+    }
     const msg = e instanceof Error ? e.message : String(e);
     console.error('[identify-sake]', msg);
     return res.status(500).json({ error: 'Identify failed', details: msg });

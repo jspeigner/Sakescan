@@ -1,5 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
+import { isPublicHttpImageUrl, NonPublicUrlError } from './cron/lib/publicImageUrl.js';
 import { getWineEngineConfig, wineEngineConfirmsSake } from './cron/lib/wineEngine.js';
 import { getWineEngineQuota, identifySearchBudget } from './cron/lib/wineEngineQuota.js';
 import { searchWineEngineCached } from './cron/lib/wineEngineCachedSearch.js';
@@ -44,8 +45,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const body = req.body as { imageUrl?: string; limit?: number };
   const imageUrl = typeof body.imageUrl === 'string' ? body.imageUrl.trim() : '';
-  if (!imageUrl.startsWith('http')) {
-    return res.status(400).json({ error: 'imageUrl must be a valid http(s) URL' });
+  if (!isPublicHttpImageUrl(imageUrl)) {
+    return res.status(400).json({
+      error: 'imageUrl must be a public http(s) URL',
+      hint: 'Localhost, private, and link-local addresses are not allowed.',
+    });
   }
 
   const supabase = createClient(supabaseUrl, supabaseServiceKey);
@@ -114,6 +118,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       quota: await getWineEngineQuota(supabase),
     });
   } catch (e) {
+    if (e instanceof NonPublicUrlError) {
+      return res.status(400).json({ error: 'imageUrl must be a public http(s) URL' });
+    }
     const msg = e instanceof Error ? e.message : String(e);
     console.error('[wineengine-identify]', msg);
     return res.status(500).json({ error: 'WineEngine identify failed', details: msg });
