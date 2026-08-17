@@ -26,9 +26,28 @@ raw="$(curl "${curl_args[@]}" "$STATS_URL")" || {
 
 report="$(python3 - "$raw" <<'PY'
 import json, sys
+from datetime import datetime, timezone
 
 raw = sys.argv[1]
 d = json.loads(raw)
+
+def parse_timestamp(value):
+    if not isinstance(value, str) or not value:
+        return None
+    normalized = value.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+def age_hours(run_at, now):
+    parsed = parse_timestamp(run_at)
+    if parsed is None or now is None:
+        return None
+    return round(max(0, (now - parsed).total_seconds()) / 3600, 1)
 
 endpoint_error = d.get("error")
 has_stats_shape = isinstance(d.get("gaps"), dict) and isinstance(d.get("discoverHealth"), dict)
@@ -80,6 +99,10 @@ discover_stop_reason = discover.get("stopReason", discover.get("_stopReason"))
 discover_run_at = discover.get("runAt", discover.get("_timestamp"))
 promote_status = promote.get("status", promote.get("_status"))
 promote_run_at = promote.get("runAt", promote.get("_timestamp"))
+now = parse_timestamp(d.get("timestamp")) or datetime.now(timezone.utc)
+discover_age_hours = age_hours(discover_run_at, now)
+promote_age_hours = age_hours(promote_run_at, now)
+stale_threshold_hours = 72
 
 alerts = []
 if endpoint_error:
@@ -94,6 +117,13 @@ if env.get("lastDiscoverOpenaiQuotaExceeded"):
     alerts.append("OpenAI vision quota exceeded on last discover run")
 if env.get("lastDiscoverFirecrawlErrors", 0) >= 8:
     alerts.append(f"High Firecrawl errors ({env.get('lastDiscoverFirecrawlErrors')})")
+if has_stats_shape and (missing or 0) > 0:
+    if not discover_run_at:
+        alerts.append("No recent discover run timestamp while images are still missing")
+    elif discover_age_hours is not None and discover_age_hours >= stale_threshold_hours:
+        alerts.append(
+            f"Latest discover run is stale ({discover_age_hours}h old) while {missing} images are still missing"
+        )
 if streak >= 20 and (yield_rate or 0) == 0 and promote_count == 0:
     alerts.append(f"Low-yield streak {streak} with zero recent yield — import may be stalled")
 if last_status and last_status != "ok":
@@ -121,6 +151,7 @@ out = {
         "firecrawlErrors": firecrawl_err,
         "stopReason": discover_stop_reason,
         "runAt": discover_run_at,
+        "ageHours": discover_age_hours,
     },
     "latestPromote": {
         "promoted": promote_count,
@@ -129,11 +160,13 @@ out = {
         "skippedUnusableUrl": skipped_unusable_url,
         "status": promote_status,
         "runAt": promote_run_at,
+        "ageHours": promote_age_hours,
     },
     "skipFlags": skip,
     "environmentalBackoffCleared": backoff_cleared,
     "openaiQuotaRecommendation": openai_rec,
     "discoverQuotaRecommendation": discover_rec,
+    "staleDiscoverThresholdHours": stale_threshold_hours,
     "alerts": alerts,
     "signals": {
         "trustedFirstFastMode": vision == 0 and placed > 0,
