@@ -1,7 +1,8 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
 import { requireCronOrAdmin } from '../lib/requireCronOrAdmin.js';
-import { logBackfillRun } from './lib/backfillState.js';
+import { getBackfillState, logBackfillRun, type DiscoverHealthState } from './lib/backfillState.js';
+import { DISCOVER_ROW_CAP_DEFAULT, discoverRowCapForRun } from './lib/discoverPolicy.js';
 import { invokeProcessImages } from './lib/invokeProcessImages.js';
 
 /**
@@ -25,6 +26,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   const supabase = createClient(supabaseUrl, supabaseServiceKey);
+  const discoverHealth = await getBackfillState<DiscoverHealthState>(supabase, 'discover_health', {
+    yields: [],
+    lowYieldStreak: 0,
+  });
   const t0 = Date.now();
   const inv = await invokeProcessImages(
     {
@@ -32,7 +37,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       search: 'trusted-first',
       speed: 'accelerated',
       budgetMs: '90000',
-      rowCap: '20',
+      rowCap: String(discoverRowCapForRun(DISCOVER_ROW_CAP_DEFAULT, discoverHealth.yields)),
     },
     req
   );

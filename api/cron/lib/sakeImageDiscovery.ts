@@ -196,6 +196,31 @@ function buildSakeImageSearchQueries(
   return queries.slice(0, maxQueries);
 }
 
+/** Untrusted URLs need a strong name/brewery match before we spend vision tokens. */
+const STRONG_UNTRUSTED_VISION_SCORE = 6;
+
+export function untrustedCandidateRelevance(
+  url: string,
+  title: string | undefined,
+  name: string,
+  nameJapanese?: string | null,
+  brewery?: string | null
+): number {
+  return relevanceScore(url, title, searchTokens(name, nameJapanese ?? undefined, brewery ?? undefined));
+}
+
+export function shouldSpendVisionOnUntrustedCandidate(
+  url: string,
+  title: string | undefined,
+  name: string,
+  nameJapanese?: string | null,
+  brewery?: string | null
+): boolean {
+  return (
+    untrustedCandidateRelevance(url, title, name, nameJapanese, brewery) >= STRONG_UNTRUSTED_VISION_SCORE
+  );
+}
+
 /** Drop weak Bing/Google hits before expensive vision checks. */
 export function prefilterDiscoverCandidates(
   images: SearchImageRow[],

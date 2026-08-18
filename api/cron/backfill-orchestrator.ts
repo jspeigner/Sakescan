@@ -3,7 +3,6 @@ import { createClient } from '@supabase/supabase-js';
 import {
   getBackfillState,
   logBackfillRun,
-  recordDiscoverYield,
   setBackfillState,
   shouldUseAdaptiveDiscover,
   type DiscoverHealthState,
@@ -23,6 +22,7 @@ import { isFirecrawlBypassActive } from './lib/sakeImageDiscovery.js';
 import { invokeProcessImages } from './lib/invokeProcessImages.js';
 import { requireCronOrAdmin } from '../lib/requireCronOrAdmin.js';
 import { cronBearerMatches } from '../lib/cronAuth.js';
+import { DISCOVER_ROW_CAP_DEFAULT, discoverRowCapForRun } from './lib/discoverPolicy.js';
 
 const RUN_BUDGET_MS = 180_000;
 const DISCOVER_BUDGET_RESERVE_MS = 8_000;
@@ -94,7 +94,7 @@ async function resetEnvironmentalBackoffOnStartup(
   supabase: ReturnType<typeof createClient>
 ): Promise<number> {
   const now = new Date().toISOString();
-  const patterns = ['openai', 'quota', 'time_budget'];
+  const patterns = ['openai_quota', 'openai vision http 429', 'firecrawl_quota'];
   let cleared = 0;
   for (const pattern of patterns) {
     const { data, error } = await supabase
@@ -105,14 +105,6 @@ async function resetEnvironmentalBackoffOnStartup(
       .select('sake_id');
     if (!error && data) cleared += data.length;
   }
-  // Also clear WineEngine false-reject backoffs that starved discover.
-  const { data: weData, error: weErr } = await supabase
-    .from('sake_image_attempts')
-    .update({ next_retry_at: null, updated_at: now })
-    .eq('last_failure_reason', 'wineengine_matched_other_sake')
-    .gt('next_retry_at', now)
-    .select('sake_id');
-  if (!weErr && weData) cleared += weData.length;
   return cleared;
 }
 
@@ -373,7 +365,12 @@ async function runImagesDiscoverPhase(params: {
       search: 'trusted-first',
       speed: openaiRecovered ? 'accelerated' : 'normal',
       budgetMs: String(discoverBudgetMs),
-      rowCap: prioritizeDiscover ? '28' : openaiRecovered ? '20' : '12',
+      rowCap: String(
+        discoverRowCapForRun(
+          prioritizeDiscover ? DISCOVER_ROW_CAP_DEFAULT : 10,
+          params.discoverHealth.yields
+        )
+      ),
     },
     req
   );
@@ -398,15 +395,14 @@ async function runImagesDiscoverPhase(params: {
     (discoverJson?.diagnostics as { discover?: { placedRows?: number } })?.discover?.placedRows ??
     0;
   const errors: string[] = [];
-
-  if (typeof attempts === 'number' && attempts > 0) {
-    discoverHealth = recordDiscoverYield(discoverHealth, attempts, placed as number);
-    try {
-      await setBackfillState(params.supabase, DISCOVER_HEALTH_KEY, discoverHealth);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      errors.push(`discover health: ${msg.slice(0, 120)}`);
-    }
+  try {
+    discoverHealth = await getBackfillState<DiscoverHealthState>(
+      params.supabase,
+      DISCOVER_HEALTH_KEY,
+      discoverHealth
+    );
+  } catch {
+    /* process-images already persisted yield when possible */
   }
 
   const discoverErrors = [
