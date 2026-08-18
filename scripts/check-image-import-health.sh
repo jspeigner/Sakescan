@@ -75,7 +75,8 @@ promote_count = promote.get("promoted", 0)
 skipped_unusable_url = promote.get("skippedUnusableUrl", promote.get("skippedInvalidUrl"))
 openai_rec = env.get("openaiQuotaRecommendation")
 discover_rec = env.get("discoverQuotaRecommendation")
-last_status = last.get("status")
+last_summary = d.get("lastRunSummary") or {}
+last_status = last.get("status") or last_summary.get("status")
 errors = last.get("errors") or []
 discover_stop_reason = discover.get("stopReason", discover.get("_stopReason"))
 discover_run_at = discover.get("runAt", discover.get("_timestamp"))
@@ -171,6 +172,7 @@ out = {
         "runAt": promote_run_at,
         "ageHours": round(promote_age_hours, 1) if promote_age_hours is not None else None,
     },
+    "lastRunSummary": last_summary,
     "skipFlags": skip,
     "environmentalBackoffCleared": backoff_cleared,
     "openaiQuotaRecommendation": openai_rec,
@@ -178,8 +180,8 @@ out = {
     "alerts": alerts,
     "signals": {
         "trustedFirstFastMode": vision == 0 and placed > 0,
-        "adaptiveDiscover": last.get("adaptiveDiscover"),
-        "prioritizeDiscover": last.get("prioritizeDiscover"),
+        "adaptiveDiscover": last.get("adaptiveDiscover") if last.get("adaptiveDiscover") is not None else last_summary.get("adaptiveDiscover"),
+        "prioritizeDiscover": last.get("prioritizeDiscover") if last.get("prioritizeDiscover") is not None else last_summary.get("prioritizeDiscover"),
         "firecrawlBypassActive": env.get("firecrawlBypassActive"),
         "scanPromoteActive": promote_count > 0,
     },

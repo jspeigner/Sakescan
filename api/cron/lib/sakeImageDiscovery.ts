@@ -254,6 +254,7 @@ async function firecrawlScrapeV1(
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(20_000),
     });
     if (!res.ok) {
       const errText = await res.text();
@@ -285,6 +286,7 @@ async function firecrawlScrapeV2(
         onlyMainContent: false,
         maxAge: 0,
       }),
+      signal: AbortSignal.timeout(20_000),
     });
     if (!res.ok) {
       const errText = await res.text();
