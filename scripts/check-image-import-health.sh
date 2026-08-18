@@ -25,7 +25,8 @@ raw="$(curl "${curl_args[@]}" "$STATS_URL")" || {
 }
 
 report="$(python3 - "$raw" <<'PY'
-import json, sys
+import json, os, sys
+from datetime import datetime, timezone
 
 raw = sys.argv[1]
 d = json.loads(raw)
@@ -74,12 +75,42 @@ promote_count = promote.get("promoted", 0)
 skipped_unusable_url = promote.get("skippedUnusableUrl", promote.get("skippedInvalidUrl"))
 openai_rec = env.get("openaiQuotaRecommendation")
 discover_rec = env.get("discoverQuotaRecommendation")
-last_status = last.get("status")
+last_summary = d.get("lastRunSummary") or {}
+last_status = last.get("status") or last_summary.get("status")
 errors = last.get("errors") or []
 discover_stop_reason = discover.get("stopReason", discover.get("_stopReason"))
 discover_run_at = discover.get("runAt", discover.get("_timestamp"))
 promote_status = promote.get("status", promote.get("_status"))
 promote_run_at = promote.get("runAt", promote.get("_timestamp"))
+
+def parse_timestamp(value):
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+def age_hours(run_at, as_of):
+    parsed = parse_timestamp(run_at)
+    if parsed is None:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    delta = as_of - parsed.astimezone(timezone.utc)
+    return max(0, delta.total_seconds() / 3600)
+
+as_of = parse_timestamp(d.get("timestamp")) or datetime.now(timezone.utc)
+if as_of.tzinfo is None:
+    as_of = as_of.replace(tzinfo=timezone.utc)
+else:
+    as_of = as_of.astimezone(timezone.utc)
+try:
+    stale_discover_hours = float(os.environ.get("SAKESCAN_STALE_DISCOVER_HOURS", "72"))
+except ValueError:
+    stale_discover_hours = 72.0
+discover_age_hours = age_hours(discover_run_at, as_of)
+promote_age_hours = age_hours(promote_run_at, as_of)
 
 alerts = []
 if endpoint_error:
@@ -96,6 +127,15 @@ if env.get("lastDiscoverFirecrawlErrors", 0) >= 8:
     alerts.append(f"High Firecrawl errors ({env.get('lastDiscoverFirecrawlErrors')})")
 if streak >= 20 and (yield_rate or 0) == 0 and promote_count == 0:
     alerts.append(f"Low-yield streak {streak} with zero recent yield — import may be stalled")
+if (missing or 0) > 0:
+    if discover_run_at is None:
+        alerts.append("No discover run evidence while images are still missing")
+    elif discover_age_hours is None:
+        alerts.append(f"Could not parse latest discover run timestamp: {discover_run_at}")
+    elif discover_age_hours is not None and discover_age_hours > stale_discover_hours:
+        alerts.append(
+            f"Latest discover run is stale ({discover_age_hours:.1f}h old; threshold {stale_discover_hours:.0f}h)"
+        )
 if last_status and last_status != "ok":
     alerts.append(f"Last orchestrator status: {last_status}")
 if errors:
@@ -121,6 +161,7 @@ out = {
         "firecrawlErrors": firecrawl_err,
         "stopReason": discover_stop_reason,
         "runAt": discover_run_at,
+        "ageHours": round(discover_age_hours, 1) if discover_age_hours is not None else None,
     },
     "latestPromote": {
         "promoted": promote_count,
@@ -129,7 +170,9 @@ out = {
         "skippedUnusableUrl": skipped_unusable_url,
         "status": promote_status,
         "runAt": promote_run_at,
+        "ageHours": round(promote_age_hours, 1) if promote_age_hours is not None else None,
     },
+    "lastRunSummary": last_summary,
     "skipFlags": skip,
     "environmentalBackoffCleared": backoff_cleared,
     "openaiQuotaRecommendation": openai_rec,
@@ -137,8 +180,8 @@ out = {
     "alerts": alerts,
     "signals": {
         "trustedFirstFastMode": vision == 0 and placed > 0,
-        "adaptiveDiscover": last.get("adaptiveDiscover"),
-        "prioritizeDiscover": last.get("prioritizeDiscover"),
+        "adaptiveDiscover": last.get("adaptiveDiscover") if last.get("adaptiveDiscover") is not None else last_summary.get("adaptiveDiscover"),
+        "prioritizeDiscover": last.get("prioritizeDiscover") if last.get("prioritizeDiscover") is not None else last_summary.get("prioritizeDiscover"),
         "firecrawlBypassActive": env.get("firecrawlBypassActive"),
         "scanPromoteActive": promote_count > 0,
     },
