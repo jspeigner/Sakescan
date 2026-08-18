@@ -3,6 +3,7 @@ import {
   isTrustedImageUrl,
   isTrustedRetailerSource,
   shouldClearCatalogUrlAsNonSakeProduct,
+  shouldSpendVisionOnUntrustedCandidate,
   urlLooksLikeNonSakeProduct,
 } from './sakeImageDiscovery';
 
@@ -63,6 +64,27 @@ describe('trusted image vision exemptions', () => {
   test('still trusts first-party retailer hosts', () => {
     expect(isTrustedImageUrl('https://export.sakurasaketen.com/images/dassai.jpg')).toBe(true);
     expect(isTrustedImageUrl('https://images.umamimart.com/products/dassai.jpg')).toBe(true);
+  });
+
+  test('skips vision on weak untrusted URLs and allows strong name matches', () => {
+    expect(
+      shouldSpendVisionOnUntrustedCandidate(
+        'https://cdn.example.com/random-bottle.jpg',
+        'Bottle',
+        'Dassai 45',
+        '獺祭',
+        'Asahi Shuzo'
+      )
+    ).toBe(false);
+    expect(
+      shouldSpendVisionOnUntrustedCandidate(
+        'https://cdn.example.com/products/dassai-45-asahi-shuzo-sake.jpg',
+        'Dassai 45 Asahi Shuzo sake',
+        'Dassai 45',
+        null,
+        'Asahi Shuzo'
+      )
+    ).toBe(true);
   });
 
   test('search-page source labels are not vision-exempt', () => {
