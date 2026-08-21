@@ -68,9 +68,15 @@ for log in logs:
         break
 
 placed = discover.get("placed", 0)
+attempts = discover.get("attempts")
 vision = discover.get("visionChecks", 0)
 yield_rate = discover.get("yield")
 firecrawl_err = discover.get("firecrawlErrors", 0)
+eligible_rows = discover.get("eligibleRows")
+skipped_by_backoff = discover.get("skippedByBackoff")
+skipped_exhausted = discover.get("skippedExhausted")
+candidate_urls_seen = discover.get("candidateUrlsSeen")
+rows_with_no_candidates = discover.get("rowsWithNoCandidates")
 promote_count = promote.get("promoted", 0)
 skipped_unusable_url = promote.get("skippedUnusableUrl", promote.get("skippedInvalidUrl"))
 openai_rec = env.get("openaiQuotaRecommendation")
@@ -136,6 +142,16 @@ if (missing or 0) > 0:
         alerts.append(
             f"Latest discover run is stale ({discover_age_hours:.1f}h old; threshold {stale_discover_hours:.0f}h)"
         )
+    if discover_run_at is not None and placed == 0 and (
+        attempts is None or attempts > 0 or vision > 0 or (candidate_urls_seen or 0) > 0
+    ):
+        detail = f"attempts={attempts}" if attempts is not None else f"visionChecks={vision}"
+        alerts.append(f"Latest discover run placed 0 images while {missing} images are still missing ({detail})")
+    if eligible_rows == 0 and ((skipped_by_backoff or 0) > 0 or (skipped_exhausted or 0) > 0):
+        alerts.append(
+            "Discover found no eligible rows "
+            f"(backoff={skipped_by_backoff or 0}, exhausted={skipped_exhausted or 0})"
+        )
 if last_status and last_status != "ok":
     alerts.append(f"Last orchestrator status: {last_status}")
 if errors:
@@ -156,9 +172,18 @@ out = {
     "recentYields": yields[-5:],
     "latestDiscover": {
         "placed": placed,
+        "attempts": attempts,
         "visionChecks": vision,
         "yield": yield_rate,
         "firecrawlErrors": firecrawl_err,
+        "eligibleRows": eligible_rows,
+        "skippedByBackoff": skipped_by_backoff,
+        "skippedExhausted": skipped_exhausted,
+        "candidateUrlsSeen": candidate_urls_seen,
+        "rowsWithNoCandidates": rows_with_no_candidates,
+        "poolRows": discover.get("poolRows"),
+        "poolPagesScanned": discover.get("poolPagesScanned"),
+        "poolScanLimitReached": discover.get("poolScanLimitReached"),
         "stopReason": discover_stop_reason,
         "runAt": discover_run_at,
         "ageHours": round(discover_age_hours, 1) if discover_age_hours is not None else None,

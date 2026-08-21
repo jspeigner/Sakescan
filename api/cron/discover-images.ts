@@ -43,6 +43,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   );
 
   const health = (inv.json?.discoverHealth as Record<string, unknown> | undefined) ?? {};
+  const discoverDiagnostics =
+    ((inv.json?.diagnostics as { discover?: Record<string, unknown> } | undefined)?.discover) ?? {};
   const errors = [
     ...(inv.error ? [inv.error] : []),
     ...(((inv.json?.errors as string[] | undefined) ?? []).slice(0, 4)),
@@ -61,6 +63,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           stats: {
             sakeDiscovered: inv.json?.sakeDiscovered,
             discoverHealth: health,
+            discoverDiagnostics,
             stopReason: inv.json?.stopReason,
             openaiVisionQuotaExceeded: inv.json?.openaiVisionQuotaExceeded,
           },
