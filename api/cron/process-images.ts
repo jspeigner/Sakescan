@@ -75,7 +75,8 @@ const CHUNK_WALL_MS = 7500;
 /** Discover mode is slower (Firecrawl + vision), so allow a longer chunk budget. */
 const DISCOVER_CHUNK_WALL_MS = 25000;
 const DISCOVER_CHUNK_WALL_MS_ACCELERATED = 55000;
-const DISCOVER_POOL_LIMIT = 2000;
+const DISCOVER_POOL_PAGE_LIMIT = 2000;
+const DISCOVER_POOL_SCAN_LIMIT = 12000;
 const DISCOVER_HEALTH_KEY = 'discover_health';
 
 type SakeRow = {
@@ -396,6 +397,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         attemptHistoryReadErrors: 0,
         attemptHistoryBatches: 0,
         attemptHistoryWriteErrors: 0,
+        poolPagesScanned: 0,
+        poolScanLimitReached: false,
         prefilterDropped: 0,
         environmentalBackoffCleared: 0,
         wineEngineChecks: 0,
@@ -500,14 +503,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (firecrawlKey && openaiKey && !rateLimited && !hitTimeBudget) {
       resetFirecrawlBypassForInvocation();
       resetOpenAIVisionQuotaForInvocation();
-      const { data: missingPool } = await supabase
-        .from('sake')
-        .select('id, name, name_japanese, brewery, image_url, image_quality')
-        .or('image_url.is.null,image_url.eq.')
-        .order('updated_at', { ascending: true })
-        .limit(DISCOVER_POOL_LIMIT);
-      diagnostics.discover.poolRows = (missingPool || []).length;
-
       // Prefer hot sakes (recently scanned) when filling gaps.
       let hotIds = new Set<string>();
       try {
@@ -525,39 +520,66 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         hotIds = new Set();
       }
 
-      const missingRows = ((missingPool || []) as SakeRow[]).filter((row) => {
-        if (isMissingImageUrl(row.image_url)) return true;
-        diagnostics.discover.skippedAlreadyHasImage++;
-        return false;
-      });
-      diagnostics.discover.randomizedPoolRows = missingRows.length;
-      const attemptHistoryLoad = await loadAttemptHistoryBySakeIds(
-        supabase,
-        missingRows.map((r) => r.id)
-      );
-      const attemptBySakeId = attemptHistoryLoad.map;
-      diagnostics.discover.attemptHistoryBatches = attemptHistoryLoad.batches;
-      if (attemptHistoryLoad.readErrors > 0) {
-        diagnostics.discover.attemptHistoryReadErrors += attemptHistoryLoad.readErrors;
-        attemptHistoryLoad.errorSamples.forEach((m) =>
-          errors.push(`attempt-history read: ${m}`)
-        );
-      }
-
       const nowMs = Date.now();
+      const attemptBySakeId = new Map<string, SakeImageAttemptRow>();
       const dueRows: SakeRow[] = [];
-      for (const row of missingRows) {
-        const skip = discoverSkipReason(attemptBySakeId.get(row.id), nowMs);
-        if (skip === 'exhausted') {
-          diagnostics.discover.skippedExhausted++;
-          continue;
+      const targetEligibleRows = Math.max(discoverRowCapThisRun * 3, DISCOVER_ROW_CAP_DEFAULT);
+      for (
+        let offset = 0;
+        offset < DISCOVER_POOL_SCAN_LIMIT && dueRows.length < targetEligibleRows;
+        offset += DISCOVER_POOL_PAGE_LIMIT
+      ) {
+        const { data: missingPool } = await supabase
+          .from('sake')
+          .select('id, name, name_japanese, brewery, image_url, image_quality')
+          .or('image_url.is.null,image_url.eq.')
+          .order('updated_at', { ascending: true })
+          .range(offset, offset + DISCOVER_POOL_PAGE_LIMIT - 1);
+        const pageRows = ((missingPool || []) as SakeRow[]);
+        diagnostics.discover.poolPagesScanned++;
+        diagnostics.discover.poolRows += pageRows.length;
+
+        const missingRows = pageRows.filter((row) => {
+          if (isMissingImageUrl(row.image_url)) return true;
+          diagnostics.discover.skippedAlreadyHasImage++;
+          return false;
+        });
+        diagnostics.discover.randomizedPoolRows += missingRows.length;
+
+        const attemptHistoryLoad = await loadAttemptHistoryBySakeIds(
+          supabase,
+          missingRows.map((r) => r.id)
+        );
+        attemptHistoryLoad.map.forEach((value, key) => {
+          attemptBySakeId.set(key, value);
+        });
+        diagnostics.discover.attemptHistoryBatches += attemptHistoryLoad.batches;
+        if (attemptHistoryLoad.readErrors > 0) {
+          diagnostics.discover.attemptHistoryReadErrors += attemptHistoryLoad.readErrors;
+          attemptHistoryLoad.errorSamples.forEach((m) =>
+            errors.push(`attempt-history read: ${m}`)
+          );
         }
-        if (skip === 'backoff') {
-          diagnostics.discover.skippedByBackoff++;
-          continue;
+
+        for (const row of missingRows) {
+          const skip = discoverSkipReason(attemptBySakeId.get(row.id), nowMs);
+          if (skip === 'exhausted') {
+            diagnostics.discover.skippedExhausted++;
+            continue;
+          }
+          if (skip === 'backoff') {
+            diagnostics.discover.skippedByBackoff++;
+            continue;
+          }
+          dueRows.push(row);
         }
-        dueRows.push(row);
+
+        if (pageRows.length < DISCOVER_POOL_PAGE_LIMIT) {
+          break;
+        }
       }
+      diagnostics.discover.poolScanLimitReached =
+        diagnostics.discover.poolRows >= DISCOVER_POOL_SCAN_LIMIT && dueRows.length < targetEligibleRows;
       const eligibleRows = prioritizeDiscoverRows(dueRows, attemptBySakeId, hotIds);
       diagnostics.discover.eligibleRows = eligibleRows.length;
       let discoverAttempts = 0;
