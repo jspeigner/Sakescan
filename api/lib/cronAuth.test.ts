@@ -35,13 +35,44 @@ describe('cron auth', () => {
     expect(isVercelCronRequest({ 'x-vercel-cron': '1' })).toBe(true);
     expect(isVercelCronRequest({ 'x-vercel-cron': ['1'] })).toBe(true);
     expect(isVercelCronRequest({ 'x-vercel-cron': 'true' })).toBe(true);
+    expect(
+      isVercelCronRequest({
+        'x-vercel-cron-schedule': '*/15 * * * *',
+        'user-agent': 'vercel-cron/1.0',
+      })
+    ).toBe(true);
+    expect(
+      isVercelCronRequest({
+        'x-vercel-cron-schedule': '*/15 * * * *',
+        'user-agent': 'Mozilla/5.0',
+      })
+    ).toBe(false);
+    expect(isVercelCronRequest({ 'x-vercel-cron-schedule': '*/15 * * * *' })).toBe(false);
     expect(isVercelCronRequest({})).toBe(false);
   });
 
   test('authorizes scheduled Vercel jobs even without CRON_SECRET', () => {
     expect(isAuthorizedCronRequest({ 'x-vercel-cron': '1' }, undefined)).toBe(true);
+    expect(
+      isAuthorizedCronRequest(
+        {
+          'x-vercel-cron-schedule': '*/10 * * * *',
+          'user-agent': 'vercel-cron/1.0',
+        },
+        undefined
+      )
+    ).toBe(true);
     expect(isAuthorizedCronRequest({ authorization: 'Bearer secret-1' }, 'secret-1')).toBe(true);
     expect(isAuthorizedCronRequest({ authorization: ['Bearer secret-1'] }, 'secret-1')).toBe(true);
+    expect(
+      isAuthorizedCronRequest(
+        {
+          'x-vercel-cron-schedule': '*/10 * * * *',
+          'user-agent': 'vercel-cron/1.0',
+        },
+        'secret-1'
+      )
+    ).toBe(false);
     expect(isAuthorizedCronRequest({}, 'secret-1')).toBe(false);
     expect(isAuthorizedCronRequest({ authorization: 'Bearer other' }, 'secret-1')).toBe(false);
   });
