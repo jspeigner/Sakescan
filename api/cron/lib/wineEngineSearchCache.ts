@@ -41,7 +41,11 @@ function toResponse(cached: CachedWineEngineSearch): WineEngineResponse<WineEngi
   };
 }
 
-/** Latest successful-or-fail logged search for this image hash (used as unpaid cache). */
+/**
+ * Latest *successful* live search for this image hash (unpaid cache).
+ * Failures must not be cached — a transient TinEye/API outage would otherwise
+ * permanently short-circuit identify/discover for that image.
+ */
 export async function getCachedSearch(
   supabase: SupabaseClient,
   querySha256: string
@@ -53,6 +57,7 @@ export async function getCachedSearch(
     )
     .eq('query_sha256', querySha256)
     .eq('cache_hit', false)
+    .eq('status', 'ok')
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle();
@@ -62,7 +67,7 @@ export async function getCachedSearch(
   const matches = Array.isArray(data.raw_result) ? (data.raw_result as WineEngineMatch[]) : [];
   return {
     querySha256: data.query_sha256,
-    status: data.status || 'ok',
+    status: 'ok',
     topSakeId: data.top_sake_id ?? null,
     topScore: data.top_score ?? null,
     topScoreText: data.top_score_text ?? null,
@@ -70,6 +75,11 @@ export async function getCachedSearch(
     matches,
     cacheHit: true,
   };
+}
+
+/** Pure helper for tests: only ok live rows are reusable cache hits. */
+export function isReusableWineEngineCacheStatus(status: string | null | undefined): boolean {
+  return status === 'ok';
 }
 
 export function cachedSearchToWineEngineResponse(

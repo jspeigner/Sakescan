@@ -37,6 +37,30 @@ export type WineEngineBatchResult = {
   errors: string[];
 };
 
+/**
+ * Next cursor for the unindexed (`wineengine_indexed_at IS NULL`) queue.
+ *
+ * Successful adds leave that filter, so advancing by `added` / full `processed`
+ * skips rows that slide into earlier positions (especially after a mid-batch
+ * quota stop). Only sticky failures still occupy the front of the set.
+ */
+export function nextWineEngineSyncOffset(params: {
+  added: number;
+  failed: number;
+  skippedQuota: number;
+}): number {
+  // Mid-batch quota stop: unattempted rows are now at the front — do not skip them.
+  // Sticky failures from this batch (if any) sit ahead of that work.
+  if (params.skippedQuota > 0) {
+    return Math.max(0, params.failed);
+  }
+  // Full window done: skip only failures that remain in the filter; successes are gone.
+  if (params.failed > 0) {
+    return params.failed;
+  }
+  return 0;
+}
+
 export async function runWineEngineSyncBatch(
   supabase: SupabaseClient,
   _supabaseUrl: string,
@@ -142,9 +166,7 @@ export async function runWineEngineSyncBatch(
 
   const processed = (rows || []).length;
   const hasMore = processed === batchSize && skippedQuota === 0;
-  // Advance past processed rows; do not wrap to 0 on a successful last page (re-adds burn image quota).
-  const nextOffset =
-    skippedQuota > 0 ? offset + added + failed : offset + processed;
+  const nextOffset = nextWineEngineSyncOffset({ added, failed, skippedQuota });
 
   await setBackfillState(supabase, WINEENGINE_STATE_KEY, { offset: nextOffset });
 
