@@ -21,6 +21,12 @@ mock.module('@supabase/supabase-js', () => ({
 }));
 
 mock.module('./lib/invokeProcessImages.ts', () => ({
+  forwardedProcessImageHeaders: (req: VercelRequest) => ({
+    authorization: req.headers.authorization,
+    'x-vercel-cron': req.headers['x-vercel-cron'],
+    'x-vercel-cron-schedule': req.headers['x-vercel-cron-schedule'],
+    'user-agent': req.headers['user-agent'],
+  }),
   invokeProcessImages: async (_query: Record<string, string>) => {
     discoverCalls += 1;
     return {
@@ -66,7 +72,10 @@ function mockRes() {
 function cronReq(): VercelRequest {
   return {
     method: 'GET',
-    headers: { 'x-vercel-cron': '1' },
+    headers: {
+      'x-vercel-cron-schedule': '*/15 * * * *',
+      'user-agent': 'vercel-cron/1.0',
+    },
     query: {},
   } as unknown as VercelRequest;
 }

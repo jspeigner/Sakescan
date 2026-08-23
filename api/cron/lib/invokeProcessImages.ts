@@ -2,6 +2,15 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import processImagesHandler from '../process-images.js';
 
 /** Run process-images in-process (avoids Vercel Deployment Protection on self-fetch). */
+export function forwardedProcessImageHeaders(parentReq: VercelRequest) {
+  return {
+    authorization: parentReq.headers.authorization,
+    'x-vercel-cron': parentReq.headers['x-vercel-cron'],
+    'x-vercel-cron-schedule': parentReq.headers['x-vercel-cron-schedule'],
+    'user-agent': parentReq.headers['user-agent'],
+  };
+}
+
 export async function invokeProcessImages(
   query: Record<string, string>,
   parentReq: VercelRequest
@@ -28,10 +37,7 @@ export async function invokeProcessImages(
   const req = {
     method: 'GET',
     query: { chunk: '1', ...query },
-    headers: {
-      authorization: parentReq.headers.authorization,
-      'x-vercel-cron': parentReq.headers['x-vercel-cron'],
-    },
+    headers: forwardedProcessImageHeaders(parentReq),
   } as VercelRequest;
 
   const res = {

@@ -1,7 +1,7 @@
 /**
  * Auth helpers for Vercel Cron + manual admin triggers.
  * Vercel sends `Authorization: Bearer $CRON_SECRET` when the secret is set,
- * and always sends `x-vercel-cron: 1` on scheduled invocations.
+ * plus cron metadata headers on scheduled invocations.
  */
 
 export function firstHeaderValue(
@@ -17,8 +17,14 @@ export function firstHeaderValue(
 export function isVercelCronRequest(
   headers: Record<string, string | string[] | undefined>
 ): boolean {
-  const flag = firstHeaderValue(headers['x-vercel-cron']);
-  return flag === '1' || flag?.toLowerCase() === 'true';
+  const legacyFlag = firstHeaderValue(headers['x-vercel-cron']);
+  if (legacyFlag === '1' || legacyFlag?.toLowerCase() === 'true') {
+    return true;
+  }
+
+  const schedule = firstHeaderValue(headers['x-vercel-cron-schedule']);
+  const userAgent = firstHeaderValue(headers['user-agent'])?.toLowerCase();
+  return Boolean(schedule && userAgent?.includes('vercel-cron/1.0'));
 }
 
 export function cronBearerMatches(
@@ -33,12 +39,13 @@ export function cronBearerMatches(
 }
 
 /**
- * Scheduled Vercel cron jobs must run even when CRON_SECRET is missing or the
- * Authorization header arrives as a string[] (Node IncomingHttpHeaders).
+ * Scheduled Vercel cron jobs must run even when CRON_SECRET is missing, while
+ * still preferring the bearer secret when production has one configured.
  */
 export function isAuthorizedCronRequest(
   headers: Record<string, string | string[] | undefined>,
   cronSecret: string | undefined | null = process.env.CRON_SECRET
 ): boolean {
-  return cronBearerMatches(headers, cronSecret) || isVercelCronRequest(headers);
+  const secret = cronSecret?.trim();
+  return secret ? cronBearerMatches(headers, secret) : isVercelCronRequest(headers);
 }
