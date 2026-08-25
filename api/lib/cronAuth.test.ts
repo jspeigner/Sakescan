@@ -63,6 +63,25 @@ describe('cron auth', () => {
     ).toBe(true);
     expect(isAuthorizedCronRequest({ authorization: 'Bearer secret-1' }, 'secret-1')).toBe(true);
     expect(isAuthorizedCronRequest({ authorization: ['Bearer secret-1'] }, 'secret-1')).toBe(true);
+    expect(
+      isAuthorizedCronRequest(
+        {
+          'user-agent': 'vercel-cron/1.0',
+          'x-vercel-cron-schedule': '*/10 * * * *',
+        },
+        'secret-1'
+      )
+    ).toBe(false);
+    expect(
+      isAuthorizedCronRequest(
+        {
+          authorization: 'Bearer other',
+          'user-agent': 'vercel-cron/1.0',
+          'x-vercel-cron-schedule': '*/10 * * * *',
+        },
+        'secret-1'
+      )
+    ).toBe(false);
     expect(isAuthorizedCronRequest({}, 'secret-1')).toBe(false);
     expect(isAuthorizedCronRequest({ authorization: 'Bearer other' }, 'secret-1')).toBe(false);
   });

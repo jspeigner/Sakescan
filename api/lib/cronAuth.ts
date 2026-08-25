@@ -1,8 +1,8 @@
 /**
  * Auth helpers for Vercel Cron + manual admin triggers.
  * Vercel sends `Authorization: Bearer $CRON_SECRET` when the secret is set.
- * Cron invocations also include Vercel-specific request metadata; accept those
- * signals so scheduled jobs still run when a project has not set CRON_SECRET.
+ * When it is not set, fall back to Vercel-specific request metadata so
+ * scheduled jobs can still run.
  */
 
 export function firstHeaderValue(
@@ -48,5 +48,7 @@ export function isAuthorizedCronRequest(
   headers: Record<string, string | string[] | undefined>,
   cronSecret: string | undefined | null = process.env.CRON_SECRET
 ): boolean {
-  return cronBearerMatches(headers, cronSecret) || isVercelCronRequest(headers);
+  const secret = cronSecret?.trim();
+  if (secret) return cronBearerMatches(headers, secret);
+  return isVercelCronRequest(headers);
 }
