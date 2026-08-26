@@ -87,8 +87,9 @@ export async function runWineEngineSyncBatch(
     .is('wineengine_indexed_at', null)
     .order('updated_at', { ascending: true });
 
-  let { data: rows, error } = await query.range(offset, offset + batchSize - 1);
-  if (error) throw new Error(error.message);
+  const initialBatch = await query.range(offset, offset + batchSize - 1);
+  if (initialBatch.error) throw new Error(initialBatch.error.message);
+  let rows = initialBatch.data;
 
   // If cursor passed the unindexed set, wrap once and retry from start.
   if ((rows || []).length === 0 && offset > 0) {

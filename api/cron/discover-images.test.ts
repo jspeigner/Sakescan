@@ -66,7 +66,10 @@ function mockRes() {
 function cronReq(): VercelRequest {
   return {
     method: 'GET',
-    headers: { 'x-vercel-cron': '1' },
+    headers: {
+      'user-agent': 'vercel-cron/1.0',
+      'x-vercel-cron-schedule': '0 13 * * *',
+    },
     query: {},
   } as unknown as VercelRequest;
 }
