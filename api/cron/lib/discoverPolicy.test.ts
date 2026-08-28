@@ -14,6 +14,7 @@ import {
   isMissingImageUrl,
   prioritizeDiscoverRows,
   shouldExhaustDiscoverRow,
+  shouldScanNextDiscoverPoolPage,
   shouldRunDiscoverFallback,
 } from './discoverPolicy.ts';
 
@@ -135,6 +136,57 @@ describe('discoverRowCapForRun', () => {
     expect(discoverRowCapForRun(20, [0.3, 0])).toBe(DISCOVER_ROW_CAP_LOW_YIELD);
     expect(discoverRowCapForRun(20, [0.3])).toBe(DISCOVER_ROW_CAP_DEFAULT);
     expect(discoverRowCapForRun(4, [0])).toBe(4);
+  });
+});
+
+describe('shouldScanNextDiscoverPoolPage', () => {
+  test('continues past a full parked page when more eligible rows are needed', () => {
+    expect(
+      shouldScanNextDiscoverPoolPage({
+        eligibleRows: 0,
+        rowCap: 6,
+        pageRows: 2000,
+        pageSize: 2000,
+        pagesScanned: 1,
+        pageLimit: 8,
+      })
+    ).toBe(true);
+  });
+
+  test('stops when the run has enough eligible rows', () => {
+    expect(
+      shouldScanNextDiscoverPoolPage({
+        eligibleRows: 6,
+        rowCap: 6,
+        pageRows: 2000,
+        pageSize: 2000,
+        pagesScanned: 1,
+        pageLimit: 8,
+      })
+    ).toBe(false);
+  });
+
+  test('stops on a short final page or at the page limit', () => {
+    expect(
+      shouldScanNextDiscoverPoolPage({
+        eligibleRows: 0,
+        rowCap: 6,
+        pageRows: 400,
+        pageSize: 2000,
+        pagesScanned: 2,
+        pageLimit: 8,
+      })
+    ).toBe(false);
+    expect(
+      shouldScanNextDiscoverPoolPage({
+        eligibleRows: 0,
+        rowCap: 6,
+        pageRows: 2000,
+        pageSize: 2000,
+        pagesScanned: 8,
+        pageLimit: 8,
+      })
+    ).toBe(false);
   });
 });
 

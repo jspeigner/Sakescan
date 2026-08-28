@@ -68,6 +68,9 @@ for log in logs:
         break
 
 placed = discover.get("placed", 0)
+attempts = discover.get("attempts")
+if not isinstance(attempts, (int, float)):
+    attempts = None
 vision = discover.get("visionChecks", 0)
 yield_rate = discover.get("yield")
 firecrawl_err = discover.get("firecrawlErrors", 0)
@@ -136,6 +139,11 @@ if (missing or 0) > 0:
         alerts.append(
             f"Latest discover run is stale ({discover_age_hours:.1f}h old; threshold {stale_discover_hours:.0f}h)"
         )
+    if discover_run_at is not None and placed == 0:
+        if attempts == 0 or (attempts is None and vision == 0 and yield_rate is None):
+            alerts.append(f"Latest discover run placed 0 images with no attempted rows while {missing} images are still missing")
+        else:
+            alerts.append(f"Latest discover run placed 0 images while {missing} images are still missing (attempts={attempts if attempts is not None else 'unknown'}, visionChecks={vision})")
 if last_status and last_status != "ok":
     alerts.append(f"Last orchestrator status: {last_status}")
 if errors:
@@ -156,12 +164,18 @@ out = {
     "recentYields": yields[-5:],
     "latestDiscover": {
         "placed": placed,
+        "attempts": attempts,
         "visionChecks": vision,
         "yield": yield_rate,
         "firecrawlErrors": firecrawl_err,
         "stopReason": discover_stop_reason,
         "runAt": discover_run_at,
         "ageHours": round(discover_age_hours, 1) if discover_age_hours is not None else None,
+        "poolRows": discover.get("poolRows"),
+        "poolPagesScanned": discover.get("poolPagesScanned"),
+        "eligibleRows": discover.get("eligibleRows"),
+        "skippedByBackoff": discover.get("skippedByBackoff"),
+        "skippedExhausted": discover.get("skippedExhausted"),
     },
     "latestPromote": {
         "promoted": promote_count,
