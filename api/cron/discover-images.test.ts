@@ -33,6 +33,15 @@ mock.module('./lib/invokeProcessImages.ts', () => ({
           yield: 0.5,
           firecrawlErrors: 0,
         },
+        diagnostics: {
+          discover: {
+            poolRows: 2000,
+            poolPagesScanned: 2,
+            eligibleRows: 2,
+            skippedByBackoff: 1998,
+            attemptedRows: 2,
+          },
+        },
         stopReason: 'chunk_complete_continue',
       },
     };
@@ -86,6 +95,15 @@ describe('discover-images cron job', () => {
     expect(firstResult.body?.runStatus).toBe('ok');
     expect(firstResult.body?.job).toBe('images-discover');
     expect(firstResult.body?.sakeDiscovered).toBe(1);
+    expect(firstResult.body?.diagnostics).toEqual({
+      discover: {
+        poolRows: 2000,
+        poolPagesScanned: 2,
+        eligibleRows: 2,
+        skippedByBackoff: 1998,
+        attemptedRows: 2,
+      },
+    });
     expect(firstResult.body?.errors).toBeUndefined();
 
     expect(secondResult.statusCode).toBe(200);
@@ -97,6 +115,18 @@ describe('discover-images cron job', () => {
     expect(discoverCalls).toBe(2);
     expect(inserts).toHaveLength(2);
     expect(inserts[0]?.job).toBe('images-discover');
+    expect(
+      ((inserts[0]?.stats as { phases?: Array<{ stats?: Record<string, unknown> }> })?.phases?.[0]
+        ?.stats as Record<string, unknown>)?.diagnostics
+    ).toEqual({
+      discover: {
+        poolRows: 2000,
+        poolPagesScanned: 2,
+        eligibleRows: 2,
+        skippedByBackoff: 1998,
+        attemptedRows: 2,
+      },
+    });
     expect(inserts[1]?.status).toBe('ok');
   });
 });

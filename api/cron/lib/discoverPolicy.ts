@@ -162,6 +162,21 @@ export function discoverRowCapForRun(
   return Math.max(1, Math.min(requested, cap));
 }
 
+export function shouldScanNextDiscoverPoolPage(params: {
+  eligibleRows: number;
+  rowCap: number;
+  pageRows: number;
+  pageSize: number;
+  pagesScanned: number;
+  pageLimit: number;
+}): boolean {
+  return (
+    params.eligibleRows < params.rowCap &&
+    params.pageRows >= params.pageSize &&
+    params.pagesScanned < params.pageLimit
+  );
+}
+
 export function shouldRunDiscoverFallback(params: {
   accelerated: boolean;
   trustedFirst: boolean;
