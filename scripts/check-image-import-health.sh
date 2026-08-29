@@ -68,9 +68,15 @@ for log in logs:
         break
 
 placed = discover.get("placed", 0)
+attempts = discover.get("attempts")
 vision = discover.get("visionChecks", 0)
 yield_rate = discover.get("yield")
 firecrawl_err = discover.get("firecrawlErrors", 0)
+pool_pages = discover.get("poolPagesScanned")
+pool_rows = discover.get("poolRows")
+eligible_rows = discover.get("eligibleRows")
+skipped_by_backoff = discover.get("skippedByBackoff")
+skipped_exhausted = discover.get("skippedExhausted")
 promote_count = promote.get("promoted", 0)
 skipped_unusable_url = promote.get("skippedUnusableUrl", promote.get("skippedInvalidUrl"))
 openai_rec = env.get("openaiQuotaRecommendation")
@@ -127,6 +133,15 @@ if env.get("lastDiscoverFirecrawlErrors", 0) >= 8:
     alerts.append(f"High Firecrawl errors ({env.get('lastDiscoverFirecrawlErrors')})")
 if streak >= 20 and (yield_rate or 0) == 0 and promote_count == 0:
     alerts.append(f"Low-yield streak {streak} with zero recent yield — import may be stalled")
+if (missing or 0) > 0 and placed == 0 and (attempts is None or attempts == 0):
+    if attempts is None:
+        alerts.append(
+            f"Latest discover run placed 0 images and did not report attempts while {missing} images are still missing"
+        )
+    else:
+        alerts.append(
+            f"Latest discover run placed 0 images with no attempted rows while {missing} images are still missing"
+        )
 if (missing or 0) > 0:
     if discover_run_at is None:
         alerts.append("No discover run evidence while images are still missing")
@@ -156,9 +171,15 @@ out = {
     "recentYields": yields[-5:],
     "latestDiscover": {
         "placed": placed,
+        "attempts": attempts,
         "visionChecks": vision,
         "yield": yield_rate,
         "firecrawlErrors": firecrawl_err,
+        "poolPagesScanned": pool_pages,
+        "poolRows": pool_rows,
+        "eligibleRows": eligible_rows,
+        "skippedByBackoff": skipped_by_backoff,
+        "skippedExhausted": skipped_exhausted,
         "stopReason": discover_stop_reason,
         "runAt": discover_run_at,
         "ageHours": round(discover_age_hours, 1) if discover_age_hours is not None else None,
