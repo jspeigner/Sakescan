@@ -68,9 +68,17 @@ for log in logs:
         break
 
 placed = discover.get("placed", 0)
+attempts = discover.get("attempts")
+if attempts is None:
+    attempts = discover.get("attemptedRows")
 vision = discover.get("visionChecks", 0)
 yield_rate = discover.get("yield")
 firecrawl_err = discover.get("firecrawlErrors", 0)
+pool_pages = discover.get("poolPagesScanned")
+pool_rows = discover.get("poolRows")
+eligible_rows = discover.get("eligibleRows")
+skipped_by_backoff = discover.get("skippedByBackoff")
+skipped_exhausted = discover.get("skippedExhausted")
 promote_count = promote.get("promoted", 0)
 skipped_unusable_url = promote.get("skippedUnusableUrl", promote.get("skippedInvalidUrl"))
 openai_rec = env.get("openaiQuotaRecommendation")
@@ -136,6 +144,15 @@ if (missing or 0) > 0:
         alerts.append(
             f"Latest discover run is stale ({discover_age_hours:.1f}h old; threshold {stale_discover_hours:.0f}h)"
         )
+    if placed == 0 and not skip.get("discover"):
+        if attempts is None or attempts == 0:
+            alerts.append(
+                f"Latest discover run placed 0 images and did not report attempts while {missing} images are still missing"
+            )
+        elif attempts > 0 and (yield_rate or 0) == 0:
+            alerts.append(
+                f"Latest discover run placed 0 images from {attempts} attempts while {missing} images are still missing"
+            )
 if last_status and last_status != "ok":
     alerts.append(f"Last orchestrator status: {last_status}")
 if errors:
@@ -156,12 +173,18 @@ out = {
     "recentYields": yields[-5:],
     "latestDiscover": {
         "placed": placed,
+        "attempts": attempts,
         "visionChecks": vision,
         "yield": yield_rate,
         "firecrawlErrors": firecrawl_err,
         "stopReason": discover_stop_reason,
         "runAt": discover_run_at,
         "ageHours": round(discover_age_hours, 1) if discover_age_hours is not None else None,
+        "poolPagesScanned": pool_pages,
+        "poolRows": pool_rows,
+        "eligibleRows": eligible_rows,
+        "skippedByBackoff": skipped_by_backoff,
+        "skippedExhausted": skipped_exhausted,
     },
     "latestPromote": {
         "promoted": promote_count,

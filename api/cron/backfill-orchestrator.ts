@@ -131,11 +131,17 @@ type OrchestratorRunLog = {
 
 type DiscoverSummary = {
   placed: number;
+  attempts?: number;
   visionChecks: number;
   yield: number | null;
   firecrawlErrors: number;
   stopReason: unknown;
   runAt: string | null;
+  poolPagesScanned?: number;
+  poolRows?: number;
+  eligibleRows?: number;
+  skippedByBackoff?: number;
+  skippedExhausted?: number;
 };
 
 type PromoteSummary = {
@@ -160,13 +166,23 @@ function latestDiscoverSummary(logs: OrchestratorRunLog[]): DiscoverSummary {
 
     const stats = phase.stats ?? {};
     const health = (stats.discoverHealth as Record<string, unknown> | undefined) ?? {};
+    const diagnostics = (stats.discoverDiagnostics as Record<string, unknown> | undefined) ?? {};
     return {
       placed: typeof health.placed === 'number' ? health.placed : 0,
+      attempts: typeof health.attempts === 'number' ? health.attempts : undefined,
       visionChecks: typeof health.visionChecks === 'number' ? health.visionChecks : 0,
       yield: typeof health.yield === 'number' ? health.yield : null,
       firecrawlErrors: typeof health.firecrawlErrors === 'number' ? health.firecrawlErrors : 0,
       stopReason: stats.stopReason ?? null,
       runAt: log.created_at ?? null,
+      poolPagesScanned:
+        typeof diagnostics.poolPagesScanned === 'number' ? diagnostics.poolPagesScanned : undefined,
+      poolRows: typeof diagnostics.poolRows === 'number' ? diagnostics.poolRows : undefined,
+      eligibleRows: typeof diagnostics.eligibleRows === 'number' ? diagnostics.eligibleRows : undefined,
+      skippedByBackoff:
+        typeof diagnostics.skippedByBackoff === 'number' ? diagnostics.skippedByBackoff : undefined,
+      skippedExhausted:
+        typeof diagnostics.skippedExhausted === 'number' ? diagnostics.skippedExhausted : undefined,
     };
   }
 
@@ -385,9 +401,23 @@ async function runImagesDiscoverPhase(params: {
         openaiVisionQuotaExceeded?: boolean;
       }
     | undefined;
+  const discoverDiagnostics = (
+    discoverJson?.diagnostics as
+      | {
+          discover?: {
+            poolPagesScanned?: number;
+            poolRows?: number;
+            eligibleRows?: number;
+            skippedByBackoff?: number;
+            skippedExhausted?: number;
+            attemptedRows?: number;
+          };
+        }
+      | undefined
+  )?.discover;
   const attempts =
     health?.attempts ??
-    (discoverJson?.diagnostics as { discover?: { attemptedRows?: number } })?.discover?.attemptedRows ??
+    discoverDiagnostics?.attemptedRows ??
     0;
   const placed =
     health?.placed ??
@@ -426,6 +456,16 @@ async function runImagesDiscoverPhase(params: {
         lowYieldStreak: discoverHealth.lowYieldStreak,
         sakeDiscovered: discoverJson?.sakeDiscovered,
         discoverHealth: health,
+        discoverDiagnostics: discoverDiagnostics
+          ? {
+              poolPagesScanned: discoverDiagnostics.poolPagesScanned,
+              poolRows: discoverDiagnostics.poolRows,
+              eligibleRows: discoverDiagnostics.eligibleRows,
+              skippedByBackoff: discoverDiagnostics.skippedByBackoff,
+              skippedExhausted: discoverDiagnostics.skippedExhausted,
+              attemptedRows: discoverDiagnostics.attemptedRows,
+            }
+          : undefined,
         environmentalBackoffCleared,
         openaiVisionQuotaExceeded:
           discoverJson?.openaiVisionQuotaExceeded === true || health?.openaiVisionQuotaExceeded === true,
@@ -444,11 +484,17 @@ async function runImagesDiscoverPhase(params: {
     errors,
     latestDiscover: {
       placed: typeof placed === 'number' ? placed : 0,
+      attempts,
       visionChecks: typeof health?.visionChecks === 'number' ? health.visionChecks : 0,
       yield: typeof health?.yield === 'number' ? health.yield : null,
       firecrawlErrors: typeof health?.firecrawlErrors === 'number' ? health.firecrawlErrors : 0,
       stopReason: discoverJson?.stopReason ?? null,
       runAt: new Date().toISOString(),
+      poolPagesScanned: discoverDiagnostics?.poolPagesScanned,
+      poolRows: discoverDiagnostics?.poolRows,
+      eligibleRows: discoverDiagnostics?.eligibleRows,
+      skippedByBackoff: discoverDiagnostics?.skippedByBackoff,
+      skippedExhausted: discoverDiagnostics?.skippedExhausted,
     },
   };
 }
