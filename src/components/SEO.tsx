@@ -119,7 +119,7 @@ export function SEO({
 
       {allSchemas.map((s, i) => (
         <script key={i} type="application/ld+json">
-          {JSON.stringify(s)}
+          {JSON.stringify(s).replace(/</g, "\\u003c")}
         </script>
       ))}
     </Helmet>

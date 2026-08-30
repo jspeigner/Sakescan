@@ -12,7 +12,7 @@ import { Star, Droplets, Thermometer, Wine, Wheat, MapPin, Loader2 } from "lucid
 import { supabase } from "@/lib/supabase";
 import type { Sake } from "@/lib/supabase-types";
 import { fetchSakeBySlug } from "@/lib/sake-slug";
-import { brewerySlugFromSakeBreweryField } from "@/lib/brewery-slug";
+import { brewerySlugFromSakeBreweryField, isPlaceholderBreweryName } from "@/lib/brewery-slug";
 import { sakeSlug } from "@/lib/slugify";
 import NotFound from "./NotFound";
 import { withImageCacheBust } from "@/lib/image-url";
@@ -30,10 +30,12 @@ export default function SakeDetail() {
     enabled: !!idFragment && !!slug,
   });
 
+  const hasRealBrewery = !!sake && !isPlaceholderBreweryName(sake.brewery);
+
   const { data: relatedSakes } = useQuery({
     queryKey: ["related-sake", sake?.brewery, sake?.type],
     queryFn: async () => {
-      if (!sake) return [];
+      if (!sake || isPlaceholderBreweryName(sake.brewery)) return [];
       const { data } = await supabase
         .from("sake")
         .select("id, name, type, average_rating, image_url")
@@ -42,7 +44,7 @@ export default function SakeDetail() {
         .limit(4);
       return data ?? [];
     },
-    enabled: !!sake,
+    enabled: hasRealBrewery,
   });
 
   if (isLoading) {

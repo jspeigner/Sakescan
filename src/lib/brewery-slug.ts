@@ -18,10 +18,24 @@ export function stripBreweryCorporateSuffix(name: string): string {
 }
 
 /**
+ * Placeholder / missing brewery labels on sake rows (not real catalog breweries).
+ * ~25k catalog rows use "Unknown"; linking them as a brewery is wrong.
+ */
+const PLACEHOLDER_BREWERY_RE = /^(unknown|n\/?a|none|null|-|—|–|\.)$/i;
+
+export function isPlaceholderBreweryName(breweryField: string | null | undefined): boolean {
+  const trimmed = (breweryField ?? "").trim();
+  if (!trimmed) return true;
+  return PLACEHOLDER_BREWERY_RE.test(trimmed);
+}
+
+/**
  * URL slug for linking from a sake row's brewery field to /brewery/:slug.
  * "Akita Meijyo Co.,Ltd" → "akita-meijyo" (matches breweries.name "Akita Meijyo").
+ * Returns "" for placeholders so callers skip brewery links / related queries.
  */
 export function brewerySlugFromSakeBreweryField(breweryField: string): string {
+  if (isPlaceholderBreweryName(breweryField)) return "";
   return slugify(stripBreweryCorporateSuffix(breweryField));
 }
 
