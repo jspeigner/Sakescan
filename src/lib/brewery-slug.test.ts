@@ -3,6 +3,7 @@ import {
   breweryNameFromSlug,
   brewerySakeNamePattern,
   brewerySlugFromSakeBreweryField,
+  isPlaceholderBreweryName,
   pickBreweryBySlug,
   sakeBreweryMatchesCatalogName,
   stripBreweryCorporateSuffix,
@@ -38,6 +39,15 @@ describe("brewerySlugFromSakeBreweryField", () => {
 
   test("leaves names without corporate suffixes unchanged", () => {
     expect(brewerySlugFromSakeBreweryField("Dassai")).toBe("dassai");
+  });
+
+  test("returns empty slug for placeholder brewery labels", () => {
+    expect(isPlaceholderBreweryName("Unknown")).toBe(true);
+    expect(isPlaceholderBreweryName("n/a")).toBe(true);
+    expect(isPlaceholderBreweryName("")).toBe(true);
+    expect(isPlaceholderBreweryName("Asahi Shuzou")).toBe(false);
+    expect(brewerySlugFromSakeBreweryField("Unknown")).toBe("");
+    expect(brewerySlugFromSakeBreweryField("N/A")).toBe("");
   });
 });
 
