@@ -76,6 +76,8 @@ const CHUNK_WALL_MS = 7500;
 const DISCOVER_CHUNK_WALL_MS = 25000;
 const DISCOVER_CHUNK_WALL_MS_ACCELERATED = 55000;
 const DISCOVER_POOL_LIMIT = 2000;
+const DISCOVER_POOL_MAX_PAGES = 8;
+const DISCOVER_ELIGIBLE_BUFFER_MULTIPLIER = 3;
 const DISCOVER_HEALTH_KEY = 'discover_health';
 
 type SakeRow = {
@@ -364,6 +366,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         errorSamples: [] as string[],
       },
       discover: {
+        poolPagesScanned: 0,
         poolRows: 0,
         randomizedPoolRows: 0,
         eligibleRows: 0,
@@ -500,14 +503,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (firecrawlKey && openaiKey && !rateLimited && !hitTimeBudget) {
       resetFirecrawlBypassForInvocation();
       resetOpenAIVisionQuotaForInvocation();
-      const { data: missingPool } = await supabase
-        .from('sake')
-        .select('id, name, name_japanese, brewery, image_url, image_quality')
-        .or('image_url.is.null,image_url.eq.')
-        .order('updated_at', { ascending: true })
-        .limit(DISCOVER_POOL_LIMIT);
-      diagnostics.discover.poolRows = (missingPool || []).length;
-
       // Prefer hot sakes (recently scanned) when filling gaps.
       let hotIds = new Set<string>();
       try {
@@ -525,38 +520,66 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         hotIds = new Set();
       }
 
-      const missingRows = ((missingPool || []) as SakeRow[]).filter((row) => {
-        if (isMissingImageUrl(row.image_url)) return true;
-        diagnostics.discover.skippedAlreadyHasImage++;
-        return false;
-      });
-      diagnostics.discover.randomizedPoolRows = missingRows.length;
-      const attemptHistoryLoad = await loadAttemptHistoryBySakeIds(
-        supabase,
-        missingRows.map((r) => r.id)
-      );
-      const attemptBySakeId = attemptHistoryLoad.map;
-      diagnostics.discover.attemptHistoryBatches = attemptHistoryLoad.batches;
-      if (attemptHistoryLoad.readErrors > 0) {
-        diagnostics.discover.attemptHistoryReadErrors += attemptHistoryLoad.readErrors;
-        attemptHistoryLoad.errorSamples.forEach((m) =>
-          errors.push(`attempt-history read: ${m}`)
-        );
-      }
-
-      const nowMs = Date.now();
       const dueRows: SakeRow[] = [];
-      for (const row of missingRows) {
-        const skip = discoverSkipReason(attemptBySakeId.get(row.id), nowMs);
-        if (skip === 'exhausted') {
-          diagnostics.discover.skippedExhausted++;
-          continue;
+      const attemptBySakeId = new Map<string, SakeImageAttemptRow>();
+      const nowMs = Date.now();
+      const eligibleBufferTarget = Math.max(
+        discoverRowCapThisRun,
+        discoverRowCapThisRun * DISCOVER_ELIGIBLE_BUFFER_MULTIPLIER
+      );
+
+      for (let page = 0; page < DISCOVER_POOL_MAX_PAGES; page++) {
+        const pageOffset = page * DISCOVER_POOL_LIMIT;
+        const { data: missingPool } = await supabase
+          .from('sake')
+          .select('id, name, name_japanese, brewery, image_url, image_quality')
+          .or('image_url.is.null,image_url.eq.')
+          .order('updated_at', { ascending: true })
+          .range(pageOffset, pageOffset + DISCOVER_POOL_LIMIT - 1);
+
+        const missingPoolRows = (missingPool || []) as SakeRow[];
+        if (missingPoolRows.length === 0) break;
+        diagnostics.discover.poolPagesScanned++;
+        diagnostics.discover.poolRows += missingPoolRows.length;
+
+        const missingRows = missingPoolRows.filter((row) => {
+          if (isMissingImageUrl(row.image_url)) return true;
+          diagnostics.discover.skippedAlreadyHasImage++;
+          return false;
+        });
+        diagnostics.discover.randomizedPoolRows += missingRows.length;
+
+        const attemptHistoryLoad = await loadAttemptHistoryBySakeIds(
+          supabase,
+          missingRows.map((r) => r.id)
+        );
+        attemptHistoryLoad.map.forEach((value, key) => {
+          attemptBySakeId.set(key, value);
+        });
+        diagnostics.discover.attemptHistoryBatches += attemptHistoryLoad.batches;
+        if (attemptHistoryLoad.readErrors > 0) {
+          diagnostics.discover.attemptHistoryReadErrors += attemptHistoryLoad.readErrors;
+          attemptHistoryLoad.errorSamples.forEach((m) =>
+            errors.push(`attempt-history read: ${m}`)
+          );
         }
-        if (skip === 'backoff') {
-          diagnostics.discover.skippedByBackoff++;
-          continue;
+
+        for (const row of missingRows) {
+          const skip = discoverSkipReason(attemptBySakeId.get(row.id), nowMs);
+          if (skip === 'exhausted') {
+            diagnostics.discover.skippedExhausted++;
+            continue;
+          }
+          if (skip === 'backoff') {
+            diagnostics.discover.skippedByBackoff++;
+            continue;
+          }
+          dueRows.push(row);
         }
-        dueRows.push(row);
+
+        if (dueRows.length >= eligibleBufferTarget || missingPoolRows.length < DISCOVER_POOL_LIMIT) {
+          break;
+        }
       }
       const eligibleRows = prioritizeDiscoverRows(dueRows, attemptBySakeId, hotIds);
       diagnostics.discover.eligibleRows = eligibleRows.length;
@@ -1063,7 +1086,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const discoverYield =
       discoverAttempts > 0
         ? Number((discoverPlaced / discoverAttempts).toFixed(3))
-        : 0;
+        : null;
     if (discoverAttempts > 0) {
       try {
         const priorHealth = await getBackfillState<DiscoverHealthState>(supabase, DISCOVER_HEALTH_KEY, {
@@ -1183,27 +1206,29 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         externalRowsFetched: sakeExternalRowsFetched,
         note: 'Audit → discover (missing) → mirror external URLs. Discover needs FIRECRAWL + OPENAI.',
       },
-      discoverHealth:
-        discoverAttempts > 0
-          ? {
-              attempts: discoverAttempts,
-              placed: discoverPlaced,
-              yield: discoverYield,
-              candidateUrlsSeen: diagnostics.discover.candidateUrlsSeen,
-              visionChecks: diagnostics.discover.visionChecks,
-              attemptHistoryReadErrors: diagnostics.discover.attemptHistoryReadErrors,
-              firecrawlErrors: diagnostics.discover.firecrawlErrors,
-              openaiVisionQuotaExceeded:
-                diagnostics.discover.openaiVisionQuotaExceeded || isOpenAIVisionQuotaExceeded(),
-              lowYieldAlert: discoverLowYieldAlert,
-              noCandidatesAlert: discoverNoCandidatesAlert,
-            }
-          : undefined,
+      discoverHealth: {
+        attempts: discoverAttempts,
+        placed: discoverPlaced,
+        yield: discoverYield,
+        candidateUrlsSeen: diagnostics.discover.candidateUrlsSeen,
+        visionChecks: diagnostics.discover.visionChecks,
+        attemptHistoryReadErrors: diagnostics.discover.attemptHistoryReadErrors,
+        poolPagesScanned: diagnostics.discover.poolPagesScanned,
+        poolRows: diagnostics.discover.poolRows,
+        eligibleRows: diagnostics.discover.eligibleRows,
+        skippedByBackoff: diagnostics.discover.skippedByBackoff,
+        skippedExhausted: diagnostics.discover.skippedExhausted,
+        firecrawlErrors: diagnostics.discover.firecrawlErrors,
+        openaiVisionQuotaExceeded:
+          diagnostics.discover.openaiVisionQuotaExceeded || isOpenAIVisionQuotaExceeded(),
+        lowYieldAlert: discoverLowYieldAlert,
+        noCandidatesAlert: discoverNoCandidatesAlert,
+      },
       openaiVisionQuotaExceeded:
         diagnostics.discover.openaiVisionQuotaExceeded || isOpenAIVisionQuotaExceeded()
           ? true
           : undefined,
-      firecrawlBypassActive: discoverAttempts > 0 ? isFirecrawlBypassActive() : undefined,
+      firecrawlBypassActive: isFirecrawlBypassActive(),
       diagnostics,
       errors: errors.length > 0 ? errors.slice(0, 15) : undefined,
       timestamp: new Date().toISOString(),

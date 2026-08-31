@@ -63,6 +63,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             discoverHealth: health,
             stopReason: inv.json?.stopReason,
             openaiVisionQuotaExceeded: inv.json?.openaiVisionQuotaExceeded,
+            diagnostics: {
+              discover: {
+                poolPagesScanned: health.poolPagesScanned,
+                poolRows: health.poolRows,
+                eligibleRows: health.eligibleRows,
+                skippedByBackoff: health.skippedByBackoff,
+                skippedExhausted: health.skippedExhausted,
+                attemptedRows: health.attempts,
+                placedRows: health.placed,
+              },
+            },
           },
         },
       ],
