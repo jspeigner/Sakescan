@@ -117,11 +117,18 @@ export function discoverSkipReason(
   nowMs = Date.now()
 ): 'exhausted' | 'backoff' | null {
   if (!history) return null;
+  if (history.next_retry_at) {
+    const retryAtMs = Date.parse(history.next_retry_at);
+    // Hold / backoff window still active.
+    if (!Number.isNaN(retryAtMs) && retryAtMs > nowMs) {
+      return isExhaustedReason(history.last_failure_reason) ? 'exhausted' : 'backoff';
+    }
+    // next_retry_at reached — eligible again (including after exhausted:* 90-day hold).
+    return null;
+  }
+  // No retry timestamp: permanent park only when already marked exhausted.
   if (isExhaustedReason(history.last_failure_reason)) return 'exhausted';
-  if (!history.next_retry_at) return null;
-  const retryAtMs = Date.parse(history.next_retry_at);
-  if (Number.isNaN(retryAtMs) || retryAtMs <= nowMs) return null;
-  return 'backoff';
+  return null;
 }
 
 export function prioritizeDiscoverRows<T extends { id: string }>(
