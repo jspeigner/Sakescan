@@ -116,6 +116,37 @@ describe('discover retry / exhaust', () => {
       })
     ).toBeNull();
   });
+
+  test('allows retry after exhausted 90-day hold expires', () => {
+    expect(
+      discoverSkipReason({
+        attempt_count: 3,
+        success_count: 0,
+        next_retry_at: new Date(Date.now() - 1000).toISOString(),
+        last_failure_reason: 'exhausted:no_candidates',
+      })
+    ).toBeNull();
+    expect(
+      discoverSkipReason(
+        {
+          attempt_count: 3,
+          success_count: 0,
+          next_retry_at: new Date(EXHAUSTED_HOLD_MS).toISOString(),
+          last_failure_reason: 'exhausted:no_candidates',
+        },
+        EXHAUSTED_HOLD_MS + 1
+      )
+    ).toBeNull();
+    // Legacy rows marked exhausted with no hold timestamp stay parked.
+    expect(
+      discoverSkipReason({
+        attempt_count: 3,
+        success_count: 0,
+        next_retry_at: null,
+        last_failure_reason: 'exhausted:no_candidates',
+      })
+    ).toBe('exhausted');
+  });
 });
 
 describe('prioritizeDiscoverRows', () => {
