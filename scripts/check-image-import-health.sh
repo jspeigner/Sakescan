@@ -68,6 +68,7 @@ for log in logs:
         break
 
 placed = discover.get("placed", 0)
+attempts = discover.get("attempts")
 vision = discover.get("visionChecks", 0)
 yield_rate = discover.get("yield")
 firecrawl_err = discover.get("firecrawlErrors", 0)
@@ -136,16 +137,21 @@ if (missing or 0) > 0:
         alerts.append(
             f"Latest discover run is stale ({discover_age_hours:.1f}h old; threshold {stale_discover_hours:.0f}h)"
         )
+    if discover_run_at is not None and not skip.get("discover") and placed == 0:
+        if attempts is None or attempts == 0:
+            alerts.append(
+                f"Latest discover placed 0 images and reported no attempts while {missing} images are still missing"
+            )
+        else:
+            alerts.append(
+                f"Latest discover placed 0 images from {attempts} attempts while {missing} images are still missing"
+            )
 if last_status and last_status != "ok":
     alerts.append(f"Last orchestrator status: {last_status}")
 if errors:
     alerts.append(f"Last run errors: {errors}")
 
-healthy = (
-    has_stats_shape
-    and not alerts
-    and (placed > 0 or promote_count > 0 or (yield_rate or 0) > 0 or streak < 20)
-)
+healthy = has_stats_shape and not alerts
 
 out = {
     "healthy": healthy,
@@ -156,12 +162,18 @@ out = {
     "recentYields": yields[-5:],
     "latestDiscover": {
         "placed": placed,
+        "attempts": attempts,
         "visionChecks": vision,
         "yield": yield_rate,
         "firecrawlErrors": firecrawl_err,
         "stopReason": discover_stop_reason,
         "runAt": discover_run_at,
         "ageHours": round(discover_age_hours, 1) if discover_age_hours is not None else None,
+        "poolPagesScanned": discover.get("poolPagesScanned"),
+        "poolRows": discover.get("poolRows"),
+        "eligibleRows": discover.get("eligibleRows"),
+        "skippedByBackoff": discover.get("skippedByBackoff"),
+        "skippedExhausted": discover.get("skippedExhausted"),
     },
     "latestPromote": {
         "promoted": promote_count,

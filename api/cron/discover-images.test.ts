@@ -31,6 +31,11 @@ mock.module('./lib/invokeProcessImages.ts', () => ({
           placed: 1,
           attempts: 2,
           yield: 0.5,
+          poolPagesScanned: 2,
+          poolRows: 4000,
+          eligibleRows: 12,
+          skippedByBackoff: 10,
+          skippedExhausted: 2000,
           firecrawlErrors: 0,
         },
         stopReason: 'chunk_complete_continue',
@@ -98,5 +103,17 @@ describe('discover-images cron job', () => {
     expect(inserts).toHaveLength(2);
     expect(inserts[0]?.job).toBe('images-discover');
     expect(inserts[1]?.status).toBe('ok');
+    const firstPhase = (
+      inserts[0]?.stats as { phases?: Array<{ stats?: { diagnostics?: { discover?: Record<string, unknown> } } }> }
+    )?.phases?.[0];
+    expect(firstPhase?.stats?.diagnostics?.discover).toMatchObject({
+      poolPagesScanned: 2,
+      poolRows: 4000,
+      eligibleRows: 12,
+      skippedByBackoff: 10,
+      skippedExhausted: 2000,
+      attemptedRows: 2,
+      placedRows: 1,
+    });
   });
 });
