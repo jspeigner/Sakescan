@@ -22,10 +22,12 @@ import {
 } from './lib/sakeImageDiscovery.js';
 import {
   computeDiscoverRetry,
+  discoverEligibleBufferTarget,
   discoverRowCapForRun,
   discoverSkipReason,
   isMissingImageUrl,
   prioritizeDiscoverRows,
+  shouldScanNextDiscoverPoolPage,
   shouldRunDiscoverFallback,
 } from './lib/discoverPolicy.js';
 import { getBackfillState, recordDiscoverYield, setBackfillState, type DiscoverHealthState } from './lib/backfillState.js';
@@ -76,6 +78,7 @@ const CHUNK_WALL_MS = 7500;
 const DISCOVER_CHUNK_WALL_MS = 25000;
 const DISCOVER_CHUNK_WALL_MS_ACCELERATED = 55000;
 const DISCOVER_POOL_LIMIT = 2000;
+const DISCOVER_POOL_PAGE_LIMIT = 8;
 const DISCOVER_HEALTH_KEY = 'discover_health';
 
 type SakeRow = {
@@ -364,6 +367,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         errorSamples: [] as string[],
       },
       discover: {
+        poolPagesScanned: 0,
         poolRows: 0,
         randomizedPoolRows: 0,
         eligibleRows: 0,
@@ -500,14 +504,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (firecrawlKey && openaiKey && !rateLimited && !hitTimeBudget) {
       resetFirecrawlBypassForInvocation();
       resetOpenAIVisionQuotaForInvocation();
-      const { data: missingPool } = await supabase
-        .from('sake')
-        .select('id, name, name_japanese, brewery, image_url, image_quality')
-        .or('image_url.is.null,image_url.eq.')
-        .order('updated_at', { ascending: true })
-        .limit(DISCOVER_POOL_LIMIT);
-      diagnostics.discover.poolRows = (missingPool || []).length;
-
       // Prefer hot sakes (recently scanned) when filling gaps.
       let hotIds = new Set<string>();
       try {
@@ -525,39 +521,86 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         hotIds = new Set();
       }
 
-      const missingRows = ((missingPool || []) as SakeRow[]).filter((row) => {
-        if (isMissingImageUrl(row.image_url)) return true;
-        diagnostics.discover.skippedAlreadyHasImage++;
-        return false;
-      });
-      diagnostics.discover.randomizedPoolRows = missingRows.length;
-      const attemptHistoryLoad = await loadAttemptHistoryBySakeIds(
-        supabase,
-        missingRows.map((r) => r.id)
-      );
-      const attemptBySakeId = attemptHistoryLoad.map;
-      diagnostics.discover.attemptHistoryBatches = attemptHistoryLoad.batches;
-      if (attemptHistoryLoad.readErrors > 0) {
-        diagnostics.discover.attemptHistoryReadErrors += attemptHistoryLoad.readErrors;
-        attemptHistoryLoad.errorSamples.forEach((m) =>
-          errors.push(`attempt-history read: ${m}`)
-        );
-      }
-
       const nowMs = Date.now();
       const dueRows: SakeRow[] = [];
-      for (const row of missingRows) {
-        const skip = discoverSkipReason(attemptBySakeId.get(row.id), nowMs);
-        if (skip === 'exhausted') {
-          diagnostics.discover.skippedExhausted++;
-          continue;
+      const attemptBySakeId = new Map<string, SakeImageAttemptRow>();
+      const eligibleBufferTarget = discoverEligibleBufferTarget(discoverRowCapThisRun);
+
+      for (let pageIndex = 0; pageIndex < DISCOVER_POOL_PAGE_LIMIT; pageIndex++) {
+        if (shouldStopChunk()) {
+          hitTimeBudget = true;
+          stopReason = stopReason || 'time_budget_reached';
+          break;
         }
-        if (skip === 'backoff') {
-          diagnostics.discover.skippedByBackoff++;
-          continue;
+
+        const from = pageIndex * DISCOVER_POOL_LIMIT;
+        const to = from + DISCOVER_POOL_LIMIT - 1;
+        const { data: missingPool, error: missingPoolError } = await supabase
+          .from('sake')
+          .select('id, name, name_japanese, brewery, image_url, image_quality')
+          .or('image_url.is.null,image_url.eq.')
+          .order('updated_at', { ascending: true })
+          .range(from, to);
+
+        if (missingPoolError) {
+          errors.push(`discover pool read: ${missingPoolError.message.slice(0, 120)}`);
+          break;
         }
-        dueRows.push(row);
+
+        const pageRows = (missingPool || []) as SakeRow[];
+        diagnostics.discover.poolPagesScanned++;
+        diagnostics.discover.poolRows += pageRows.length;
+
+        const missingRows = pageRows.filter((row) => {
+          if (isMissingImageUrl(row.image_url)) return true;
+          diagnostics.discover.skippedAlreadyHasImage++;
+          return false;
+        });
+        diagnostics.discover.randomizedPoolRows += missingRows.length;
+
+        const attemptHistoryLoad = await loadAttemptHistoryBySakeIds(
+          supabase,
+          missingRows.map((r) => r.id)
+        );
+        attemptHistoryLoad.map.forEach((attempt, sakeId) => {
+          attemptBySakeId.set(sakeId, attempt);
+        });
+        diagnostics.discover.attemptHistoryBatches += attemptHistoryLoad.batches;
+        if (attemptHistoryLoad.readErrors > 0) {
+          diagnostics.discover.attemptHistoryReadErrors += attemptHistoryLoad.readErrors;
+          attemptHistoryLoad.errorSamples.forEach((m) =>
+            errors.push(`attempt-history read: ${m}`)
+          );
+        }
+
+        for (const row of missingRows) {
+          const skip = discoverSkipReason(attemptBySakeId.get(row.id), nowMs);
+          if (skip === 'exhausted') {
+            diagnostics.discover.skippedExhausted++;
+            continue;
+          }
+          if (skip === 'backoff') {
+            diagnostics.discover.skippedByBackoff++;
+            continue;
+          }
+          dueRows.push(row);
+        }
+
+        if (
+          !shouldScanNextDiscoverPoolPage({
+            pagesScanned: diagnostics.discover.poolPagesScanned,
+            maxPages: DISCOVER_POOL_PAGE_LIMIT,
+            eligibleRows: dueRows.length,
+            rowCap: discoverRowCapThisRun,
+            lastPageRows: pageRows.length,
+            pageSize: DISCOVER_POOL_LIMIT,
+          }) ||
+          dueRows.length >= eligibleBufferTarget
+        ) {
+          break;
+        }
       }
+
       const eligibleRows = prioritizeDiscoverRows(dueRows, attemptBySakeId, hotIds);
       diagnostics.discover.eligibleRows = eligibleRows.length;
       let discoverAttempts = 0;
@@ -1119,7 +1162,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       },
       diagnostics: {
         discoverPool: diagnostics.discover.poolRows,
+        discoverPoolPages: diagnostics.discover.poolPagesScanned,
         discoverRandomizedPool: diagnostics.discover.randomizedPoolRows,
+        discoverEligibleRows: diagnostics.discover.eligibleRows,
         discoverAttempts: diagnostics.discover.attemptedRows,
         discoverPlaced: diagnostics.discover.placedRows,
         mirrorFetched: diagnostics.mirror.fetchedRows,
@@ -1191,6 +1236,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               yield: discoverYield,
               candidateUrlsSeen: diagnostics.discover.candidateUrlsSeen,
               visionChecks: diagnostics.discover.visionChecks,
+              poolPagesScanned: diagnostics.discover.poolPagesScanned,
+              poolRows: diagnostics.discover.poolRows,
+              eligibleRows: diagnostics.discover.eligibleRows,
+              skippedByBackoff: diagnostics.discover.skippedByBackoff,
+              skippedExhausted: diagnostics.discover.skippedExhausted,
+              exhaustedThisRun: diagnostics.discover.exhaustedThisRun,
               attemptHistoryReadErrors: diagnostics.discover.attemptHistoryReadErrors,
               firecrawlErrors: diagnostics.discover.firecrawlErrors,
               openaiVisionQuotaExceeded:
