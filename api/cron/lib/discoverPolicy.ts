@@ -17,6 +17,8 @@ export const EXHAUSTED_HOLD_MS = 90 * 24 * HOUR;
 
 export const DISCOVER_ROW_CAP_DEFAULT = 12;
 export const DISCOVER_ROW_CAP_LOW_YIELD = 6;
+export const DISCOVER_ELIGIBLE_BUFFER_MULTIPLIER = 4;
+export const DISCOVER_ELIGIBLE_BUFFER_MIN = 24;
 
 export type DiscoverAttemptHistory = {
   attempt_count: number;
@@ -160,6 +162,24 @@ export function discoverRowCapForRun(
   const lastYield = lastDiscoverYield(yields);
   const cap = lastYield === 0 ? DISCOVER_ROW_CAP_LOW_YIELD : DISCOVER_ROW_CAP_DEFAULT;
   return Math.max(1, Math.min(requested, cap));
+}
+
+export function discoverEligibleBufferTarget(rowCap: number): number {
+  const normalizedCap = Math.max(1, Math.floor(rowCap));
+  return Math.max(DISCOVER_ELIGIBLE_BUFFER_MIN, normalizedCap * DISCOVER_ELIGIBLE_BUFFER_MULTIPLIER);
+}
+
+export function shouldScanNextDiscoverPoolPage(params: {
+  pagesScanned: number;
+  maxPages: number;
+  eligibleRows: number;
+  rowCap: number;
+  lastPageRows: number;
+  pageSize: number;
+}): boolean {
+  if (params.pagesScanned >= params.maxPages) return false;
+  if (params.lastPageRows < params.pageSize) return false;
+  return params.eligibleRows < discoverEligibleBufferTarget(params.rowCap);
 }
 
 export function shouldRunDiscoverFallback(params: {

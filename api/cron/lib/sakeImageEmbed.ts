@@ -72,9 +72,8 @@ Return JSON:
 }
 If the image is not a sake label, still return best-effort empty-ish fields.`;
 
-  let imagePart: { type: 'image_url'; image_url: { url: string; detail: 'low' } };
   const dataUrl = await imageUrlToDataUrl(imageUrl);
-  imagePart = {
+  const imagePart: { type: 'image_url'; image_url: { url: string; detail: 'low' } } = {
     type: 'image_url',
     image_url: { url: dataUrl || imageUrl, detail: 'low' },
   };

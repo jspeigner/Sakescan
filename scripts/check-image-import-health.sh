@@ -68,9 +68,17 @@ for log in logs:
         break
 
 placed = discover.get("placed", 0)
+attempts = discover.get("attempts")
+candidate_urls_seen = discover.get("candidateUrlsSeen")
 vision = discover.get("visionChecks", 0)
 yield_rate = discover.get("yield")
 firecrawl_err = discover.get("firecrawlErrors", 0)
+pool_pages_scanned = discover.get("poolPagesScanned")
+pool_rows = discover.get("poolRows")
+eligible_rows = discover.get("eligibleRows")
+skipped_by_backoff = discover.get("skippedByBackoff")
+skipped_exhausted = discover.get("skippedExhausted")
+exhausted_this_run = discover.get("exhaustedThisRun")
 promote_count = promote.get("promoted", 0)
 skipped_unusable_url = promote.get("skippedUnusableUrl", promote.get("skippedInvalidUrl"))
 openai_rec = env.get("openaiQuotaRecommendation")
@@ -136,6 +144,10 @@ if (missing or 0) > 0:
         alerts.append(
             f"Latest discover run is stale ({discover_age_hours:.1f}h old; threshold {stale_discover_hours:.0f}h)"
         )
+    if placed == 0 and attempts == 0:
+        alerts.append("Latest discover placed 0 images and made 0 attempts while images are still missing")
+    elif placed == 0 and attempts is None and vision == 0 and yield_rate is None:
+        alerts.append("Latest discover placed 0 images and has no attempt diagnostics while images are still missing")
 if last_status and last_status != "ok":
     alerts.append(f"Last orchestrator status: {last_status}")
 if errors:
@@ -155,10 +167,18 @@ out = {
     "lowYieldStreak": streak,
     "recentYields": yields[-5:],
     "latestDiscover": {
+        "attempts": attempts,
         "placed": placed,
+        "candidateUrlsSeen": candidate_urls_seen,
         "visionChecks": vision,
         "yield": yield_rate,
         "firecrawlErrors": firecrawl_err,
+        "poolPagesScanned": pool_pages_scanned,
+        "poolRows": pool_rows,
+        "eligibleRows": eligible_rows,
+        "skippedByBackoff": skipped_by_backoff,
+        "skippedExhausted": skipped_exhausted,
+        "exhaustedThisRun": exhausted_this_run,
         "stopReason": discover_stop_reason,
         "runAt": discover_run_at,
         "ageHours": round(discover_age_hours, 1) if discover_age_hours is not None else None,

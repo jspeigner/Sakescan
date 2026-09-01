@@ -9,11 +9,13 @@ import {
   DISCOVER_ROW_CAP_LOW_YIELD,
   EXHAUSTED_HOLD_MS,
   computeDiscoverRetry,
+  discoverEligibleBufferTarget,
   discoverRowCapForRun,
   discoverSkipReason,
   isMissingImageUrl,
   prioritizeDiscoverRows,
   shouldExhaustDiscoverRow,
+  shouldScanNextDiscoverPoolPage,
   shouldRunDiscoverFallback,
 } from './discoverPolicy.ts';
 
@@ -135,6 +137,52 @@ describe('discoverRowCapForRun', () => {
     expect(discoverRowCapForRun(20, [0.3, 0])).toBe(DISCOVER_ROW_CAP_LOW_YIELD);
     expect(discoverRowCapForRun(20, [0.3])).toBe(DISCOVER_ROW_CAP_DEFAULT);
     expect(discoverRowCapForRun(4, [0])).toBe(4);
+  });
+});
+
+describe('discover pool paging', () => {
+  test('keeps scanning while the eligible buffer is under target', () => {
+    expect(discoverEligibleBufferTarget(6)).toBe(24);
+    expect(
+      shouldScanNextDiscoverPoolPage({
+        pagesScanned: 1,
+        maxPages: 8,
+        eligibleRows: 0,
+        rowCap: 6,
+        lastPageRows: 2000,
+        pageSize: 2000,
+      })
+    ).toBe(true);
+    expect(
+      shouldScanNextDiscoverPoolPage({
+        pagesScanned: 2,
+        maxPages: 8,
+        eligibleRows: 24,
+        rowCap: 6,
+        lastPageRows: 2000,
+        pageSize: 2000,
+      })
+    ).toBe(false);
+    expect(
+      shouldScanNextDiscoverPoolPage({
+        pagesScanned: 8,
+        maxPages: 8,
+        eligibleRows: 0,
+        rowCap: 6,
+        lastPageRows: 2000,
+        pageSize: 2000,
+      })
+    ).toBe(false);
+    expect(
+      shouldScanNextDiscoverPoolPage({
+        pagesScanned: 1,
+        maxPages: 8,
+        eligibleRows: 0,
+        rowCap: 6,
+        lastPageRows: 25,
+        pageSize: 2000,
+      })
+    ).toBe(false);
   });
 });
 

@@ -130,10 +130,18 @@ type OrchestratorRunLog = {
 };
 
 type DiscoverSummary = {
+  attempts: number | null;
   placed: number;
+  candidateUrlsSeen: number | null;
   visionChecks: number;
   yield: number | null;
   firecrawlErrors: number;
+  poolPagesScanned?: number | null;
+  poolRows?: number | null;
+  eligibleRows?: number | null;
+  skippedByBackoff?: number | null;
+  skippedExhausted?: number | null;
+  exhaustedThisRun?: number | null;
   stopReason: unknown;
   runAt: string | null;
 };
@@ -161,17 +169,27 @@ function latestDiscoverSummary(logs: OrchestratorRunLog[]): DiscoverSummary {
     const stats = phase.stats ?? {};
     const health = (stats.discoverHealth as Record<string, unknown> | undefined) ?? {};
     return {
+      attempts: typeof health.attempts === 'number' ? health.attempts : null,
       placed: typeof health.placed === 'number' ? health.placed : 0,
+      candidateUrlsSeen: typeof health.candidateUrlsSeen === 'number' ? health.candidateUrlsSeen : null,
       visionChecks: typeof health.visionChecks === 'number' ? health.visionChecks : 0,
       yield: typeof health.yield === 'number' ? health.yield : null,
       firecrawlErrors: typeof health.firecrawlErrors === 'number' ? health.firecrawlErrors : 0,
+      poolPagesScanned: typeof health.poolPagesScanned === 'number' ? health.poolPagesScanned : null,
+      poolRows: typeof health.poolRows === 'number' ? health.poolRows : null,
+      eligibleRows: typeof health.eligibleRows === 'number' ? health.eligibleRows : null,
+      skippedByBackoff: typeof health.skippedByBackoff === 'number' ? health.skippedByBackoff : null,
+      skippedExhausted: typeof health.skippedExhausted === 'number' ? health.skippedExhausted : null,
+      exhaustedThisRun: typeof health.exhaustedThisRun === 'number' ? health.exhaustedThisRun : null,
       stopReason: stats.stopReason ?? null,
       runAt: log.created_at ?? null,
     };
   }
 
   return {
+    attempts: null,
     placed: 0,
+    candidateUrlsSeen: null,
     visionChecks: 0,
     yield: null,
     firecrawlErrors: 0,
@@ -299,7 +317,9 @@ async function runImagesDiscoverPhase(params: {
   } = params;
   let discoverHealth = params.discoverHealth;
   const emptyDiscover: DiscoverSummary = {
+    attempts: null,
     placed: 0,
+    candidateUrlsSeen: null,
     visionChecks: 0,
     yield: null,
     firecrawlErrors: 0,
@@ -382,6 +402,13 @@ async function runImagesDiscoverPhase(params: {
         yield?: number;
         firecrawlErrors?: number;
         visionChecks?: number;
+        candidateUrlsSeen?: number;
+        poolPagesScanned?: number;
+        poolRows?: number;
+        eligibleRows?: number;
+        skippedByBackoff?: number;
+        skippedExhausted?: number;
+        exhaustedThisRun?: number;
         openaiVisionQuotaExceeded?: boolean;
       }
     | undefined;
@@ -443,10 +470,18 @@ async function runImagesDiscoverPhase(params: {
     openaiQuotaRecommendation,
     errors,
     latestDiscover: {
+      attempts: typeof attempts === 'number' ? attempts : null,
       placed: typeof placed === 'number' ? placed : 0,
+      candidateUrlsSeen: typeof health?.candidateUrlsSeen === 'number' ? health.candidateUrlsSeen : null,
       visionChecks: typeof health?.visionChecks === 'number' ? health.visionChecks : 0,
       yield: typeof health?.yield === 'number' ? health.yield : null,
       firecrawlErrors: typeof health?.firecrawlErrors === 'number' ? health.firecrawlErrors : 0,
+      poolPagesScanned: typeof health?.poolPagesScanned === 'number' ? health.poolPagesScanned : null,
+      poolRows: typeof health?.poolRows === 'number' ? health.poolRows : null,
+      eligibleRows: typeof health?.eligibleRows === 'number' ? health.eligibleRows : null,
+      skippedByBackoff: typeof health?.skippedByBackoff === 'number' ? health.skippedByBackoff : null,
+      skippedExhausted: typeof health?.skippedExhausted === 'number' ? health.skippedExhausted : null,
+      exhaustedThisRun: typeof health?.exhaustedThisRun === 'number' ? health.exhaustedThisRun : null,
       stopReason: discoverJson?.stopReason ?? null,
       runAt: new Date().toISOString(),
     },
