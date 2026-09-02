@@ -20,22 +20,19 @@ mock.module('@supabase/supabase-js', () => ({
   }),
 }));
 
-mock.module('./lib/invokeProcessImages.ts', () => ({
-  invokeProcessImages: async (_query: Record<string, string>) => {
+mock.module('./process-images.js', () => ({
+  default: async (_req: VercelRequest, res: VercelResponse) => {
     discoverCalls += 1;
-    return {
-      ok: true,
-      json: {
-        sakeDiscovered: 1,
-        discoverHealth: {
-          placed: 1,
-          attempts: 2,
-          yield: 0.5,
-          firecrawlErrors: 0,
-        },
-        stopReason: 'chunk_complete_continue',
+    return res.status(200).json({
+      sakeDiscovered: 1,
+      discoverHealth: {
+        placed: 1,
+        attempts: 2,
+        yield: 0.5,
+        firecrawlErrors: 0,
       },
-    };
+      stopReason: 'chunk_complete_continue',
+    });
   },
 }));
 
