@@ -1,7 +1,7 @@
 /**
  * Auth helpers for Vercel Cron + manual admin triggers.
  * Vercel sends `Authorization: Bearer $CRON_SECRET` when the secret is set,
- * and always sends `x-vercel-cron: 1` on scheduled invocations.
+ * or scheduler metadata on scheduled invocations when no cron secret exists.
  */
 
 export function firstHeaderValue(
@@ -18,7 +18,12 @@ export function isVercelCronRequest(
   headers: Record<string, string | string[] | undefined>
 ): boolean {
   const flag = firstHeaderValue(headers['x-vercel-cron']);
-  return flag === '1' || flag?.toLowerCase() === 'true';
+  const legacyFlag = flag === '1' || flag?.toLowerCase() === 'true';
+  const userAgent = firstHeaderValue(headers['user-agent']);
+  const schedulerMetadata =
+    userAgent?.toLowerCase() === 'vercel-cron/1.0' &&
+    Boolean(firstHeaderValue(headers['x-vercel-cron-schedule']));
+  return legacyFlag || schedulerMetadata;
 }
 
 export function cronBearerMatches(
@@ -40,5 +45,8 @@ export function isAuthorizedCronRequest(
   headers: Record<string, string | string[] | undefined>,
   cronSecret: string | undefined | null = process.env.CRON_SECRET
 ): boolean {
-  return cronBearerMatches(headers, cronSecret) || isVercelCronRequest(headers);
+  const secretConfigured = Boolean(cronSecret?.trim());
+  const bearer = cronBearerMatches(headers, cronSecret);
+  const vercelCron = isVercelCronRequest(headers);
+  return secretConfigured ? bearer : vercelCron;
 }

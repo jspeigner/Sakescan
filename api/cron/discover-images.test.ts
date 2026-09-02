@@ -41,6 +41,7 @@ mock.module('./lib/invokeProcessImages.ts', () => ({
 
 process.env.VITE_SUPABASE_URL = 'https://example.supabase.co';
 process.env.SUPABASE_SERVICE_ROLE_KEY = 'test-service-key';
+process.env.CRON_SECRET = '';
 
 const { default: handler } = await import('./discover-images.ts');
 
@@ -67,6 +68,17 @@ function cronReq(): VercelRequest {
   return {
     method: 'GET',
     headers: { 'x-vercel-cron': '1' },
+    query: {},
+  } as unknown as VercelRequest;
+}
+
+function currentVercelCronReq(): VercelRequest {
+  return {
+    method: 'GET',
+    headers: {
+      'user-agent': 'vercel-cron/1.0',
+      'x-vercel-cron-schedule': '0 14 * * *',
+    },
     query: {},
   } as unknown as VercelRequest;
 }
@@ -98,5 +110,18 @@ describe('discover-images cron job', () => {
     expect(inserts).toHaveLength(2);
     expect(inserts[0]?.job).toBe('images-discover');
     expect(inserts[1]?.status).toBe('ok');
+  });
+
+  test('accepts current Vercel scheduler metadata when CRON_SECRET is absent', async () => {
+    const beforeCalls = discoverCalls;
+    const response = mockRes();
+
+    await handler(currentVercelCronReq(), response.res);
+    const result = response.result();
+
+    expect(result.statusCode).toBe(200);
+    expect(result.body?.success).toBe(true);
+    expect(result.body?.job).toBe('images-discover');
+    expect(discoverCalls).toBe(beforeCalls + 1);
   });
 });
