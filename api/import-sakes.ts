@@ -207,6 +207,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             .from('sake')
             .update({
               image_url: finalImageUrl,
+              wineengine_indexed_at: null,
               updated_at: new Date().toISOString(),
             })
             .eq('id', sake.existingId);

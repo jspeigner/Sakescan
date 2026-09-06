@@ -70,6 +70,12 @@ export function provenanceForAdmin(): ImageProvenance {
   };
 }
 
+/**
+ * Catalog image writes must invalidate WineEngine index state.
+ * TinEye filepaths are sticky per sake id (`sake/${id}.jpg`); leaving
+ * `wineengine_indexed_at` set after a replace/clear keeps the old bottle
+ * fingerprint forever because sync only selects `wineengine_indexed_at IS NULL`.
+ */
 export function sakeImageUpdatePayload(
   imageUrl: string,
   provenance: ImageProvenance
@@ -80,6 +86,16 @@ export function sakeImageUpdatePayload(
     image_quality: provenance.image_quality,
     image_verified_at: provenance.image_verified_at ?? new Date().toISOString(),
     image_contributor_scan_id: provenance.image_contributor_scan_id ?? null,
+    wineengine_indexed_at: null,
+    updated_at: new Date().toISOString(),
+  };
+}
+
+/** Clear a catalog image and force WineEngine re-index eligibility. */
+export function sakeImageClearPayload(): Record<string, unknown> {
+  return {
+    image_url: null,
+    wineengine_indexed_at: null,
     updated_at: new Date().toISOString(),
   };
 }

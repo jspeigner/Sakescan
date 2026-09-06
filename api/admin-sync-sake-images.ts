@@ -47,6 +47,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     .from('sake')
     .update({
       image_url: image_url ?? null,
+      // Any admin image replace/clear invalidates the sticky TinEye filepath index.
+      wineengine_indexed_at: null,
       updated_at: new Date().toISOString(),
     })
     .eq('id', sakeId)

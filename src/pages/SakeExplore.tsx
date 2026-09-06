@@ -26,7 +26,7 @@ export default function SakeExplore() {
   const [page, setPage] = useState(0);
   const pageSize = 24;
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ["explore-sake", search, typeFilter, regionFilter, page],
     queryFn: async () => {
       let query = supabase
@@ -129,6 +129,13 @@ export default function SakeExplore() {
           {isLoading ? (
             <div className="flex items-center justify-center py-20">
               <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
+            </div>
+          ) : isError ? (
+            <div className="flex flex-col items-center justify-center gap-4 py-20">
+              <p className="text-muted-foreground text-center">Something went wrong loading sakes.</p>
+              <Button type="button" variant="outline" className="min-h-[44px]" onClick={() => void refetch()}>
+                Try again
+              </Button>
             </div>
           ) : sakes.length === 0 ? (
             <div className="text-center py-20">
