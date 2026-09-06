@@ -10,8 +10,8 @@ import {
 } from './backfillState.js';
 import {
   getWineEngineConfig,
-  wineEngineAddByUrl,
   wineEngineCount,
+  wineEngineIndexByUrl,
   type WineEngineConfig,
 } from './wineEngine.js';
 import {
@@ -116,7 +116,9 @@ export async function runWineEngineSyncBatch(
 
     let addSucceeded = false;
     try {
-      const result = await wineEngineAddByUrl(cfg, { sakeId: row.id, imageUrl: row.image_url });
+      // Index via add-or-update: sticky filepath remains after image replace clears
+      // wineengine_indexed_at, so plain /rest/add/ would fail forever.
+      const result = await wineEngineIndexByUrl(cfg, { sakeId: row.id, imageUrl: row.image_url });
       if (result.status === 'ok') {
         added++;
         addSucceeded = true;

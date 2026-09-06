@@ -42,12 +42,13 @@ import {
 import {
   provenanceForTrustedRetailer,
   provenanceForWebDiscover,
+  sakeImageClearPayload,
   sakeImageUpdatePayload,
   shouldReplaceImage,
 } from './lib/imageProvenance.js';
 import {
   getWineEngineConfig,
-  wineEngineAddByUrl,
+  wineEngineIndexByUrl,
 } from './lib/wineEngine.js';
 import {
   getWineEngineQuota,
@@ -466,7 +467,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           if (shouldClearHostedImageFromAudit(v)) {
             await supabase
               .from('sake')
-              .update({ image_url: null, updated_at: new Date().toISOString() })
+              .update(sakeImageClearPayload())
               .eq('id', row.id);
             sakeAuditCleared++;
             diagnostics.audit.clearedRows++;
@@ -816,7 +817,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                   if (reserved.ok) {
                     wineEngineQuota = reserved.snapshot;
                     try {
-                      const indexed = await wineEngineAddByUrl(wineEngineCfg, {
+                      const indexed = await wineEngineIndexByUrl(wineEngineCfg, {
                         sakeId: row.id,
                         imageUrl: result.url,
                       });
@@ -1008,7 +1009,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             if (shouldClearCatalogUrlAsNonSakeProduct(sake.image_url)) {
               await supabase
                 .from('sake')
-                .update({ image_url: null, updated_at: new Date().toISOString() })
+                .update(sakeImageClearPayload())
                 .eq('id', sake.id);
               skippedPlaceholders++;
               diagnostics.mirror.placeholderClears++;
@@ -1049,13 +1050,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             if (result.skippedPlaceholder) {
               await supabase
                 .from('sake')
-                .update({ image_url: null, updated_at: new Date().toISOString() })
+                .update(sakeImageClearPayload())
                 .eq('id', sake.id);
               skippedPlaceholders++;
               diagnostics.mirror.placeholderClears++;
             } else if (result.skippedDuplicate) {
               // Shared product-shot bytes already stored earlier this run — keep URL.
             } else {
+              // Host rewrite only (same bytes) — do not clear wineengine_indexed_at.
               await supabase
                 .from('sake')
                 .update({ image_url: result.url, updated_at: new Date().toISOString() })
@@ -1074,7 +1076,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             if (shouldClearExternalImageUrlOnError(msg)) {
               await supabase
                 .from('sake')
-                .update({ image_url: null, updated_at: new Date().toISOString() })
+                .update(sakeImageClearPayload())
                 .eq('id', sake.id);
             }
             await sleep(DELAY_MS);
