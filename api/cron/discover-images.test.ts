@@ -71,6 +71,17 @@ function cronReq(): VercelRequest {
   } as unknown as VercelRequest;
 }
 
+function currentVercelCronReq(): VercelRequest {
+  return {
+    method: 'GET',
+    headers: {
+      'user-agent': 'vercel-cron/1.0',
+      'x-vercel-cron-schedule': '*/15 * * * *',
+    },
+    query: {},
+  } as unknown as VercelRequest;
+}
+
 describe('discover-images cron job', () => {
   test('runs a discover import and is safe to run again immediately', async () => {
     const first = mockRes();
@@ -98,5 +109,18 @@ describe('discover-images cron job', () => {
     expect(inserts).toHaveLength(2);
     expect(inserts[0]?.job).toBe('images-discover');
     expect(inserts[1]?.status).toBe('ok');
+  });
+
+  test('accepts current Vercel scheduler metadata', async () => {
+    const beforeCalls = discoverCalls;
+    const response = mockRes();
+
+    await handler(currentVercelCronReq(), response.res);
+    const result = response.result();
+
+    expect(result.statusCode).toBe(200);
+    expect(result.body?.success).toBe(true);
+    expect(result.body?.job).toBe('images-discover');
+    expect(discoverCalls).toBe(beforeCalls + 1);
   });
 });

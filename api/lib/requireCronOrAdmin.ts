@@ -3,7 +3,8 @@ import { isAuthorizedCronRequest } from './cronAuth.js';
 import { requireAdmin } from './requireAdmin.js';
 
 /**
- * Allow Vercel Cron (Bearer CRON_SECRET and/or x-vercel-cron) or an admin JWT.
+ * Allow Vercel Cron (Bearer CRON_SECRET, x-vercel-cron, or current scheduler
+ * User-Agent + x-vercel-cron-schedule) or an admin JWT.
  * Admin UI triggers cron jobs manually; scheduled runs use Vercel cron headers.
  */
 export async function requireCronOrAdmin(

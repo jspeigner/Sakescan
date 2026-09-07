@@ -31,6 +31,8 @@ export async function invokeProcessImages(
     headers: {
       authorization: parentReq.headers.authorization,
       'x-vercel-cron': parentReq.headers['x-vercel-cron'],
+      'user-agent': parentReq.headers['user-agent'],
+      'x-vercel-cron-schedule': parentReq.headers['x-vercel-cron-schedule'],
     },
   } as VercelRequest;
 
