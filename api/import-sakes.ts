@@ -3,6 +3,7 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { fetchAllSelectPages } from './lib/fetchAllSelectPages.js';
 import { requireAdmin } from './lib/requireAdmin.js';
 import { fetchPublicHttpUrl, isPublicHttpImageUrl } from './cron/lib/publicImageUrl.js';
+import { MAX_IMAGE_BYTES, MIN_IMAGE_BYTES } from './cron/lib/imageMirror.js';
 
 const NON_SAKE_URL_REGEXES = [
   /johnnie|walker|jwalker|jw\s*black|jw\s*red/i,
@@ -50,7 +51,22 @@ async function downloadAndStoreImage(
   }
 
   const contentType = imageResponse.headers.get('content-type') || 'image/jpeg';
+  if (contentType.includes('text/html') || contentType.includes('application/json')) {
+    throw new Error('Not an image (received HTML/JSON)');
+  }
+
+  const contentLength = Number.parseInt(imageResponse.headers.get('content-length') || '', 10);
+  if (Number.isFinite(contentLength) && contentLength > MAX_IMAGE_BYTES) {
+    throw new Error(`Too large (${contentLength} bytes > max ${MAX_IMAGE_BYTES})`);
+  }
+
   const imageBuffer = await imageResponse.arrayBuffer();
+  if (imageBuffer.byteLength < MIN_IMAGE_BYTES) {
+    throw new Error(`Too small (${imageBuffer.byteLength} bytes) - likely placeholder`);
+  }
+  if (imageBuffer.byteLength > MAX_IMAGE_BYTES) {
+    throw new Error(`Too large (${imageBuffer.byteLength} bytes > max ${MAX_IMAGE_BYTES})`);
+  }
 
   let extension = 'jpg';
   if (contentType.includes('png')) extension = 'png';
@@ -195,12 +211,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             console.warn(`Skipping non-sake image URL for ${sake.name}: ${sake.imageUrl}`);
             continue;
           }
-          let finalImageUrl = sake.imageUrl;
+          let finalImageUrl: string;
           try {
             finalImageUrl = await downloadAndStoreImage(supabase, sake.imageUrl, sake.name);
           } catch (downloadError) {
-            // Keep external URL as fallback so update is not blocked.
+            // Never persist a rejected/unhosted URL — broken HTML pages stick in the catalog.
+            const msg = downloadError instanceof Error ? downloadError.message : String(downloadError);
             console.error(`Image storage failed for ${sake.name}:`, downloadError);
+            errors.push(`Skipped image for ${sake.name}: ${msg.slice(0, 100)}`);
+            continue;
           }
 
           const { error } = await supabase
@@ -226,8 +245,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           try {
             finalImageUrl = await downloadAndStoreImage(supabase, sake.imageUrl, sake.name);
           } catch (downloadError) {
+            const msg = downloadError instanceof Error ? downloadError.message : String(downloadError);
             console.error(`Image storage failed for ${sake.name}:`, downloadError);
-            finalImageUrl = sake.imageUrl;
+            errors.push(`Inserted ${sake.name} without image: ${msg.slice(0, 100)}`);
+            finalImageUrl = null;
           }
         } else if (sake.imageUrl) {
           console.warn(`Skipping non-sake image URL for new sake ${sake.name}: ${sake.imageUrl}`);

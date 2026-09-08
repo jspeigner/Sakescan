@@ -149,7 +149,7 @@ async function downloadAndStoreWithRetry(
   supabase: ReturnType<typeof createClient>,
   imageUrl: string,
   name: string,
-  seenHashes: Set<string>,
+  seenHashes: Map<string, string>,
   knownPlaceholderHashes: Set<string>,
   retryCount = 2
 ): Promise<{ result: Awaited<ReturnType<typeof downloadAndStore>>; retriesUsed: number }> {
@@ -355,7 +355,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let skippedPlaceholders = 0;
     let rateLimited = false;
     const errors: string[] = [];
-    const seenHashes = new Set<string>();
+    const seenHashes = new Map<string, string>();
     const knownPlaceholderHashes = new Set<string>();
     const diagnostics = {
       audit: {
@@ -792,11 +792,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 failureReason = 'placeholder_skipped';
                 continue;
               }
-              if (result.skippedDuplicate) {
-                // Already mirrored identical bytes this run — leave existing URL alone.
+              if (!result.url) {
+                failureReason = 'empty_url';
                 continue;
               }
 
+              // skippedDuplicate returns a hosted URL from earlier this run — still assign
+              // so rows with null image_url are not left blank when bytes match a sibling.
               await supabase
                 .from('sake')
                 .update(
@@ -1053,9 +1055,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 .eq('id', sake.id);
               skippedPlaceholders++;
               diagnostics.mirror.placeholderClears++;
-            } else if (result.skippedDuplicate) {
-              // Shared product-shot bytes already stored earlier this run — keep URL.
-            } else {
+            } else if (result.url) {
+              // skippedDuplicate reuses the hosted URL from the first upload this run.
               await supabase
                 .from('sake')
                 .update({ image_url: result.url, updated_at: new Date().toISOString() })

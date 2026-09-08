@@ -2,6 +2,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { requireAdmin } from './lib/requireAdmin.js';
 import { fetchPublicHttpUrl, isPublicHttpImageUrl } from './cron/lib/publicImageUrl.js';
+import { MAX_IMAGE_BYTES, MIN_IMAGE_BYTES } from './cron/lib/imageMirror.js';
 
 interface BreweryInput {
   name: string;
@@ -42,10 +43,22 @@ async function downloadAndStoreImage(
   }
 
   const contentType = imageResponse.headers.get('content-type') || 'image/jpeg';
+  if (contentType.includes('text/html') || contentType.includes('application/json')) {
+    throw new Error('Not an image (received HTML/JSON)');
+  }
+
+  const contentLength = Number.parseInt(imageResponse.headers.get('content-length') || '', 10);
+  if (Number.isFinite(contentLength) && contentLength > MAX_IMAGE_BYTES) {
+    throw new Error(`Too large (${contentLength} bytes > max ${MAX_IMAGE_BYTES})`);
+  }
+
   const imageBuffer = await imageResponse.arrayBuffer();
 
-  if (imageBuffer.byteLength < 500) {
-    throw new Error('Image too small, likely an error page');
+  if (imageBuffer.byteLength < MIN_IMAGE_BYTES) {
+    throw new Error(`Too small (${imageBuffer.byteLength} bytes) - likely placeholder`);
+  }
+  if (imageBuffer.byteLength > MAX_IMAGE_BYTES) {
+    throw new Error(`Too large (${imageBuffer.byteLength} bytes > max ${MAX_IMAGE_BYTES})`);
   }
 
   let extension = 'jpg';
@@ -118,19 +131,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         continue;
       }
 
-      // Download main image if available
+      // Download main image if available — never persist a rejected original URL.
       let storedImageUrl: string | null = null;
       if (brewery.image_url && !skipImages) {
         try {
           storedImageUrl = await downloadAndStoreImage(supabase, brewery.image_url, brewery.name);
           imageCount++;
         } catch (imgError) {
-          // Keep original URL as fallback
-          storedImageUrl = brewery.image_url;
+          const msg = imgError instanceof Error ? imgError.message : String(imgError);
           console.error(`Image download failed for ${brewery.name}:`, imgError);
+          errors.push(`Inserted ${brewery.name} without image: ${msg.slice(0, 100)}`);
+          storedImageUrl = null;
         }
-      } else if (brewery.image_url) {
-        storedImageUrl = brewery.image_url;
+      } else if (brewery.image_url && skipImages) {
+        // Explicit skip: keep the provided URL only when admin opted out of hosting.
+        storedImageUrl = isPublicHttpImageUrl(brewery.image_url) ? brewery.image_url : null;
       }
 
       const { error: insertError } = await supabase
