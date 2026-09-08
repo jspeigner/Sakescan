@@ -2,6 +2,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
 import { requireAdmin } from './lib/requireAdmin.js';
 import { fetchPublicHttpUrl, isPublicHttpImageUrl } from './cron/lib/publicImageUrl.js';
+import { MAX_IMAGE_BYTES } from './cron/lib/imageMirror.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Only allow POST
@@ -38,7 +39,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const contentType = imageResponse.headers.get('content-type') || 'image/jpeg';
+    const contentLengthHeader = imageResponse.headers.get('content-length');
+    const contentLength = contentLengthHeader ? Number.parseInt(contentLengthHeader, 10) : NaN;
+    if (Number.isFinite(contentLength) && contentLength > MAX_IMAGE_BYTES) {
+      return res.status(413).json({
+        error: `Image too large (${contentLength} bytes > max ${MAX_IMAGE_BYTES})`,
+      });
+    }
+
     const imageBuffer = await imageResponse.arrayBuffer();
+    if (imageBuffer.byteLength > MAX_IMAGE_BYTES) {
+      return res.status(413).json({
+        error: `Image too large (${imageBuffer.byteLength} bytes > max ${MAX_IMAGE_BYTES})`,
+      });
+    }
 
     // Determine file extension from content type
     let extension = 'jpg';
