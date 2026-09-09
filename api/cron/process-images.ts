@@ -21,6 +21,8 @@ import {
   urlLooksLikeNonSakeProduct,
 } from './lib/sakeImageDiscovery.js';
 import {
+  DISCOVER_POOL_PAGE_LIMIT,
+  DISCOVER_POOL_PAGE_SIZE,
   computeDiscoverRetry,
   discoverEligibleBufferTarget,
   discoverRowCapForRun,
@@ -56,6 +58,7 @@ import {
   type WineEngineQuotaSnapshot,
 } from './lib/wineEngineQuota.js';
 import { markWineEngineIndexed } from './lib/wineEngineSearchCache.js';
+import { buildProcessImagesWineEngineSummary } from './lib/processImagesWineEngineSummary.js';
 import { embedSakeCatalogImage } from './lib/sakeImageEmbed.js';
 import { requireCronOrAdmin } from '../lib/requireCronOrAdmin.js';
 const MIRROR_OPS_BUDGET = 220;
@@ -77,8 +80,7 @@ const CHUNK_WALL_MS = 7500;
 /** Discover mode is slower (Firecrawl + vision), so allow a longer chunk budget. */
 const DISCOVER_CHUNK_WALL_MS = 25000;
 const DISCOVER_CHUNK_WALL_MS_ACCELERATED = 55000;
-const DISCOVER_POOL_LIMIT = 2000;
-const DISCOVER_POOL_PAGE_LIMIT = 8;
+const DISCOVER_POOL_LIMIT = DISCOVER_POOL_PAGE_SIZE;
 const DISCOVER_HEALTH_KEY = 'discover_health';
 
 type SakeRow = {
@@ -1209,21 +1211,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         breweryMainImages: brewRem.breweryMainImages,
         breweryGalleryImages: brewRem.breweryGalleryImages,
       },
-      wineEngine: wineEngineCfg
-        ? {
-            collectionCount: wineEngineCollectionCount,
-            activeInDiscover: wineEngineActive,
-            quota: wineEngineQuota
-              ? {
-                  period: wineEngineQuota.state.period,
-                  images: wineEngineQuota.state.images,
-                  searches: wineEngineQuota.state.searches,
-                  remainingImagesToday: wineEngineQuota.remainingImagesToday,
-                  remainingSearchesToday: wineEngineQuota.remainingSearchesToday,
-                }
-              : null,
-          }
-        : { disabled: true },
+      wineEngine: buildProcessImagesWineEngineSummary(wineEngineCfg, wineEngineQuota),
       sakeQueue: {
         externalRowsFetched: sakeExternalRowsFetched,
         note: 'Audit → discover (missing) → mirror external URLs. Discover needs FIRECRAWL + OPENAI.',

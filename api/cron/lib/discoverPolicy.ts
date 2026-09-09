@@ -20,6 +20,17 @@ export const DISCOVER_ROW_CAP_LOW_YIELD = 6;
 export const DISCOVER_ELIGIBLE_BUFFER_MULTIPLIER = 4;
 export const DISCOVER_ELIGIBLE_BUFFER_MIN = 24;
 
+/**
+ * PostgREST silently truncates any page to `max-rows` (Supabase default 1000).
+ * The missing-image pool must page in chunks no larger than that, otherwise a
+ * truncated first page looks like the end of the pool and discover never
+ * reaches the rows behind it.
+ */
+export const POSTGREST_MAX_ROWS = 1000;
+export const DISCOVER_POOL_PAGE_SIZE = POSTGREST_MAX_ROWS;
+/** Enough pages to walk the whole missing-image pool (~11k rows) when needed. */
+export const DISCOVER_POOL_PAGE_LIMIT = 12;
+
 export type DiscoverAttemptHistory = {
   attempt_count: number;
   success_count: number;
