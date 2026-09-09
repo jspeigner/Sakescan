@@ -616,6 +616,35 @@ export function isTrustedRetailerSource(source: string): boolean {
   return TRUSTED_RETAILER_SOURCES.has(source);
 }
 
+/** Direct retailer hits must look like this sake before they can replace a web search. */
+export const TRUSTED_DIRECT_SKIP_WEB_SEARCH_MIN = 2;
+
+/**
+ * Decide whether direct retailer hits are good enough to skip the (paid) web search.
+ * Sakura's / Umami's search pages return the same generic site assets (banners,
+ * logos) for every keyword, so a raw hit count is meaningless: counting those as
+ * "results" skipped Google for every row and then the relevance prefilter dropped
+ * them all, leaving 0 candidates and parking rows as exhausted:no_candidates.
+ * Only hits that pass the same relevance gate discover applies may short-circuit.
+ */
+export function shouldSkipWebSearchAfterTrustedDirect(
+  mode: SakeImageSearchMode,
+  trustedImages: SearchImageRow[],
+  name: string,
+  nameJapanese?: string | null,
+  brewery?: string | null
+): boolean {
+  if (mode !== 'trusted-first') return false;
+  const relevant = prefilterDiscoverCandidates(
+    trustedImages,
+    name,
+    nameJapanese ?? undefined,
+    brewery ?? undefined,
+    { minRelevance: 2, maxCandidates: 20 }
+  );
+  return relevant.length >= TRUSTED_DIRECT_SKIP_WEB_SEARCH_MIN;
+}
+
 // Generic CDNs (website-files / shared Shopify product CDN) are intentionally
 // excluded: many unrelated shops share those hosts, so hostname alone must not
 // skip vision.
@@ -802,7 +831,13 @@ export async function searchSakeImageCandidates(
     }
   }
 
-  const skipWebSearch = mode === 'trusted-first' && results.length >= 2;
+  const skipWebSearch = shouldSkipWebSearchAfterTrustedDirect(
+    mode,
+    trustedDirect.images,
+    name,
+    nameJapanese,
+    brewery
+  );
   const skipBingInFast = fastMode;
 
   if (!skipWebSearch) {

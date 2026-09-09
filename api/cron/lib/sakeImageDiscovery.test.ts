@@ -3,9 +3,52 @@ import {
   isTrustedImageUrl,
   isTrustedRetailerSource,
   shouldClearCatalogUrlAsNonSakeProduct,
+  shouldSkipWebSearchAfterTrustedDirect,
   shouldSpendVisionOnUntrustedCandidate,
   urlLooksLikeNonSakeProduct,
 } from './sakeImageDiscovery';
+
+describe('shouldSkipWebSearchAfterTrustedDirect', () => {
+  // Exactly what export.sakurasaketen.com returns for *every* keyword (observed 2026-09-09).
+  const sakuraGenericAssets = [
+    'https://cdn.prod.website-files.com/6335b41be5d1086e0d313d2d/650d3fd28e53468a7ecdf0f2_web.png',
+    'https://cdn.prod.website-files.com/6335b41be5d1086933313d52/6a16dcbf9ee68bd1541f47ef_Zaku%20for%202126%20(2).png',
+    'https://cdn.prod.website-files.com/6335b41be5d1086933313d52/6a16dcbf9ee68bd1541f47ef_Zaku%20for%202126%20(2)-p-500.png',
+    'https://cdn.prod.website-files.com/6335b41be5d1086933313d52/6a16dcbf9ee68bd1541f47ef_Zaku%20for%202126%20(2)-p-800.png',
+    'https://cdn.prod.website-files.com/6335b41be5d1086933313d52/6a16dcbf9ee68bd1541f47ef_Zaku%20for%202126%20(2)-p-1080.png',
+  ].map((url) => ({ url, source: 'Sakura Search' }));
+
+  test('generic retailer site assets do not short-circuit the web search', () => {
+    expect(
+      shouldSkipWebSearchAfterTrustedDirect(
+        'trusted-first',
+        sakuraGenericAssets,
+        '花の舞 純米酒超辛口',
+        null,
+        '花の舞酒造'
+      )
+    ).toBe(false);
+  });
+
+  test('relevant retailer hits still skip the paid web search', () => {
+    const relevant = [
+      { url: 'https://cdn.prod.website-files.com/abc/dassai-23-junmai-daiginjo-bottle.jpg', source: 'Sakura Search' },
+      { url: 'https://umamimart.com/cdn/shop/products/dassai-23-sake_800x.jpg', source: 'Umami Search' },
+    ];
+    expect(
+      shouldSkipWebSearchAfterTrustedDirect('trusted-first', relevant, 'Dassai 23', '獺祭', 'Asahi Shuzo')
+    ).toBe(true);
+  });
+
+  test('only applies to trusted-first mode', () => {
+    const relevant = [
+      { url: 'https://cdn.prod.website-files.com/abc/dassai-23-bottle.jpg', source: 'Sakura Search' },
+      { url: 'https://umamimart.com/cdn/shop/products/dassai-23_800x.jpg', source: 'Umami Search' },
+    ];
+    expect(shouldSkipWebSearchAfterTrustedDirect('full', relevant, 'Dassai 23')).toBe(false);
+    expect(shouldSkipWebSearchAfterTrustedDirect('google-only', relevant, 'Dassai 23')).toBe(false);
+  });
+});
 
 describe('urlLooksLikeNonSakeProduct', () => {
   test('flags known spirit brand URLs', () => {
