@@ -56,6 +56,7 @@ import {
   type WineEngineQuotaSnapshot,
 } from './lib/wineEngineQuota.js';
 import { markWineEngineIndexed } from './lib/wineEngineSearchCache.js';
+import { buildProcessImagesWineEngineSummary } from './lib/processImagesWineEngineSummary.js';
 import { embedSakeCatalogImage } from './lib/sakeImageEmbed.js';
 import { requireCronOrAdmin } from '../lib/requireCronOrAdmin.js';
 const MIRROR_OPS_BUDGET = 220;
@@ -1209,21 +1210,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         breweryMainImages: brewRem.breweryMainImages,
         breweryGalleryImages: brewRem.breweryGalleryImages,
       },
-      wineEngine: wineEngineCfg
-        ? {
-            collectionCount: wineEngineCollectionCount,
-            activeInDiscover: wineEngineActive,
-            quota: wineEngineQuota
-              ? {
-                  period: wineEngineQuota.state.period,
-                  images: wineEngineQuota.state.images,
-                  searches: wineEngineQuota.state.searches,
-                  remainingImagesToday: wineEngineQuota.remainingImagesToday,
-                  remainingSearchesToday: wineEngineQuota.remainingSearchesToday,
-                }
-              : null,
-          }
-        : { disabled: true },
+      wineEngine: buildProcessImagesWineEngineSummary(wineEngineCfg, wineEngineQuota),
       sakeQueue: {
         externalRowsFetched: sakeExternalRowsFetched,
         note: 'Audit → discover (missing) → mirror external URLs. Discover needs FIRECRAWL + OPENAI.',
