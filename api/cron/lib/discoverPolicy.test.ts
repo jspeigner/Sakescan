@@ -5,9 +5,12 @@ import {
   BACKOFF_QUOTA_MS,
   BACKOFF_SECOND_MS,
   BACKOFF_TIME_BUDGET_MS,
+  DISCOVER_POOL_PAGE_LIMIT,
+  DISCOVER_POOL_PAGE_SIZE,
   DISCOVER_ROW_CAP_DEFAULT,
   DISCOVER_ROW_CAP_LOW_YIELD,
   EXHAUSTED_HOLD_MS,
+  POSTGREST_MAX_ROWS,
   computeDiscoverRetry,
   discoverEligibleBufferTarget,
   discoverRowCapForRun,
@@ -183,6 +186,27 @@ describe('discover pool paging', () => {
         pageSize: 2000,
       })
     ).toBe(false);
+  });
+
+  test('pool pages never exceed the PostgREST max-rows cap', () => {
+    // A page larger than max-rows is truncated by the server, so a full first
+    // page would look like the end of the pool and stop scanning early.
+    expect(DISCOVER_POOL_PAGE_SIZE).toBeLessThanOrEqual(POSTGREST_MAX_ROWS);
+    expect(POSTGREST_MAX_ROWS).toBe(1000);
+    expect(
+      shouldScanNextDiscoverPoolPage({
+        pagesScanned: 1,
+        maxPages: DISCOVER_POOL_PAGE_LIMIT,
+        eligibleRows: 0,
+        rowCap: 6,
+        lastPageRows: POSTGREST_MAX_ROWS,
+        pageSize: DISCOVER_POOL_PAGE_SIZE,
+      })
+    ).toBe(true);
+  });
+
+  test('page limit can cover the current missing-image pool', () => {
+    expect(DISCOVER_POOL_PAGE_LIMIT * DISCOVER_POOL_PAGE_SIZE).toBeGreaterThanOrEqual(11_500);
   });
 });
 
