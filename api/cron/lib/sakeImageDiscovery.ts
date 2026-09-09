@@ -406,6 +406,84 @@ async function scrapeGoogleImagesDirect(searchQuery: string): Promise<SearchImag
   }
 }
 
+type FirecrawlImageResult = {
+  imageUrl?: string;
+  url?: string;
+  title?: string;
+  imageWidth?: number;
+  imageHeight?: number;
+};
+
+export const FIRECRAWL_IMAGE_SEARCH_LIMIT = 12;
+/** Tiny thumbnails / icons are never usable product shots. */
+const FIRECRAWL_IMAGE_MIN_EDGE = 200;
+
+/** Map a Firecrawl `/v2/search` images payload to candidate rows (pure, for tests). */
+export function firecrawlImageResultsToRows(
+  images: FirecrawlImageResult[] | undefined,
+  searchQuery: string
+): SearchImageRow[] {
+  const rows: SearchImageRow[] = [];
+  for (const img of images ?? []) {
+    const url = typeof img.imageUrl === 'string' ? img.imageUrl.trim() : '';
+    if (!url || !isPublicHttpImageUrl(url)) continue;
+    const w = typeof img.imageWidth === 'number' ? img.imageWidth : null;
+    const h = typeof img.imageHeight === 'number' ? img.imageHeight : null;
+    if ((w !== null && w < FIRECRAWL_IMAGE_MIN_EDGE) || (h !== null && h < FIRECRAWL_IMAGE_MIN_EDGE)) {
+      continue;
+    }
+    // Page title (retailer listing) carries the product name for relevance scoring;
+    // fall back to the query so Google-style scoring still has tokens to match.
+    const title = typeof img.title === 'string' && img.title.trim() ? img.title.trim() : searchQuery;
+    rows.push({ url, source: 'Google Images', title });
+  }
+  return rows;
+}
+
+/**
+ * Image web search via Firecrawl `/v2/search` (sources: images). Scraping
+ * google.com/search?tbm=isch through /scrape returns CAPTCHA / 429 pages, which
+ * made every discover query fail with 0 candidates.
+ */
+async function firecrawlImageSearch(
+  apiKey: string,
+  searchQuery: string
+): Promise<{ rows: SearchImageRow[]; error?: string }> {
+  try {
+    const res = await fetch('https://api.firecrawl.dev/v2/search', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        // /v2/search accepts keyless low-rate calls; only send a token when we have one.
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      },
+      body: JSON.stringify({
+        query: searchQuery,
+        sources: ['images'],
+        limit: FIRECRAWL_IMAGE_SEARCH_LIMIT,
+      }),
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!res.ok) {
+      const errText = await res.text();
+      noteFirecrawlQuotaError(res.status, errText);
+      return { rows: [], error: `search HTTP ${res.status}: ${errText.slice(0, 180)}` };
+    }
+    const json = (await res.json()) as {
+      success?: boolean;
+      data?: { images?: FirecrawlImageResult[] };
+      error?: string;
+    };
+    if (json.success === false) {
+      return { rows: [], error: `search: ${(json.error ?? 'unknown error').slice(0, 180)}` };
+    }
+    return { rows: firecrawlImageResultsToRows(json.data?.images, searchQuery) };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { rows: [], error: `search network: ${msg.slice(0, 180)}` };
+  }
+}
+
 async function scrapeGoogleImages(
   firecrawlApiKey: string,
   searchQuery: string
@@ -418,24 +496,9 @@ async function scrapeGoogleImages(
     return { rows: [], error: 'Firecrawl bypass active; direct Google returned no URLs' };
   }
 
-  const googleImagesUrl = `https://www.google.com/search?q=${encodeURIComponent(searchQuery)}&tbm=isch`;
-  const data = await firecrawlScrape(firecrawlApiKey, {
-    url: googleImagesUrl,
-    formats: ['html'],
-    onlyMainContent: false,
-    maxAge: 0,
-  });
-  if (data?.html) {
-    const urls = extractImageUrlsFromGoogleHtml(data.html);
-    if (urls.length > 0) {
-      return {
-        rows: urls.slice(0, 24).map((url) => ({
-          url,
-          source: 'Google Images',
-          title: searchQuery,
-        })),
-      };
-    }
+  const search = await firecrawlImageSearch(firecrawlApiKey, searchQuery);
+  if (search.rows.length > 0) {
+    return { rows: search.rows.slice(0, 24) };
   }
 
   const directRows = await scrapeGoogleImagesDirect(searchQuery);
@@ -443,7 +506,7 @@ async function scrapeGoogleImages(
     return { rows: directRows };
   }
 
-  return { rows: [], error: data?._error || 'No Google image URLs (Firecrawl + direct)' };
+  return { rows: [], error: search.error || 'No image search results (Firecrawl search + direct Google)' };
 }
 
 function decodeHtmlEntities(input: string): string {
