@@ -1,12 +1,64 @@
 import { describe, expect, test } from 'bun:test';
 import {
+  filterAndRankImages,
+  firecrawlImageResultsToRows,
   isTrustedImageUrl,
   isTrustedRetailerSource,
+  prefilterDiscoverCandidates,
   shouldClearCatalogUrlAsNonSakeProduct,
   shouldSkipWebSearchAfterTrustedDirect,
   shouldSpendVisionOnUntrustedCandidate,
   urlLooksLikeNonSakeProduct,
 } from './sakeImageDiscovery';
+
+describe('firecrawlImageResultsToRows', () => {
+  // Real /v2/search (sources: images) payload for a row discover kept failing on.
+  const payload = [
+    {
+      title: 'Amazon.co.jp: 花の舞 純米酒超辛口 (1800ml) : 食品・飲料・お酒',
+      imageUrl: 'https://m.media-amazon.com/images/I/51BrBi9lPxL.jpg',
+      imageWidth: 1000,
+      imageHeight: 1000,
+      url: 'https://www.amazon.co.jp/dp/B000000',
+      position: 1,
+    },
+    {
+      title: '楽天市場】日本酒 花の舞 超辛口 720ml｜辛口 日本酒 純米酒 : 静岡の地酒 花の舞酒造',
+      imageUrl:
+        'https://tshop.r10s.jp/hananomai/cabinet/junmaishu/chokara/13781503/imgrc0122292984.jpg?fitin=720%3A720',
+      imageWidth: 720,
+      imageHeight: 720,
+      url: 'https://item.rakuten.co.jp/hananomai/x',
+      position: 2,
+    },
+    { title: 'tiny icon', imageUrl: 'https://cdn.example.com/icon.png', imageWidth: 64, imageHeight: 64 },
+    { title: 'private', imageUrl: 'http://10.0.0.5/leak.jpg', imageWidth: 800, imageHeight: 800 },
+    { title: 'no url' },
+  ];
+
+  test('keeps public, non-thumbnail images and carries the listing title', () => {
+    const rows = firecrawlImageResultsToRows(payload, '花の舞 純米酒超辛口 花の舞酒造 nihonshu sake bottle');
+    expect(rows.map((r) => r.url)).toEqual([
+      'https://m.media-amazon.com/images/I/51BrBi9lPxL.jpg',
+      'https://tshop.r10s.jp/hananomai/cabinet/junmaishu/chokara/13781503/imgrc0122292984.jpg?fitin=720%3A720',
+    ]);
+    expect(rows[0]?.title).toContain('花の舞 純米酒超辛口');
+    expect(rows.every((r) => r.source === 'Google Images')).toBe(true);
+  });
+
+  test('results survive the discover relevance gates for the matching sake', () => {
+    const name = '花の舞 純米酒超辛口';
+    const brewery = '花の舞酒造';
+    const rows = firecrawlImageResultsToRows(payload, `${name} ${brewery} nihonshu sake bottle`);
+    const ranked = filterAndRankImages(rows, name, undefined, brewery);
+    const candidates = prefilterDiscoverCandidates(ranked, name, undefined, brewery, { minRelevance: 2 });
+    expect(candidates.length).toBe(2);
+  });
+
+  test('handles a missing images array', () => {
+    expect(firecrawlImageResultsToRows(undefined, 'q')).toEqual([]);
+  });
+});
 
 describe('shouldSkipWebSearchAfterTrustedDirect', () => {
   // Exactly what export.sakurasaketen.com returns for *every* keyword (observed 2026-09-09).
