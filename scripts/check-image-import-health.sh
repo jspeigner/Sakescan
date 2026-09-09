@@ -86,6 +86,12 @@ discover_rec = env.get("discoverQuotaRecommendation")
 last_summary = d.get("lastRunSummary") or {}
 last_status = last.get("status") or last_summary.get("status")
 errors = last.get("errors") or []
+phases = last.get("phases") or last_summary.get("phases") or []
+failed_phases = [
+    f"{p.get('phase')}={p.get('status')}"
+    for p in phases
+    if isinstance(p, dict) and p.get("status") in ("failed", "partial")
+]
 discover_stop_reason = discover.get("stopReason", discover.get("_stopReason"))
 discover_run_at = discover.get("runAt", discover.get("_timestamp"))
 promote_status = promote.get("status", promote.get("_status"))
@@ -149,7 +155,8 @@ if (missing or 0) > 0:
     elif placed == 0 and attempts is None and vision == 0 and yield_rate is None:
         alerts.append("Latest discover placed 0 images and has no attempt diagnostics while images are still missing")
 if last_status and last_status != "ok":
-    alerts.append(f"Last orchestrator status: {last_status}")
+    suffix = f" ({', '.join(failed_phases)})" if failed_phases else ""
+    alerts.append(f"Last orchestrator status: {last_status}{suffix}")
 if errors:
     alerts.append(f"Last run errors: {errors}")
 
@@ -192,7 +199,12 @@ out = {
         "runAt": promote_run_at,
         "ageHours": round(promote_age_hours, 1) if promote_age_hours is not None else None,
     },
-    "lastRunSummary": last_summary,
+    "lastRunSummary": {k: v for k, v in last_summary.items() if k != "phases"},
+    "phases": [
+        {"phase": p.get("phase"), "status": p.get("status"), "durationMs": p.get("durationMs")}
+        for p in phases
+        if isinstance(p, dict)
+    ],
     "skipFlags": skip,
     "environmentalBackoffCleared": backoff_cleared,
     "openaiQuotaRecommendation": openai_rec,

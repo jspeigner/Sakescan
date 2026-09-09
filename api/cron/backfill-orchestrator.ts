@@ -160,6 +160,21 @@ function phasesFromLog(log: OrchestratorRunLog | null | undefined): Orchestrator
   return Array.isArray(phases) ? (phases as OrchestratorPhaseLog[]) : [];
 }
 
+type PublicPhaseSummary = { phase: string; status: string; durationMs: number | null };
+
+/** Phase name/status/duration for the unauthenticated stats view (no error text). */
+export function publicPhaseSummaries(phases: unknown): PublicPhaseSummary[] {
+  if (!Array.isArray(phases)) return [];
+  const out: PublicPhaseSummary[] = [];
+  for (const p of phases) {
+    if (!p || typeof p !== 'object') continue;
+    const { phase, status, durationMs } = p as Record<string, unknown>;
+    if (typeof phase !== 'string' || typeof status !== 'string') continue;
+    out.push({ phase, status, durationMs: typeof durationMs === 'number' ? durationMs : null });
+  }
+  return out;
+}
+
 function latestDiscoverSummary(logs: OrchestratorRunLog[]): DiscoverSummary {
   for (const log of logs) {
     if (log.job !== 'backfill-orchestrator' && log.job !== 'images-discover') continue;
@@ -567,6 +582,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         timestamp: typeof lastRun.timestamp === 'string' ? lastRun.timestamp : null,
         durationMs: typeof lastRun.durationMs === 'number' ? lastRun.durationMs : null,
         prioritizeDiscover: lastRun.prioritizeDiscover === true,
+        // Phase names + statuses only; error strings stay behind cron auth.
+        phases: publicPhaseSummaries(lastRun.phases),
       },
       env: {
         skipFlags,
