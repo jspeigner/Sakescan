@@ -24,5 +24,16 @@ export default tseslint.config(
       "@typescript-eslint/no-empty-interface": "off",
       "@typescript-eslint/no-empty-object-type": "off",
     },
+  },
+  {
+    // api/ is not covered by tsc (tsconfig.app.json only includes src/), so an
+    // undeclared identifier there ships as a runtime ReferenceError. Keep no-undef on.
+    files: ["api/**/*.ts"],
+    languageOptions: {
+      globals: { ...globals.node, RequestInit: "readonly" },
+    },
+    rules: {
+      "no-undef": "error",
+    },
   }
 );
