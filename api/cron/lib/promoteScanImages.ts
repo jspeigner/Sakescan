@@ -6,8 +6,8 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { downloadAndStore, sleep } from './imageMirror.js';
 import {
+  placeCatalogImageIfStronger,
   provenanceForUserScan,
-  sakeImageUpdatePayload,
   shouldReplaceImage,
 } from './imageProvenance.js';
 import { isPublicHttpImageUrl } from './publicImageUrl.js';
@@ -264,11 +264,17 @@ export async function promoteScanImagesBatch(
       );
       if (stored.rateLimited || stored.skippedPlaceholder || stored.skippedDuplicate) continue;
 
-      const payload = sakeImageUpdatePayload(stored.url, provenanceForUserScan(scan.id));
-      const { error: upErr } = await supabase.from('sake').update(payload).eq('id', sakeId);
-      if (upErr) {
-        errors.push(`${sake.name}: ${upErr.message.slice(0, 100)}`);
-      } else {
+      const place = await placeCatalogImageIfStronger(
+        supabase,
+        sakeId,
+        stored.url,
+        provenanceForUserScan(scan.id)
+      );
+      if (place.error) {
+        errors.push(`${sake.name}: ${place.error.slice(0, 100)}`);
+      } else if (place.skippedWeaker) {
+        skippedExisting++;
+      } else if (place.placed) {
         promoted++;
         if (openaiKey) {
           embedSakeCatalogImage(supabase, openaiKey, {
