@@ -40,14 +40,18 @@ export function isFirecrawlBypassActive(): boolean {
   return firecrawlBypassActive;
 }
 
-function isFirecrawlQuotaError(status: number, message: string): boolean {
-  if (status === 429) return true;
+/** True when Firecrawl should be skipped for the rest of this invocation. */
+export function isFirecrawlQuotaError(status: number, message: string): boolean {
+  // 402 Payment Required: Insufficient credits — same operational outcome as quota.
+  if (status === 429 || status === 402) return true;
   const lower = message.toLowerCase();
   return (
     lower.includes('quota') ||
     lower.includes('rate limit') ||
     lower.includes('rate-limit') ||
-    lower.includes('limit exceeded')
+    lower.includes('limit exceeded') ||
+    lower.includes('insufficient credits') ||
+    lower.includes('payment required')
   );
 }
 
@@ -475,7 +479,11 @@ async function firecrawlImageSearch(
       error?: string;
     };
     if (json.success === false) {
-      return { rows: [], error: `search: ${(json.error ?? 'unknown error').slice(0, 180)}` };
+      // Official Firecrawl errors are non-2xx (handled above), but defend against
+      // proxies/gateways that surface {success:false} on HTTP 200 — including credit exhaustion.
+      const errMsg = json.error ?? 'unknown error';
+      noteFirecrawlQuotaError(res.status, errMsg);
+      return { rows: [], error: `search: ${errMsg.slice(0, 180)}` };
     }
     return { rows: firecrawlImageResultsToRows(json.data?.images, searchQuery) };
   } catch (e) {
