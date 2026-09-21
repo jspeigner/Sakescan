@@ -78,6 +78,7 @@ pool_rows = discover.get("poolRows")
 eligible_rows = discover.get("eligibleRows")
 skipped_by_backoff = discover.get("skippedByBackoff")
 skipped_exhausted = discover.get("skippedExhausted")
+skipped_weak_untrusted = discover.get("skippedWeakUntrusted")
 exhausted_this_run = discover.get("exhaustedThisRun")
 promote_count = promote.get("promoted", 0)
 skipped_unusable_url = promote.get("skippedUnusableUrl", promote.get("skippedInvalidUrl"))
@@ -87,10 +88,23 @@ last_summary = d.get("lastRunSummary") or {}
 last_status = last.get("status") or last_summary.get("status")
 errors = last.get("errors") or []
 phases = last.get("phases") or last_summary.get("phases") or []
+IMAGE_IMPORT_PHASES = {
+    "images-discover",
+    "promote-scan-images",
+    "sakura-import",
+    "images-mirror",
+}
 failed_phases = [
     f"{p.get('phase')}={p.get('status')}"
     for p in phases
     if isinstance(p, dict) and p.get("status") in ("failed", "partial")
+]
+failed_import_phases = [
+    f"{p.get('phase')}={p.get('status')}"
+    for p in phases
+    if isinstance(p, dict)
+    and p.get("status") in ("failed", "partial")
+    and p.get("phase") in IMAGE_IMPORT_PHASES
 ]
 discover_stop_reason = discover.get("stopReason", discover.get("_stopReason"))
 discover_run_at = discover.get("runAt", discover.get("_timestamp"))
@@ -123,8 +137,14 @@ try:
     stale_discover_hours = float(os.environ.get("SAKESCAN_STALE_DISCOVER_HOURS", "72"))
 except ValueError:
     stale_discover_hours = 72.0
+try:
+    stale_running_hours = float(os.environ.get("SAKESCAN_STALE_RUNNING_HOURS", "2"))
+except ValueError:
+    stale_running_hours = 2.0
 discover_age_hours = age_hours(discover_run_at, as_of)
 promote_age_hours = age_hours(promote_run_at, as_of)
+started_at = last.get("startedAt") or last_summary.get("startedAt")
+running_age_hours = age_hours(started_at, as_of)
 
 alerts = []
 if endpoint_error:
@@ -154,9 +174,23 @@ if (missing or 0) > 0:
         alerts.append("Latest discover placed 0 images and made 0 attempts while images are still missing")
     elif placed == 0 and attempts is None and vision == 0 and yield_rate is None:
         alerts.append("Latest discover placed 0 images and has no attempt diagnostics while images are still missing")
-if last_status and last_status != "ok":
-    suffix = f" ({', '.join(failed_phases)})" if failed_phases else ""
-    alerts.append(f"Last orchestrator status: {last_status}{suffix}")
+    elif (
+        placed == 0
+        and (candidate_urls_seen or 0) >= 3
+        and vision == 0
+    ):
+        alerts.append(
+            "Latest discover saw image candidates but spent 0 vision checks (likely skipped Google or over-filtered untrusted URLs)"
+        )
+if last_status == "running":
+    if running_age_hours is not None and running_age_hours > stale_running_hours:
+        alerts.append(
+            f"Orchestrator still running after {running_age_hours:.1f}h (threshold {stale_running_hours:.0f}h)"
+        )
+elif last_status and last_status != "ok":
+    if failed_import_phases:
+        suffix = f" ({', '.join(failed_import_phases)})"
+        alerts.append(f"Last orchestrator status: {last_status}{suffix}")
 if errors:
     alerts.append(f"Last run errors: {errors}")
 
@@ -185,6 +219,7 @@ out = {
         "eligibleRows": eligible_rows,
         "skippedByBackoff": skipped_by_backoff,
         "skippedExhausted": skipped_exhausted,
+        "skippedWeakUntrusted": skipped_weak_untrusted,
         "exhaustedThisRun": exhausted_this_run,
         "stopReason": discover_stop_reason,
         "runAt": discover_run_at,

@@ -4,6 +4,7 @@ import {
   firecrawlImageResultsToRows,
   isTrustedImageUrl,
   isTrustedRetailerSource,
+  isUsableTrustedDirectHit,
   prefilterDiscoverCandidates,
   shouldClearCatalogUrlAsNonSakeProduct,
   shouldSkipWebSearchAfterTrustedDirect,
@@ -53,6 +54,16 @@ describe('firecrawlImageResultsToRows', () => {
     const ranked = filterAndRankImages(rows, name, undefined, brewery);
     const candidates = prefilterDiscoverCandidates(ranked, name, undefined, brewery, { minRelevance: 2 });
     expect(candidates.length).toBe(2);
+    expect(
+      shouldSpendVisionOnUntrustedCandidate(
+        candidates[0]!.url,
+        candidates[0]!.title,
+        name,
+        null,
+        brewery,
+        'Google Images'
+      )
+    ).toBe(true);
   });
 
   test('handles a missing images array', () => {
@@ -79,6 +90,31 @@ describe('shouldSkipWebSearchAfterTrustedDirect', () => {
         null,
         '花の舞酒造'
       )
+    ).toBe(false);
+  });
+
+  test('generic /products/sake CDN hits do not skip Google', () => {
+    const genericProductHits = [
+      {
+        url: 'https://cdn.shopify.com/s/files/1/0000/products/random-sake_800x.jpg',
+        source: 'Umami Search',
+      },
+      {
+        url: 'https://cdn.prod.website-files.com/abc/uploads/sake-banner.png',
+        source: 'Sakura Search',
+      },
+    ];
+    expect(
+      shouldSkipWebSearchAfterTrustedDirect(
+        'trusted-first',
+        genericProductHits,
+        'Dassai 45',
+        '獺祭',
+        'Asahi Shuzo'
+      )
+    ).toBe(false);
+    expect(
+      isUsableTrustedDirectHit(genericProductHits[0]!, 'Dassai 45', '獺祭', 'Asahi Shuzo')
     ).toBe(false);
   });
 
@@ -180,6 +216,28 @@ describe('trusted image vision exemptions', () => {
         'Asahi Shuzo'
       )
     ).toBe(true);
+  });
+
+  test('Google/Bing hashed URLs still get vision after the SERP prefilter', () => {
+    expect(
+      shouldSpendVisionOnUntrustedCandidate(
+        'https://m.media-amazon.com/images/I/51BrBi9lPxL.jpg',
+        'Japanese sake product photo',
+        'Dassai 45',
+        null,
+        'Asahi Shuzo',
+        'Google Images'
+      )
+    ).toBe(true);
+    expect(
+      shouldSpendVisionOnUntrustedCandidate(
+        'https://m.media-amazon.com/images/I/51BrBi9lPxL.jpg',
+        'Japanese sake product photo',
+        'Dassai 45',
+        null,
+        'Asahi Shuzo'
+      )
+    ).toBe(false);
   });
 
   test('search-page source labels are not vision-exempt', () => {

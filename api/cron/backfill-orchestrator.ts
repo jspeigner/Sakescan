@@ -141,6 +141,7 @@ type DiscoverSummary = {
   eligibleRows?: number | null;
   skippedByBackoff?: number | null;
   skippedExhausted?: number | null;
+  skippedWeakUntrusted?: number | null;
   exhaustedThisRun?: number | null;
   stopReason: unknown;
   runAt: string | null;
@@ -195,6 +196,8 @@ function latestDiscoverSummary(logs: OrchestratorRunLog[]): DiscoverSummary {
       eligibleRows: typeof health.eligibleRows === 'number' ? health.eligibleRows : null,
       skippedByBackoff: typeof health.skippedByBackoff === 'number' ? health.skippedByBackoff : null,
       skippedExhausted: typeof health.skippedExhausted === 'number' ? health.skippedExhausted : null,
+      skippedWeakUntrusted:
+        typeof health.skippedWeakUntrusted === 'number' ? health.skippedWeakUntrusted : null,
       exhaustedThisRun: typeof health.exhaustedThisRun === 'number' ? health.exhaustedThisRun : null,
       stopReason: stats.stopReason ?? null,
       runAt: log.created_at ?? null,
@@ -423,6 +426,7 @@ async function runImagesDiscoverPhase(params: {
         eligibleRows?: number;
         skippedByBackoff?: number;
         skippedExhausted?: number;
+        skippedWeakUntrusted?: number;
         exhaustedThisRun?: number;
         openaiVisionQuotaExceeded?: boolean;
       }
@@ -496,6 +500,8 @@ async function runImagesDiscoverPhase(params: {
       eligibleRows: typeof health?.eligibleRows === 'number' ? health.eligibleRows : null,
       skippedByBackoff: typeof health?.skippedByBackoff === 'number' ? health.skippedByBackoff : null,
       skippedExhausted: typeof health?.skippedExhausted === 'number' ? health.skippedExhausted : null,
+      skippedWeakUntrusted:
+        typeof health?.skippedWeakUntrusted === 'number' ? health.skippedWeakUntrusted : null,
       exhaustedThisRun: typeof health?.exhaustedThisRun === 'number' ? health.exhaustedThisRun : null,
       stopReason: discoverJson?.stopReason ?? null,
       runAt: new Date().toISOString(),
@@ -967,12 +973,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const emb = await embedSakeImagesBatch(supabase, openaiKey, { batchSize: 20 });
       phases.push({
         phase: 'embed-sake-images',
-        status: emb.quotaExceeded ? 'partial' : emb.errors.length && emb.embedded === 0 ? 'failed' : 'ok',
+        status: emb.quotaExceeded ? 'partial' : emb.failed > 0 && emb.embedded === 0 ? 'failed' : 'ok',
         durationMs: Date.now() - t0,
         stats: {
           candidates: emb.candidates,
           embedded: emb.embedded,
           failed: emb.failed,
+          skippedUnusableUrl: emb.skippedUnusableUrl,
           quotaExceeded: emb.quotaExceeded,
           coverage: emb.coverage,
         },

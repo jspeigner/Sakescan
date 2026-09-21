@@ -120,6 +120,14 @@ describe('discover retry / exhaust', () => {
         last_failure_reason: 'no_candidates',
       })
     ).toBeNull();
+    expect(
+      discoverSkipReason({
+        attempt_count: 3,
+        success_count: 0,
+        next_retry_at: new Date(Date.now() - 1000).toISOString(),
+        last_failure_reason: 'exhausted:no_candidates',
+      })
+    ).toBeNull();
   });
 });
 

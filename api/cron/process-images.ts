@@ -737,7 +737,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                     img.title,
                     row.name,
                     row.name_japanese,
-                    row.brewery
+                    row.brewery,
+                    img.source
                   )
                 ) {
                   diagnostics.discover.skippedWeakUntrusted++;
@@ -1229,6 +1230,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               eligibleRows: diagnostics.discover.eligibleRows,
               skippedByBackoff: diagnostics.discover.skippedByBackoff,
               skippedExhausted: diagnostics.discover.skippedExhausted,
+              skippedWeakUntrusted: diagnostics.discover.skippedWeakUntrusted,
               exhaustedThisRun: diagnostics.discover.exhaustedThisRun,
               attemptHistoryReadErrors: diagnostics.discover.attemptHistoryReadErrors,
               firecrawlErrors: diagnostics.discover.firecrawlErrors,
