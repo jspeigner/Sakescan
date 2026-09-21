@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { sleep } from './imageMirror.js';
+import { isPublicHttpImageUrl } from './publicImageUrl.js';
 import {
   embedSakeCatalogImage,
   getEmbeddingCoverage,
@@ -10,6 +11,7 @@ export type EmbedBatchResult = {
   candidates: number;
   embedded: number;
   failed: number;
+  skippedUnusableUrl: number;
   quotaExceeded: boolean;
   coverage: { withImage: number; embedded: number; coverage: number };
   errors: string[];
@@ -42,13 +44,13 @@ export async function embedSakeImagesBatch(
     existingMap = new Map((existingRows || []).map((e) => [e.sake_id, e.image_url as string]));
   }
 
-  const todo = (candidates || [])
-    .filter((c) => {
-      if (!c.image_url) return false;
-      const prev = existingMap.get(c.id);
-      return !prev || prev !== c.image_url;
-    })
-    .slice(0, batchSize);
+  const needingEmbed = (candidates || []).filter((c) => {
+    if (!c.image_url) return false;
+    const prev = existingMap.get(c.id);
+    return !prev || prev !== c.image_url;
+  });
+  const skippedUnusableUrl = needingEmbed.filter((c) => !isPublicHttpImageUrl(c.image_url)).length;
+  const todo = needingEmbed.filter((c) => isPublicHttpImageUrl(c.image_url)).slice(0, batchSize);
 
   let embedded = 0;
   let failed = 0;
@@ -89,6 +91,7 @@ export async function embedSakeImagesBatch(
     candidates: todo.length,
     embedded,
     failed,
+    skippedUnusableUrl,
     quotaExceeded,
     coverage,
     errors,

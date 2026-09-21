@@ -130,7 +130,13 @@ export function discoverSkipReason(
   nowMs = Date.now()
 ): 'exhausted' | 'backoff' | null {
   if (!history) return null;
-  if (isExhaustedReason(history.last_failure_reason)) return 'exhausted';
+  if (isExhaustedReason(history.last_failure_reason)) {
+    // Park until the 90-day hold in next_retry_at; then hunt again.
+    if (!history.next_retry_at) return 'exhausted';
+    const retryAtMs = Date.parse(history.next_retry_at);
+    if (Number.isNaN(retryAtMs) || retryAtMs > nowMs) return 'exhausted';
+    return null;
+  }
   if (!history.next_retry_at) return null;
   const retryAtMs = Date.parse(history.next_retry_at);
   if (Number.isNaN(retryAtMs) || retryAtMs <= nowMs) return null;

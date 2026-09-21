@@ -198,6 +198,8 @@ function buildSakeImageSearchQueries(
 
 /** Untrusted URLs need a strong name/brewery match before we spend vision tokens. */
 const STRONG_UNTRUSTED_VISION_SCORE = 6;
+/** Google/Bing already passed filterAndRank; vision is the quality gate. */
+const SERP_VISION_MIN_SCORE = 2;
 
 export function untrustedCandidateRelevance(
   url: string,
@@ -214,10 +216,31 @@ export function shouldSpendVisionOnUntrustedCandidate(
   title: string | undefined,
   name: string,
   nameJapanese?: string | null,
+  brewery?: string | null,
+  source?: string
+): boolean {
+  const score = untrustedCandidateRelevance(url, title, name, nameJapanese, brewery);
+  if (source === 'Google Images' || source === 'Bing Images') {
+    return score >= SERP_VISION_MIN_SCORE;
+  }
+  return score >= STRONG_UNTRUSTED_VISION_SCORE;
+}
+
+/** Direct retailer hit that we would actually download or send to vision. */
+export function isUsableTrustedDirectHit(
+  img: SearchImageRow,
+  name: string,
+  nameJapanese?: string | null,
   brewery?: string | null
 ): boolean {
-  return (
-    untrustedCandidateRelevance(url, title, name, nameJapanese, brewery) >= STRONG_UNTRUSTED_VISION_SCORE
+  if (isTrustedImageUrl(img.url) || isTrustedRetailerSource(img.source)) return true;
+  return shouldSpendVisionOnUntrustedCandidate(
+    img.url,
+    img.title,
+    name,
+    nameJapanese,
+    brewery,
+    img.source
   );
 }
 
@@ -705,7 +728,12 @@ export function shouldSkipWebSearchAfterTrustedDirect(
     brewery ?? undefined,
     { minRelevance: 2, maxCandidates: 20 }
   );
-  return relevant.length >= TRUSTED_DIRECT_SKIP_WEB_SEARCH_MIN;
+  // Prefilter minRel=2 also keeps generic ".../products/...sake..." assets.
+  // Skipping Google for those produced 6 candidates / 0 vision / 0 placements.
+  const usable = relevant.filter((img) =>
+    isUsableTrustedDirectHit(img, name, nameJapanese, brewery)
+  );
+  return usable.length >= TRUSTED_DIRECT_SKIP_WEB_SEARCH_MIN;
 }
 
 // Generic CDNs (website-files / shared Shopify product CDN) are intentionally
