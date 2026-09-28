@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { sleep } from './imageMirror.js';
+import { isPublicHttpImageUrl } from './publicImageUrl.js';
 import {
   embedSakeCatalogImage,
   getEmbeddingCoverage,
@@ -10,10 +11,22 @@ export type EmbedBatchResult = {
   candidates: number;
   embedded: number;
   failed: number;
+  skippedUnusableUrl: number;
   quotaExceeded: boolean;
   coverage: { withImage: number; embedded: number; coverage: number };
   errors: string[];
 };
+
+/** Download/URL failures are bad targets, not a broken embed pipeline. */
+export function isUnusableEmbedTarget(message: string): boolean {
+  return (
+    message.startsWith('hashImageUrl') ||
+    message.includes('Blocked non-public') ||
+    message.includes('Blocked redirect') ||
+    message.includes('OpenAI label extract HTTP 400') ||
+    message.includes('Error while downloading')
+  );
+}
 
 export async function embedSakeImagesBatch(
   supabase: SupabaseClient,
@@ -52,11 +65,16 @@ export async function embedSakeImagesBatch(
 
   let embedded = 0;
   let failed = 0;
+  let skippedUnusableUrl = 0;
   const errors: string[] = [];
   let quotaExceeded = false;
 
   for (const row of todo) {
     if (!row.image_url) continue;
+    if (!isPublicHttpImageUrl(row.image_url)) {
+      skippedUnusableUrl++;
+      continue;
+    }
     try {
       await embedSakeCatalogImage(supabase, openaiApiKey, {
         id: row.id,
@@ -73,8 +91,12 @@ export async function embedSakeImagesBatch(
         errors.push('OpenAI quota exceeded — stopping batch');
         break;
       }
-      failed++;
       const msg = e instanceof Error ? e.message : String(e);
+      if (isUnusableEmbedTarget(msg)) {
+        skippedUnusableUrl++;
+        continue;
+      }
+      failed++;
       if (errors.length < 8) errors.push(`${row.name}: ${msg.slice(0, 120)}`);
     }
   }
@@ -89,6 +111,7 @@ export async function embedSakeImagesBatch(
     candidates: todo.length,
     embedded,
     failed,
+    skippedUnusableUrl,
     quotaExceeded,
     coverage,
     errors,
