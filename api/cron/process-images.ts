@@ -1216,28 +1216,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         externalRowsFetched: sakeExternalRowsFetched,
         note: 'Audit → discover (missing) → mirror external URLs. Discover needs FIRECRAWL + OPENAI.',
       },
-      discoverHealth:
-        discoverAttempts > 0
-          ? {
-              attempts: discoverAttempts,
-              placed: discoverPlaced,
-              yield: discoverYield,
-              candidateUrlsSeen: diagnostics.discover.candidateUrlsSeen,
-              visionChecks: diagnostics.discover.visionChecks,
-              poolPagesScanned: diagnostics.discover.poolPagesScanned,
-              poolRows: diagnostics.discover.poolRows,
-              eligibleRows: diagnostics.discover.eligibleRows,
-              skippedByBackoff: diagnostics.discover.skippedByBackoff,
-              skippedExhausted: diagnostics.discover.skippedExhausted,
-              exhaustedThisRun: diagnostics.discover.exhaustedThisRun,
-              attemptHistoryReadErrors: diagnostics.discover.attemptHistoryReadErrors,
-              firecrawlErrors: diagnostics.discover.firecrawlErrors,
-              openaiVisionQuotaExceeded:
-                diagnostics.discover.openaiVisionQuotaExceeded || isOpenAIVisionQuotaExceeded(),
-              lowYieldAlert: discoverLowYieldAlert,
-              noCandidatesAlert: discoverNoCandidatesAlert,
-            }
-          : undefined,
+      discoverHealth: {
+        attempts: discoverAttempts,
+        placed: discoverPlaced,
+        yield: discoverYield,
+        candidateUrlsSeen: diagnostics.discover.candidateUrlsSeen,
+        visionChecks: diagnostics.discover.visionChecks,
+        poolPagesScanned: diagnostics.discover.poolPagesScanned,
+        poolRows: diagnostics.discover.poolRows,
+        eligibleRows: diagnostics.discover.eligibleRows,
+        skippedByBackoff: diagnostics.discover.skippedByBackoff,
+        skippedExhausted: diagnostics.discover.skippedExhausted,
+        exhaustedThisRun: diagnostics.discover.exhaustedThisRun,
+        attemptHistoryReadErrors: diagnostics.discover.attemptHistoryReadErrors,
+        firecrawlErrors: diagnostics.discover.firecrawlErrors,
+        openaiVisionQuotaExceeded:
+          diagnostics.discover.openaiVisionQuotaExceeded || isOpenAIVisionQuotaExceeded(),
+        lowYieldAlert: discoverLowYieldAlert,
+        noCandidatesAlert: discoverNoCandidatesAlert,
+      },
       openaiVisionQuotaExceeded:
         diagnostics.discover.openaiVisionQuotaExceeded || isOpenAIVisionQuotaExceeded()
           ? true

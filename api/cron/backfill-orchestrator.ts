@@ -427,15 +427,54 @@ async function runImagesDiscoverPhase(params: {
         openaiVisionQuotaExceeded?: boolean;
       }
     | undefined;
-  const attempts =
-    health?.attempts ??
-    (discoverJson?.diagnostics as { discover?: { attemptedRows?: number } })?.discover?.attemptedRows ??
-    0;
+  const discoverDiag = (
+    discoverJson?.diagnostics as
+      | {
+          discover?: {
+            attemptedRows?: number;
+            placedRows?: number;
+            candidateUrlsSeen?: number;
+            visionChecks?: number;
+            poolPagesScanned?: number;
+            poolRows?: number;
+            eligibleRows?: number;
+            skippedByBackoff?: number;
+            skippedExhausted?: number;
+            exhaustedThisRun?: number;
+            firecrawlErrors?: number;
+            openaiVisionQuotaExceeded?: boolean;
+            attemptHistoryReadErrors?: number;
+          };
+        }
+      | undefined
+  )?.discover;
+  const attempts = health?.attempts ?? discoverDiag?.attemptedRows ?? 0;
   const placed =
     health?.placed ??
     (discoverJson?.sakeDiscovered as number | undefined) ??
-    (discoverJson?.diagnostics as { discover?: { placedRows?: number } })?.discover?.placedRows ??
+    discoverDiag?.placedRows ??
     0;
+  const loggedDiscoverHealth = {
+    attempts,
+    placed,
+    yield:
+      typeof health?.yield === 'number'
+        ? health.yield
+        : attempts > 0
+          ? Number((placed / attempts).toFixed(3))
+          : 0,
+    candidateUrlsSeen: health?.candidateUrlsSeen ?? discoverDiag?.candidateUrlsSeen ?? 0,
+    visionChecks: health?.visionChecks ?? discoverDiag?.visionChecks ?? 0,
+    poolPagesScanned: health?.poolPagesScanned ?? discoverDiag?.poolPagesScanned ?? null,
+    poolRows: health?.poolRows ?? discoverDiag?.poolRows ?? null,
+    eligibleRows: health?.eligibleRows ?? discoverDiag?.eligibleRows ?? null,
+    skippedByBackoff: health?.skippedByBackoff ?? discoverDiag?.skippedByBackoff ?? null,
+    skippedExhausted: health?.skippedExhausted ?? discoverDiag?.skippedExhausted ?? null,
+    exhaustedThisRun: health?.exhaustedThisRun ?? discoverDiag?.exhaustedThisRun ?? null,
+    firecrawlErrors: health?.firecrawlErrors ?? discoverDiag?.firecrawlErrors ?? 0,
+    openaiVisionQuotaExceeded:
+      health?.openaiVisionQuotaExceeded === true || discoverDiag?.openaiVisionQuotaExceeded === true,
+  };
   const errors: string[] = [];
   try {
     discoverHealth = await getBackfillState<DiscoverHealthState>(
@@ -467,7 +506,7 @@ async function runImagesDiscoverPhase(params: {
         adaptiveDiscover,
         lowYieldStreak: discoverHealth.lowYieldStreak,
         sakeDiscovered: discoverJson?.sakeDiscovered,
-        discoverHealth: health,
+        discoverHealth: loggedDiscoverHealth,
         environmentalBackoffCleared,
         openaiVisionQuotaExceeded:
           discoverJson?.openaiVisionQuotaExceeded === true || health?.openaiVisionQuotaExceeded === true,
@@ -475,9 +514,7 @@ async function runImagesDiscoverPhase(params: {
         stopReason: discoverJson?.stopReason,
         discoverBudgetMs,
         chunkBudgetMs: discoverJson?.chunkBudgetMs,
-        attemptHistoryReadErrors: (
-          discoverJson?.diagnostics as { discover?: { attemptHistoryReadErrors?: number } } | undefined
-        )?.discover?.attemptHistoryReadErrors,
+        attemptHistoryReadErrors: discoverDiag?.attemptHistoryReadErrors,
       },
       errors: discoverErrors.length ? discoverErrors : undefined,
     },
@@ -485,18 +522,18 @@ async function runImagesDiscoverPhase(params: {
     openaiQuotaRecommendation,
     errors,
     latestDiscover: {
-      attempts: typeof attempts === 'number' ? attempts : null,
-      placed: typeof placed === 'number' ? placed : 0,
-      candidateUrlsSeen: typeof health?.candidateUrlsSeen === 'number' ? health.candidateUrlsSeen : null,
-      visionChecks: typeof health?.visionChecks === 'number' ? health.visionChecks : 0,
-      yield: typeof health?.yield === 'number' ? health.yield : null,
-      firecrawlErrors: typeof health?.firecrawlErrors === 'number' ? health.firecrawlErrors : 0,
-      poolPagesScanned: typeof health?.poolPagesScanned === 'number' ? health.poolPagesScanned : null,
-      poolRows: typeof health?.poolRows === 'number' ? health.poolRows : null,
-      eligibleRows: typeof health?.eligibleRows === 'number' ? health.eligibleRows : null,
-      skippedByBackoff: typeof health?.skippedByBackoff === 'number' ? health.skippedByBackoff : null,
-      skippedExhausted: typeof health?.skippedExhausted === 'number' ? health.skippedExhausted : null,
-      exhaustedThisRun: typeof health?.exhaustedThisRun === 'number' ? health.exhaustedThisRun : null,
+      attempts: loggedDiscoverHealth.attempts,
+      placed: loggedDiscoverHealth.placed,
+      candidateUrlsSeen: loggedDiscoverHealth.candidateUrlsSeen,
+      visionChecks: loggedDiscoverHealth.visionChecks,
+      yield: loggedDiscoverHealth.yield,
+      firecrawlErrors: loggedDiscoverHealth.firecrawlErrors,
+      poolPagesScanned: loggedDiscoverHealth.poolPagesScanned,
+      poolRows: loggedDiscoverHealth.poolRows,
+      eligibleRows: loggedDiscoverHealth.eligibleRows,
+      skippedByBackoff: loggedDiscoverHealth.skippedByBackoff,
+      skippedExhausted: loggedDiscoverHealth.skippedExhausted,
+      exhaustedThisRun: loggedDiscoverHealth.exhaustedThisRun,
       stopReason: discoverJson?.stopReason ?? null,
       runAt: new Date().toISOString(),
     },
@@ -967,12 +1004,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const emb = await embedSakeImagesBatch(supabase, openaiKey, { batchSize: 20 });
       phases.push({
         phase: 'embed-sake-images',
-        status: emb.quotaExceeded ? 'partial' : emb.errors.length && emb.embedded === 0 ? 'failed' : 'ok',
+        status: emb.quotaExceeded
+          ? 'partial'
+          : emb.failed > 0 && emb.embedded === 0
+            ? 'failed'
+            : 'ok',
         durationMs: Date.now() - t0,
         stats: {
           candidates: emb.candidates,
           embedded: emb.embedded,
           failed: emb.failed,
+          skippedUnusableUrl: emb.skippedUnusableUrl,
           quotaExceeded: emb.quotaExceeded,
           coverage: emb.coverage,
         },

@@ -84,6 +84,10 @@ describe('process-images success payload with WineEngine configured', () => {
     expect(body?.success).toBe(true);
     expect(body?.error).toBeUndefined();
     expect(typeof body?.stopReason).toBe('string');
+    const discoverHealth = body?.discoverHealth as Record<string, unknown>;
+    expect(discoverHealth.attempts).toBe(0);
+    expect(discoverHealth.placed).toBe(0);
+    expect(discoverHealth.eligibleRows).toBe(0);
     const wineEngine = body?.wineEngine as Record<string, unknown>;
     expect(wineEngine.disabled).toBeUndefined();
     expect(wineEngine.activeInDiscover).toBe(false);
