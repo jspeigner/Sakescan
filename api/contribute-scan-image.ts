@@ -124,10 +124,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   let promote: Awaited<ReturnType<typeof promoteScanImagesBatch>> | null = null;
   if (promoteNow) {
+    // Fail closed: do not report success when immediate promote was requested but
+    // vision cannot run (missing OPENAI_API_KEY). Opt-in was already saved above.
+    if (!openaiKey) {
+      return res.status(503).json({
+        error: 'Catalog promote unavailable: OPENAI_API_KEY is not configured',
+        success: false,
+        scanId: scan.id,
+        sakeId: scan.sake_id,
+        catalogShareOptIn: optIn,
+        scannedImageUrl,
+        uploaded: Boolean(uploadedUrl),
+      });
+    }
     // Promote this scan only — not a generic recent-opt-in batch.
     promote = await promoteScanImagesBatch(admin, {
       batchSize: 1,
-      openaiKey: openaiKey || undefined,
+      openaiKey,
       requireOptIn: true,
       scanIds: [scan.id],
     });

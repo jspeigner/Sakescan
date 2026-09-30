@@ -423,14 +423,17 @@ export function SakeModal({ open, onOpenChange, sake, onSaved }: SakeModalProps)
             <div className="space-y-2">
               <Label htmlFor="type">Type</Label>
               <Select
-                value={form.type || ""}
+                value={form.type || undefined}
                 onValueChange={(value) => setForm(prev => ({ ...prev, type: value }))}
               >
                 <SelectTrigger>
                   <SelectValue placeholder="Select type" />
                 </SelectTrigger>
                 <SelectContent>
-                  {SAKE_TYPES.map((type) => (
+                  {[
+                    ...SAKE_TYPES,
+                    ...(form.type && !SAKE_TYPES.includes(form.type) ? [form.type] : []),
+                  ].map((type) => (
                     <SelectItem key={type} value={type}>{type}</SelectItem>
                   ))}
                 </SelectContent>

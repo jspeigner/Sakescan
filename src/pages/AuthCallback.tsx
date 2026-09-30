@@ -56,17 +56,25 @@ export function stripAuthParamsFromBrowserUrl(): void {
 
 export default function AuthCallback() {
   const location = useLocation();
-  const [status, setStatus] = useState<CallbackStatus>("redirecting");
+  // Capture tokens synchronously on first render so a later URL strip (or a
+  // re-render with empty hash/search) cannot flip this page to "expired".
+  const [fragment] = useState<string | null>(() => {
+    if (typeof window === "undefined") {
+      return extractAuthFragment(location.hash, location.search);
+    }
+    return extractAuthFragment(window.location.hash, window.location.search);
+  });
+  const [status, setStatus] = useState<CallbackStatus>(() =>
+    fragment ? "redirecting" : "expired"
+  );
 
   useEffect(() => {
-    const fragment = extractAuthFragment(location.hash, location.search);
-    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-
     if (!fragment) {
       setStatus("expired");
       return;
     }
 
+    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
     const appUrl = `vibecode://reset-password#${fragment}`;
     (window as unknown as { __authCallbackUrl?: string }).__authCallbackUrl = appUrl;
     stripAuthParamsFromBrowserUrl();
@@ -79,7 +87,7 @@ export default function AuthCallback() {
     }
 
     setStatus("open-app");
-  }, [location.hash, location.search]);
+  }, [fragment]);
 
   const handleOpenApp = () => {
     const url = (window as unknown as { __authCallbackUrl?: string }).__authCallbackUrl;

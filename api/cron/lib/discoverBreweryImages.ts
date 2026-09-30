@@ -53,7 +53,7 @@ export async function discoverBreweryImagesBatch(
   let attempted = 0;
   let fromGallery = 0;
   let fromWebsite = 0;
-  const seenHashes = new Set<string>();
+  const seenHashes = new Map<string, string>();
   const knownPlaceholderHashes = new Set<string>();
 
   const { data: rows, error } = await supabase
@@ -82,7 +82,7 @@ export async function discoverBreweryImagesBatch(
           seenHashes,
           knownPlaceholderHashes
         );
-        if (!stored.rateLimited && !stored.skippedPlaceholder && !stored.skippedDuplicate) {
+        if (!stored.rateLimited && !stored.skippedPlaceholder && stored.url) {
           await supabase
             .from('breweries')
             .update({ image_url: stored.url, updated_at: new Date().toISOString() })
@@ -108,7 +108,7 @@ export async function discoverBreweryImagesBatch(
         seenHashes,
         knownPlaceholderHashes
       );
-      if (stored.rateLimited || stored.skippedPlaceholder || stored.skippedDuplicate) continue;
+      if (stored.rateLimited || stored.skippedPlaceholder || !stored.url) continue;
 
       await supabase
         .from('breweries')

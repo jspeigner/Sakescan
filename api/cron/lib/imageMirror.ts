@@ -33,12 +33,15 @@ export interface DownloadResult {
   rateLimited?: boolean;
 }
 
+/** MD5 → hosted public URL for bytes already uploaded earlier in this run. */
+export type SeenImageHashes = Map<string, string>;
+
 export async function downloadAndStore(
   supabase: ReturnType<typeof createClient>,
   imageUrl: string,
   folder: string,
   name: string,
-  seenHashes: Set<string>,
+  seenHashes: SeenImageHashes,
   knownPlaceholderHashes: Set<string>
 ): Promise<DownloadResult> {
   const response = await fetchPublicHttpUrl(imageUrl, {
@@ -87,12 +90,13 @@ export async function downloadAndStore(
     return { url: imageUrl, skippedPlaceholder: true };
   }
 
-  if (seenHashes.has(hash)) {
+  const priorHostedUrl = seenHashes.get(hash);
+  if (priorHostedUrl) {
     // Duplicate bytes within a run are common for shared product shots.
+    // Reuse the hosted URL so later rows with null image_url still get a photo.
     // Do not treat them as placeholders (that previously nulled valid catalog URLs).
-    return { url: imageUrl, skippedDuplicate: true };
+    return { url: priorHostedUrl, skippedDuplicate: true };
   }
-  seenHashes.add(hash);
 
   let ext = 'jpg';
   if (contentType.includes('png')) ext = 'png';
@@ -117,6 +121,7 @@ export async function downloadAndStore(
   if (error) throw new Error(error.message);
 
   const { data } = supabase.storage.from('sake-images').getPublicUrl(filePath);
+  seenHashes.set(hash, data.publicUrl);
   return { url: data.publicUrl };
 }
 
@@ -152,7 +157,7 @@ export async function downloadAndStoreWithRetry(
   imageUrl: string,
   folder: string,
   name: string,
-  seenHashes: Set<string>,
+  seenHashes: SeenImageHashes,
   knownPlaceholderHashes: Set<string>,
   retryCount = 2
 ): Promise<DownloadResult> {
