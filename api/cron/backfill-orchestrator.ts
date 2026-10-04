@@ -973,6 +973,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           candidates: emb.candidates,
           embedded: emb.embedded,
           failed: emb.failed,
+          skippedDuplicateHash: emb.skippedDuplicateHash,
           quotaExceeded: emb.quotaExceeded,
           coverage: emb.coverage,
         },
