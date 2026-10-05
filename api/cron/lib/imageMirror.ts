@@ -7,8 +7,15 @@ export const MIN_IMAGE_BYTES = 3000;
 const parsedMaxImageBytes = Number.parseInt(process.env.IMAGE_MAX_BYTES || '25000000', 10);
 export const MAX_IMAGE_BYTES = Number.isFinite(parsedMaxImageBytes) ? parsedMaxImageBytes : 25_000_000;
 
+/** True when URL is hosted on this project's Supabase host (hostname equality only). */
 export function isSupabaseUrl(url: string, supabaseUrl: string): boolean {
-  return url.includes(supabaseUrl.replace('https://', '')) || url.includes('supabase.co/storage');
+  const host = supabaseProjectHost(supabaseUrl);
+  if (!host) return false;
+  try {
+    return new URL(url).hostname === host;
+  } catch {
+    return false;
+  }
 }
 
 export function supabaseProjectHost(supabaseUrl: string): string | null {

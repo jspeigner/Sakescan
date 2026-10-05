@@ -25,7 +25,12 @@ function supabaseProjectHost(url: string): string | null {
 function isSupabaseUrl(url: string, supabaseUrl: string): boolean {
   const host = supabaseProjectHost(supabaseUrl);
   if (!host) return false;
-  return url.includes(host) || url.includes('supabase.co');
+  try {
+    // Hostname equality only — substring includes() lets attacker hosts embed the project host.
+    return new URL(url).hostname === host;
+  } catch {
+    return false;
+  }
 }
 
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'jspeigner@gmail.com';
