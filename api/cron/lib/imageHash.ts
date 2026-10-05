@@ -1,4 +1,5 @@
 import { createHash } from 'crypto';
+import { fetchPublicHttpUrl, NonPublicUrlError } from './publicImageUrl.js';
 
 const FETCH_HEADERS = {
   'User-Agent':
@@ -59,12 +60,17 @@ export async function readResponseBodyLimited(
   return Buffer.concat(chunks);
 }
 
-/** Download image bytes and return SHA-256 of the raw body. */
+/** Download image bytes and return SHA-256 of the raw body. Blocks private/localhost SSRF targets. */
 export async function hashImageUrl(imageUrl: string): Promise<ImageBytesResult> {
-  const res = await fetch(imageUrl, {
-    headers: FETCH_HEADERS,
-    redirect: 'follow',
-  });
+  let res: Response;
+  try {
+    res = await fetchPublicHttpUrl(imageUrl, {
+      headers: FETCH_HEADERS,
+    });
+  } catch (e) {
+    if (e instanceof NonPublicUrlError) throw e;
+    throw new Error(`hashImageUrl fetch failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
   if (!res.ok) {
     throw new Error(`hashImageUrl HTTP ${res.status}`);
   }

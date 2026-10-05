@@ -1,22 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { HASH_IMAGE_MAX_BYTES, readResponseBodyLimited } from './imageHash.ts';
-
-function mockResponse(params: {
-  body?: BodyInit | null;
-  contentLength?: string | null;
-  withReader?: boolean;
-}): Response {
-  const headers = new Headers();
-  if (params.contentLength != null) {
-    headers.set('content-length', params.contentLength);
-  }
-  if (params.withReader === false) {
-    // Force the no-reader fallback path by providing a Response whose body
-    // is already consumed / unavailable — use arrayBuffer via Response.
-    return new Response(params.body ?? null, { status: 200, headers });
-  }
-  return new Response(params.body ?? null, { status: 200, headers });
-}
+import { HASH_IMAGE_MAX_BYTES, hashImageUrl, readResponseBodyLimited } from './imageHash.ts';
+import { NonPublicUrlError, isPublicHttpImageUrl } from './publicImageUrl.ts';
 
 describe('readResponseBodyLimited', () => {
   test('rejects oversized Content-Length before reading the body', async () => {
@@ -50,5 +34,38 @@ describe('readResponseBodyLimited', () => {
     });
     const res = new Response(stream, { status: 200 });
     await expect(readResponseBodyLimited(res, max)).rejects.toThrow(/too large/);
+  });
+});
+
+describe('hashImageUrl SSRF guards', () => {
+  test('rejects localhost and private targets before fetch', async () => {
+    const blocked = [
+      'http://127.0.0.1/latest/meta-data',
+      'http://localhost/secret',
+      'http://10.0.0.5/img.jpg',
+      'http://192.168.1.1/a.png',
+      'http://169.254.169.254/latest/meta-data/',
+      'http://[::1]/',
+    ];
+    for (const url of blocked) {
+      expect(isPublicHttpImageUrl(url)).toBe(false);
+      await expect(hashImageUrl(url)).rejects.toBeInstanceOf(NonPublicUrlError);
+    }
+  });
+
+  test('rejects file and non-http schemes', async () => {
+    await expect(hashImageUrl('file:///etc/passwd')).rejects.toBeInstanceOf(NonPublicUrlError);
+  });
+});
+
+describe('extractLabelTextFromImage SSRF guards', () => {
+  test('returns empty extract for private URLs without calling OpenAI', async () => {
+    const result = await extractLabelTextFromImage('sk-test-should-not-be-used', 'http://127.0.0.1/x');
+    expect(result).toEqual({
+      labelText: '',
+      brandGuess: null,
+      breweryGuess: null,
+      rawLines: [],
+    });
   });
 });
