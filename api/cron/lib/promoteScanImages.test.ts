@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   isEligibleCatalogShareCandidate,
   isPromotableScanImageUrl,
+  promoteDownloadDisposition,
   resolvePromoteRequireOptIn,
   resolvePromoteScanIds,
 } from './promoteScanImages.ts';
@@ -53,5 +54,20 @@ describe('isPromotableScanImageUrl', () => {
     expect(isPromotableScanImageUrl('file:///var/mobile/a.jpg')).toBe(false);
     expect(isPromotableScanImageUrl(null)).toBe(false);
     expect(isPromotableScanImageUrl('')).toBe(false);
+  });
+});
+
+describe('promoteDownloadDisposition', () => {
+  test('aborts the batch on host rate limits instead of continuing', () => {
+    expect(promoteDownloadDisposition({ rateLimited: true })).toBe('abort_rate_limit');
+  });
+
+  test('skips placeholder and in-run duplicates', () => {
+    expect(promoteDownloadDisposition({ skippedPlaceholder: true })).toBe('skip');
+    expect(promoteDownloadDisposition({ skippedDuplicate: true })).toBe('skip');
+  });
+
+  test('uses a normal stored URL', () => {
+    expect(promoteDownloadDisposition({})).toBe('use');
   });
 });
