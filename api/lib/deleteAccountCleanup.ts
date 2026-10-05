@@ -1,7 +1,8 @@
 /**
- * Account-deletion helpers: purge the caller's public scan-upload objects.
+ * Account-deletion helpers: purge a user's public scan-upload objects.
  * Scan photos live at sake-images/scan-uploads/<userId>/... and remain
- * world-readable after delete_own_account unless removed explicitly.
+ * world-readable after profile/auth deletion unless removed explicitly.
+ * Used by self-serve delete-account and admin-update-user delete.
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
