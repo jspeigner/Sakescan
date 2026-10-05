@@ -6,8 +6,8 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { downloadAndStore, sleep } from './imageMirror.js';
 import {
+  placeCatalogImageIfStronger,
   provenanceForUserScan,
-  sakeImageUpdatePayload,
   shouldReplaceImage,
 } from './imageProvenance.js';
 import { isPublicHttpImageUrl } from './publicImageUrl.js';
@@ -71,6 +71,21 @@ export function isEligibleCatalogShareCandidate(
 ): boolean {
   if (!requireOptIn) return true;
   return catalogShareOptIn === true;
+}
+
+/**
+ * How promote should treat a downloadAndStore result.
+ * Rate limits must abort the batch (same as process-images / brewery mirror);
+ * continuing hammers the host for every remaining candidate.
+ */
+export function promoteDownloadDisposition(stored: {
+  rateLimited?: boolean;
+  skippedPlaceholder?: boolean;
+  skippedDuplicate?: boolean;
+}): 'abort_rate_limit' | 'skip' | 'use' {
+  if (stored.rateLimited) return 'abort_rate_limit';
+  if (stored.skippedPlaceholder || stored.skippedDuplicate) return 'skip';
+  return 'use';
 }
 
 export async function promoteScanImagesBatch(
@@ -262,13 +277,26 @@ export async function promoteScanImagesBatch(
         seenHashes,
         knownPlaceholderHashes
       );
-      if (stored.rateLimited || stored.skippedPlaceholder || stored.skippedDuplicate) continue;
+      const disposition = promoteDownloadDisposition(stored);
+      if (disposition === 'abort_rate_limit') {
+        if (errors.length < 8) {
+          errors.push('Rate limited by image host — stopping promote batch');
+        }
+        break;
+      }
+      if (disposition === 'skip') continue;
 
-      const payload = sakeImageUpdatePayload(stored.url, provenanceForUserScan(scan.id));
-      const { error: upErr } = await supabase.from('sake').update(payload).eq('id', sakeId);
-      if (upErr) {
-        errors.push(`${sake.name}: ${upErr.message.slice(0, 100)}`);
-      } else {
+      const place = await placeCatalogImageIfStronger(
+        supabase,
+        sakeId,
+        stored.url,
+        provenanceForUserScan(scan.id)
+      );
+      if (place.error) {
+        errors.push(`${sake.name}: ${place.error.slice(0, 100)}`);
+      } else if (place.skippedWeaker) {
+        skippedExisting++;
+      } else if (place.placed) {
         promoted++;
         if (openaiKey) {
           embedSakeCatalogImage(supabase, openaiKey, {

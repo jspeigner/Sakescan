@@ -9,6 +9,7 @@ import {
   supabaseProjectHost,
 } from './lib/imageMirror.js';
 import {
+  buildDiscoverCandidateQueue,
   isFirecrawlBypassActive,
   isTrustedImageUrl,
   isTrustedRetailerSource,
@@ -21,11 +22,16 @@ import {
   urlLooksLikeNonSakeProduct,
 } from './lib/sakeImageDiscovery.js';
 import {
+  DISCOVER_POOL_PAGE_LIMIT,
+  DISCOVER_POOL_PAGE_SIZE,
   computeDiscoverRetry,
+  discoverEligibleBufferTarget,
   discoverRowCapForRun,
   discoverSkipReason,
   isMissingImageUrl,
   prioritizeDiscoverRows,
+  resolveDiscoverAttemptFailure,
+  shouldScanNextDiscoverPoolPage,
   shouldRunDiscoverFallback,
 } from './lib/discoverPolicy.js';
 import { getBackfillState, recordDiscoverYield, setBackfillState, type DiscoverHealthState } from './lib/backfillState.js';
@@ -38,11 +44,12 @@ import {
   resetOpenAIVisionQuotaForInvocation,
 } from './lib/sakeImageVision.js';
 import {
+  placeCatalogImageIfStronger,
   provenanceForTrustedRetailer,
   provenanceForWebDiscover,
-  sakeImageUpdatePayload,
   shouldReplaceImage,
 } from './lib/imageProvenance.js';
+import { clearSakeCatalogImage } from './lib/sakeImageClear.js';
 import {
   getWineEngineConfig,
   wineEngineAddByUrl,
@@ -54,6 +61,7 @@ import {
   type WineEngineQuotaSnapshot,
 } from './lib/wineEngineQuota.js';
 import { markWineEngineIndexed } from './lib/wineEngineSearchCache.js';
+import { buildProcessImagesWineEngineSummary } from './lib/processImagesWineEngineSummary.js';
 import { embedSakeCatalogImage } from './lib/sakeImageEmbed.js';
 import { requireCronOrAdmin } from '../lib/requireCronOrAdmin.js';
 const MIRROR_OPS_BUDGET = 220;
@@ -75,7 +83,7 @@ const CHUNK_WALL_MS = 7500;
 /** Discover mode is slower (Firecrawl + vision), so allow a longer chunk budget. */
 const DISCOVER_CHUNK_WALL_MS = 25000;
 const DISCOVER_CHUNK_WALL_MS_ACCELERATED = 55000;
-const DISCOVER_POOL_LIMIT = 2000;
+const DISCOVER_POOL_LIMIT = DISCOVER_POOL_PAGE_SIZE;
 const DISCOVER_HEALTH_KEY = 'discover_health';
 
 type SakeRow = {
@@ -364,6 +372,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         errorSamples: [] as string[],
       },
       discover: {
+        poolPagesScanned: 0,
         poolRows: 0,
         randomizedPoolRows: 0,
         eligibleRows: 0,
@@ -460,10 +469,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           // Only clear on high-confidence not-sake. Low/medium negatives and
           // unparseable model replies must not wipe hosted catalog images.
           if (shouldClearHostedImageFromAudit(v)) {
-            await supabase
-              .from('sake')
-              .update({ image_url: null, updated_at: new Date().toISOString() })
-              .eq('id', row.id);
+            await clearSakeCatalogImage(supabase, row.id);
             sakeAuditCleared++;
             diagnostics.audit.clearedRows++;
             console.log(`[process-images/audit] cleared ${row.name}: ${v.briefReason}`);
@@ -500,14 +506,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (firecrawlKey && openaiKey && !rateLimited && !hitTimeBudget) {
       resetFirecrawlBypassForInvocation();
       resetOpenAIVisionQuotaForInvocation();
-      const { data: missingPool } = await supabase
-        .from('sake')
-        .select('id, name, name_japanese, brewery, image_url, image_quality')
-        .or('image_url.is.null,image_url.eq.')
-        .order('updated_at', { ascending: true })
-        .limit(DISCOVER_POOL_LIMIT);
-      diagnostics.discover.poolRows = (missingPool || []).length;
-
       // Prefer hot sakes (recently scanned) when filling gaps.
       let hotIds = new Set<string>();
       try {
@@ -525,39 +523,86 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         hotIds = new Set();
       }
 
-      const missingRows = ((missingPool || []) as SakeRow[]).filter((row) => {
-        if (isMissingImageUrl(row.image_url)) return true;
-        diagnostics.discover.skippedAlreadyHasImage++;
-        return false;
-      });
-      diagnostics.discover.randomizedPoolRows = missingRows.length;
-      const attemptHistoryLoad = await loadAttemptHistoryBySakeIds(
-        supabase,
-        missingRows.map((r) => r.id)
-      );
-      const attemptBySakeId = attemptHistoryLoad.map;
-      diagnostics.discover.attemptHistoryBatches = attemptHistoryLoad.batches;
-      if (attemptHistoryLoad.readErrors > 0) {
-        diagnostics.discover.attemptHistoryReadErrors += attemptHistoryLoad.readErrors;
-        attemptHistoryLoad.errorSamples.forEach((m) =>
-          errors.push(`attempt-history read: ${m}`)
-        );
-      }
-
       const nowMs = Date.now();
       const dueRows: SakeRow[] = [];
-      for (const row of missingRows) {
-        const skip = discoverSkipReason(attemptBySakeId.get(row.id), nowMs);
-        if (skip === 'exhausted') {
-          diagnostics.discover.skippedExhausted++;
-          continue;
+      const attemptBySakeId = new Map<string, SakeImageAttemptRow>();
+      const eligibleBufferTarget = discoverEligibleBufferTarget(discoverRowCapThisRun);
+
+      for (let pageIndex = 0; pageIndex < DISCOVER_POOL_PAGE_LIMIT; pageIndex++) {
+        if (shouldStopChunk()) {
+          hitTimeBudget = true;
+          stopReason = stopReason || 'time_budget_reached';
+          break;
         }
-        if (skip === 'backoff') {
-          diagnostics.discover.skippedByBackoff++;
-          continue;
+
+        const from = pageIndex * DISCOVER_POOL_LIMIT;
+        const to = from + DISCOVER_POOL_LIMIT - 1;
+        const { data: missingPool, error: missingPoolError } = await supabase
+          .from('sake')
+          .select('id, name, name_japanese, brewery, image_url, image_quality')
+          .or('image_url.is.null,image_url.eq.')
+          .order('updated_at', { ascending: true })
+          .range(from, to);
+
+        if (missingPoolError) {
+          errors.push(`discover pool read: ${missingPoolError.message.slice(0, 120)}`);
+          break;
         }
-        dueRows.push(row);
+
+        const pageRows = (missingPool || []) as SakeRow[];
+        diagnostics.discover.poolPagesScanned++;
+        diagnostics.discover.poolRows += pageRows.length;
+
+        const missingRows = pageRows.filter((row) => {
+          if (isMissingImageUrl(row.image_url)) return true;
+          diagnostics.discover.skippedAlreadyHasImage++;
+          return false;
+        });
+        diagnostics.discover.randomizedPoolRows += missingRows.length;
+
+        const attemptHistoryLoad = await loadAttemptHistoryBySakeIds(
+          supabase,
+          missingRows.map((r) => r.id)
+        );
+        attemptHistoryLoad.map.forEach((attempt, sakeId) => {
+          attemptBySakeId.set(sakeId, attempt);
+        });
+        diagnostics.discover.attemptHistoryBatches += attemptHistoryLoad.batches;
+        if (attemptHistoryLoad.readErrors > 0) {
+          diagnostics.discover.attemptHistoryReadErrors += attemptHistoryLoad.readErrors;
+          attemptHistoryLoad.errorSamples.forEach((m) =>
+            errors.push(`attempt-history read: ${m}`)
+          );
+        }
+
+        for (const row of missingRows) {
+          const skip = discoverSkipReason(attemptBySakeId.get(row.id), nowMs);
+          if (skip === 'exhausted') {
+            diagnostics.discover.skippedExhausted++;
+            continue;
+          }
+          if (skip === 'backoff') {
+            diagnostics.discover.skippedByBackoff++;
+            continue;
+          }
+          dueRows.push(row);
+        }
+
+        if (
+          !shouldScanNextDiscoverPoolPage({
+            pagesScanned: diagnostics.discover.poolPagesScanned,
+            maxPages: DISCOVER_POOL_PAGE_LIMIT,
+            eligibleRows: dueRows.length,
+            rowCap: discoverRowCapThisRun,
+            lastPageRows: pageRows.length,
+            pageSize: DISCOVER_POOL_LIMIT,
+          }) ||
+          dueRows.length >= eligibleBufferTarget
+        ) {
+          break;
+        }
       }
+
       const eligibleRows = prioritizeDiscoverRows(dueRows, attemptBySakeId, hotIds);
       diagnostics.discover.eligibleRows = eligibleRows.length;
       let discoverAttempts = 0;
@@ -578,6 +623,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         let failureReason = 'no_candidates';
         let sawCandidates = false;
         let timedOutDuringRow = false;
+        let firecrawlErrorsForRow: string[] = [];
 
         try {
           const discoverDelayMs = acceleratedDiscover ? DELAY_MS_DISCOVER_ACCELERATED : DELAY_MS_DISCOVER;
@@ -638,6 +684,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           diagnostics.discover.sourceCandidates.sakura += debug.sourceCounts.sakura;
           diagnostics.discover.sourceCandidates.umami += debug.sourceCounts.umami;
           diagnostics.discover.sourceCandidates.sakeTimes += debug.sourceCounts.sakeTimes;
+          firecrawlErrorsForRow = debug.firecrawlErrors;
           if (debug.firecrawlErrors.length > 0) {
             diagnostics.discover.firecrawlErrors += debug.firecrawlErrors.length;
             debug.firecrawlErrors.forEach((m) =>
@@ -648,14 +695,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             diagnostics.discover.rowsWithNoCandidates++;
           }
 
-          const trustedCandidates = images.filter((candidate) => isTrustedRetailerSource(candidate.source));
-          const otherCandidates = images.filter((candidate) => !isTrustedRetailerSource(candidate.source));
-          const candidateQueue = [
-            ...trustedCandidates.slice(0, DISCOVER_CANDIDATES_MAX_TRUSTED),
-            ...(isOpenAIVisionQuotaExceeded()
-              ? []
-              : otherCandidates.slice(0, discoverCandidatesMax)),
-          ];
+          const candidateQueue = buildDiscoverCandidateQueue(images, {
+            visionQuotaExceeded: isOpenAIVisionQuotaExceeded(),
+            trustedMax: DISCOVER_CANDIDATES_MAX_TRUSTED,
+            otherMax: discoverCandidatesMax,
+          });
           let visionChecksThisRow = 0;
 
           for (const img of candidateQueue) {
@@ -754,15 +798,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 continue;
               }
 
-              await supabase
-                .from('sake')
-                .update(
-                  sakeImageUpdatePayload(
-                    result.url,
-                    trustedSource ? provenanceForTrustedRetailer() : provenanceForWebDiscover()
-                  )
-                )
-                .eq('id', row.id);
+              const place = await placeCatalogImageIfStronger(
+                supabase,
+                row.id,
+                result.url,
+                trustedSource ? provenanceForTrustedRetailer() : provenanceForWebDiscover()
+              );
+              if (place.error) {
+                failureReason = 'place_failed';
+                pushSample(
+                  diagnostics.discover.downloadErrorSamples,
+                  `${row.name}: place ${place.error.slice(0, 100)}`
+                );
+                continue;
+              }
+              if (place.skippedWeaker) {
+                // Concurrent promote/admin filled a stronger (or equal) image while we searched.
+                failureReason = 'weaker_than_existing';
+                continue;
+              }
               sakeDiscovered++;
               diagnostics.discover.placedRows++;
               placed = true;
@@ -856,11 +910,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
         try {
           const nextAttemptCount = priorAttemptCount + 1;
-          const resolvedFailureReason = timedOutDuringRow
-            ? 'time_budget_reached'
-            : !sawCandidates
-              ? 'no_candidates'
-              : failureReason || 'discover_failed';
+          const resolvedFailureReason = resolveDiscoverAttemptFailure({
+            timedOutDuringRow,
+            sawCandidates,
+            failureReason,
+            firecrawlErrors: firecrawlErrorsForRow,
+            firecrawlBypassActive: isFirecrawlBypassActive(),
+            openaiVisionQuotaExceeded: isOpenAIVisionQuotaExceeded(),
+          });
           const retry = computeDiscoverRetry({
             prior: priorAttempt,
             placed,
@@ -963,10 +1020,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           if (urlLooksLikeNonSakeProduct(sake.image_url)) {
             diagnostics.mirror.urlFiltered++;
             if (shouldClearCatalogUrlAsNonSakeProduct(sake.image_url)) {
-              await supabase
-                .from('sake')
-                .update({ image_url: null, updated_at: new Date().toISOString() })
-                .eq('id', sake.id);
+              await clearSakeCatalogImage(supabase, sake.id);
               skippedPlaceholders++;
               diagnostics.mirror.placeholderClears++;
               console.log(`[process-images/mirror] cleared non-sake URL for ${sake.name}: ${sake.image_url}`);
@@ -1004,10 +1058,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               break;
             }
             if (result.skippedPlaceholder) {
-              await supabase
-                .from('sake')
-                .update({ image_url: null, updated_at: new Date().toISOString() })
-                .eq('id', sake.id);
+              await clearSakeCatalogImage(supabase, sake.id);
               skippedPlaceholders++;
               diagnostics.mirror.placeholderClears++;
             } else if (result.skippedDuplicate) {
@@ -1029,10 +1080,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             pushSample(diagnostics.mirror.errorSamples, `${sake.name}: ${msg.slice(0, 140)}`);
             // Never erase a still-valid external URL on transient host/network failures.
             if (shouldClearExternalImageUrlOnError(msg)) {
-              await supabase
-                .from('sake')
-                .update({ image_url: null, updated_at: new Date().toISOString() })
-                .eq('id', sake.id);
+              await clearSakeCatalogImage(supabase, sake.id);
             }
             await sleep(DELAY_MS);
           }
@@ -1119,7 +1167,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       },
       diagnostics: {
         discoverPool: diagnostics.discover.poolRows,
+        discoverPoolPages: diagnostics.discover.poolPagesScanned,
         discoverRandomizedPool: diagnostics.discover.randomizedPoolRows,
+        discoverEligibleRows: diagnostics.discover.eligibleRows,
         discoverAttempts: diagnostics.discover.attemptedRows,
         discoverPlaced: diagnostics.discover.placedRows,
         mirrorFetched: diagnostics.mirror.fetchedRows,
@@ -1164,21 +1214,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         breweryMainImages: brewRem.breweryMainImages,
         breweryGalleryImages: brewRem.breweryGalleryImages,
       },
-      wineEngine: wineEngineCfg
-        ? {
-            collectionCount: wineEngineCollectionCount,
-            activeInDiscover: wineEngineActive,
-            quota: wineEngineQuota
-              ? {
-                  period: wineEngineQuota.state.period,
-                  images: wineEngineQuota.state.images,
-                  searches: wineEngineQuota.state.searches,
-                  remainingImagesToday: wineEngineQuota.remainingImagesToday,
-                  remainingSearchesToday: wineEngineQuota.remainingSearchesToday,
-                }
-              : null,
-          }
-        : { disabled: true },
+      wineEngine: buildProcessImagesWineEngineSummary(wineEngineCfg, wineEngineQuota),
       sakeQueue: {
         externalRowsFetched: sakeExternalRowsFetched,
         note: 'Audit → discover (missing) → mirror external URLs. Discover needs FIRECRAWL + OPENAI.',
@@ -1191,6 +1227,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               yield: discoverYield,
               candidateUrlsSeen: diagnostics.discover.candidateUrlsSeen,
               visionChecks: diagnostics.discover.visionChecks,
+              poolPagesScanned: diagnostics.discover.poolPagesScanned,
+              poolRows: diagnostics.discover.poolRows,
+              eligibleRows: diagnostics.discover.eligibleRows,
+              skippedByBackoff: diagnostics.discover.skippedByBackoff,
+              skippedExhausted: diagnostics.discover.skippedExhausted,
+              exhaustedThisRun: diagnostics.discover.exhaustedThisRun,
               attemptHistoryReadErrors: diagnostics.discover.attemptHistoryReadErrors,
               firecrawlErrors: diagnostics.discover.firecrawlErrors,
               openaiVisionQuotaExceeded:

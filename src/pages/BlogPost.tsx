@@ -1,5 +1,5 @@
 import { useParams, Link } from "react-router-dom";
-import { Suspense, useMemo } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { Header } from "@/components/landing/Header";
 import { Footer } from "@/components/landing/Footer";
 import { SEO } from "@/components/SEO";
@@ -13,22 +13,41 @@ import { getPostBySlug, getRelatedPosts, isPublished } from "@/lib/blog-data";
 import { blogContent } from "@/content/blog";
 import NotFound from "./NotFound";
 
+function collectTocItems(root: HTMLElement): TocItem[] {
+  const headings = root.querySelectorAll("h2, h3");
+  return Array.from(headings).map((h) => ({
+    id: h.id,
+    text: h.textContent ?? "",
+    level: h.tagName === "H2" ? 2 : 3,
+  }));
+}
+
 export default function BlogPost() {
   const { slug } = useParams<{ slug: string }>();
   const post = slug ? getPostBySlug(slug) : undefined;
   const Content = slug ? blogContent[slug] : undefined;
   const related = post ? getRelatedPosts(post) : [];
+  const [tocItems, setTocItems] = useState<TocItem[]>([]);
 
-  const tocItems = useMemo<TocItem[]>(() => {
-    if (!slug || typeof document === "undefined") return [];
+  // Headings mount inside Suspense — build TOC after DOM updates, not during render.
+  useEffect(() => {
+    if (!slug || typeof document === "undefined") {
+      setTocItems([]);
+      return;
+    }
+
     const el = document.getElementById("blog-content");
-    if (!el) return [];
-    const headings = el.querySelectorAll("h2, h3");
-    return Array.from(headings).map((h) => ({
-      id: h.id,
-      text: h.textContent ?? "",
-      level: h.tagName === "H2" ? 2 : 3,
-    }));
+    if (!el) {
+      setTocItems([]);
+      return;
+    }
+
+    const refresh = () => setTocItems(collectTocItems(el));
+    refresh();
+
+    const observer = new MutationObserver(refresh);
+    observer.observe(el, { childList: true, subtree: true });
+    return () => observer.disconnect();
   }, [slug]);
 
   if (!post || !Content || !isPublished(post)) return <NotFound />;

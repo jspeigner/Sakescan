@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Smartphone, Star, Scan } from "lucide-react";
+import { IOS_APP_STORE_URL } from "@/lib/app-links";
 
 interface BlogCTAProps {
   variant?: "inline" | "banner";
@@ -29,9 +30,11 @@ export function BlogCTA({ variant = "inline" }: BlogCTAProps) {
           </div>
           <span className="text-sm text-muted-foreground">4.9 rating · 25,000+ users</span>
         </div>
-        <Button size="lg" className="gap-2">
-          <Smartphone className="w-4 h-4" />
-          Download Free on iOS
+        <Button size="lg" className="gap-2" asChild>
+          <a href={IOS_APP_STORE_URL} target="_blank" rel="noopener noreferrer">
+            <Smartphone className="w-4 h-4" />
+            Download Free on iOS
+          </a>
         </Button>
       </Card>
     );
@@ -49,9 +52,11 @@ export function BlogCTA({ variant = "inline" }: BlogCTAProps) {
         <p className="text-sm text-muted-foreground mb-2">
           Download SakeScan and scan your next sake menu for ratings, pairings, and tasting notes.
         </p>
-        <Button size="sm" variant="outline" className="gap-1.5">
-          <Smartphone className="w-3.5 h-3.5" />
-          Get SakeScan Free
+        <Button size="sm" variant="outline" className="gap-1.5" asChild>
+          <a href={IOS_APP_STORE_URL} target="_blank" rel="noopener noreferrer">
+            <Smartphone className="w-3.5 h-3.5" />
+            Get SakeScan Free
+          </a>
         </Button>
       </div>
     </div>

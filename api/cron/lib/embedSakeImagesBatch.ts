@@ -10,6 +10,7 @@ export type EmbedBatchResult = {
   candidates: number;
   embedded: number;
   failed: number;
+  skippedDuplicateHash: number;
   scanned: number;
   quotaExceeded: boolean;
   coverage: { withImage: number; embedded: number; coverage: number };
@@ -106,6 +107,7 @@ export async function embedSakeImagesBatch(
 
   let embedded = 0;
   let failed = 0;
+  let skippedDuplicateHash = 0;
   const errors: string[] = [];
   let quotaExceeded = false;
 
@@ -143,6 +145,7 @@ export async function embedSakeImagesBatch(
     candidates: todo.length,
     embedded,
     failed,
+    skippedDuplicateHash,
     scanned,
     quotaExceeded,
     coverage,

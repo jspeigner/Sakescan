@@ -9,6 +9,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
 import { looksLikeNonSakeUrl } from './lib/nonSakeUrl.js';
+import { clearSakeCatalogImage } from './cron/lib/sakeImageClear.js';
 import {
   shouldClearHostedImageFromAudit,
   validateJapaneseSakeProductPhoto,
@@ -63,11 +64,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const mode = (req.query.mode as string) || req.body?.mode || 'url';
   const dryRun = req.body?.dryRun === true;
-  // Vision mode processes a small batch per call to stay within Vercel's timeout.
-  // Callers can pass an offset to page through the full table.
+  // Process in batches per call so callers can page past PostgREST's ~1000-row cap.
+  // Vision stays small to stay within Vercel timeouts; URL mode uses the full page size.
   const offset = parseInt((req.body?.offset as string) || '0', 10) || 0;
   const VISION_BATCH = 30;
-  const URL_LIMIT = 2000;
+  const URL_BATCH = 1000;
+  const batchSize = mode === 'vision' ? VISION_BATCH : URL_BATCH;
 
   // Fetch sakes with an image_url
   const { data: rows, error: fetchErr } = await supabase
@@ -75,7 +77,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     .select('id, name, image_url')
     .not('image_url', 'is', null)
     .neq('image_url', '')
-    .range(offset, offset + (mode === 'vision' ? VISION_BATCH - 1 : URL_LIMIT - 1));
+    .range(offset, offset + batchSize - 1);
 
   if (fetchErr) {
     return res.status(500).json({ error: fetchErr.message });
@@ -94,10 +96,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (looksLikeNonSakeUrl(row.image_url)) {
       urlBadRows.push(row.id);
       if (!dryRun) {
-        await supabase
-          .from('sake')
-          .update({ image_url: null, updated_at: new Date().toISOString() })
-          .eq('id', row.id);
+        await clearSakeCatalogImage(supabase, row.id);
         urlCleared++;
         console.log(`[clear-bad-images/url] cleared "${row.name}": ${row.image_url}`);
       }
@@ -114,10 +113,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         if (shouldClearHostedImageFromAudit(vision)) {
           visionBadRows.push(row.id);
           if (!dryRun) {
-            await supabase
-              .from('sake')
-              .update({ image_url: null, updated_at: new Date().toISOString() })
-              .eq('id', row.id);
+            await clearSakeCatalogImage(supabase, row.id);
             visionCleared++;
             console.log(
               `[clear-bad-images/vision] cleared "${row.name}": ${vision.briefReason || row.image_url}`
@@ -134,7 +130,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const scannedCount = (rows || []).length;
   const nextOffset = offset + scannedCount;
-  const hasMore = mode === 'vision' && scannedCount === VISION_BATCH;
+  // Full pages mean more rows may remain — URL mode used to always report hasMore=false
+  // after the first PostgREST-capped page, leaving most of the catalog unscanned.
+  const hasMore = scannedCount === batchSize;
 
   return res.status(200).json({
     success: true,

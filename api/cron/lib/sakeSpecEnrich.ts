@@ -87,9 +87,13 @@ export function matchesScraped(scraped: ScrapedSake, row: SakeSpecRow): boolean 
     en.includes(sn) ||
     sn.includes(en);
   if (!nameOk) return false;
-  if (!scraped.brewery || !row.brewery) return true;
-  return row.brewery.toLowerCase().includes(scraped.brewery.toLowerCase()) ||
-    scraped.brewery.toLowerCase().includes(row.brewery.toLowerCase());
+  // Spec writes are destructive — require brewery on both sides. Previously a
+  // missing brewery returned true and could attach polishing/ABV/SMV from the
+  // first Sakura name overlap onto an unrelated catalog row.
+  const scrapedBrewery = scraped.brewery?.trim().toLowerCase() ?? '';
+  const rowBrewery = row.brewery?.trim().toLowerCase() ?? '';
+  if (!scrapedBrewery || !rowBrewery) return false;
+  return rowBrewery.includes(scrapedBrewery) || scrapedBrewery.includes(rowBrewery);
 }
 
 export async function enrichSakeSpecsBatch(

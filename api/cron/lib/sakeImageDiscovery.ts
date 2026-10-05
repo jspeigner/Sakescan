@@ -40,14 +40,18 @@ export function isFirecrawlBypassActive(): boolean {
   return firecrawlBypassActive;
 }
 
-function isFirecrawlQuotaError(status: number, message: string): boolean {
-  if (status === 429) return true;
+/** True when Firecrawl should be skipped for the rest of this invocation. */
+export function isFirecrawlQuotaError(status: number, message: string): boolean {
+  // 402 Payment Required: Insufficient credits — same operational outcome as quota.
+  if (status === 429 || status === 402) return true;
   const lower = message.toLowerCase();
   return (
     lower.includes('quota') ||
     lower.includes('rate limit') ||
     lower.includes('rate-limit') ||
-    lower.includes('limit exceeded')
+    lower.includes('limit exceeded') ||
+    lower.includes('insufficient credits') ||
+    lower.includes('payment required')
   );
 }
 
@@ -110,10 +114,6 @@ function sourcePriority(source: string): number {
   return 15;
 }
 
-function haystackForNonSakeCheck(url: string, title?: string): string {
-  return `${url} ${title ?? ''}`.toLowerCase();
-}
-
 export function filterAndRankImages(
   images: SearchImageRow[],
   name: string,
@@ -125,8 +125,10 @@ export function filterAndRankImages(
   const kept = images.filter((img) => {
     if (!isPublicHttpImageUrl(img.url)) return false;
     if (JUNK_URL_REGEXES.some((re) => re.test(img.url))) return false;
-    const nonHay = haystackForNonSakeCheck(img.url, img.title);
-    if (NON_SAKE_PRODUCT_REGEXES.some((re) => re.test(nonHay))) return false;
+    // SERP / Firecrawl candidates carry retailer *page* titles ("Wine & Sake shop").
+    // Category tokens like \bwine\b are only safe on the image URL — applying them
+    // to titles dropped real bottle shots after #65 switched to listing titles.
+    if (NON_SAKE_PRODUCT_REGEXES.some((re) => re.test(img.url))) return false;
 
     if (isTrustedRetailerSource(img.source)) {
       const u = img.url.toLowerCase();
@@ -219,6 +221,31 @@ export function shouldSpendVisionOnUntrustedCandidate(
   return (
     untrustedCandidateRelevance(url, title, name, nameJapanese, brewery) >= STRONG_UNTRUSTED_VISION_SCORE
   );
+}
+
+/**
+ * Build the per-row candidate queue. Host-trusted URLs skip OpenAI vision, so when
+ * vision quota is exhausted they must still be attempted — filtering only on
+ * `isTrustedRetailerSource` (empty since SERP labels lost trust) left an empty
+ * queue and parked every remaining row.
+ */
+export function buildDiscoverCandidateQueue(
+  images: SearchImageRow[],
+  options: {
+    visionQuotaExceeded: boolean;
+    trustedMax: number;
+    otherMax: number;
+  }
+): SearchImageRow[] {
+  const trustedBySource = images.filter((candidate) => isTrustedRetailerSource(candidate.source));
+  const rest = images.filter((candidate) => !isTrustedRetailerSource(candidate.source));
+  const restForQueue = options.visionQuotaExceeded
+    ? rest.filter((candidate) => isTrustedImageUrl(candidate.url))
+    : rest;
+  return [
+    ...trustedBySource.slice(0, options.trustedMax),
+    ...restForQueue.slice(0, options.otherMax),
+  ];
 }
 
 /** Drop weak Bing/Google hits before expensive vision checks. */
@@ -406,6 +433,91 @@ async function scrapeGoogleImagesDirect(searchQuery: string): Promise<SearchImag
   }
 }
 
+type FirecrawlImageResult = {
+  imageUrl?: string;
+  url?: string;
+  title?: string;
+  imageWidth?: number;
+  imageHeight?: number;
+};
+
+export const FIRECRAWL_IMAGE_SEARCH_LIMIT = 12;
+/** Tiny thumbnails / icons are never usable product shots. */
+const FIRECRAWL_IMAGE_MIN_EDGE = 200;
+
+/** Map a Firecrawl `/v2/search` images payload to candidate rows (pure, for tests). */
+export function firecrawlImageResultsToRows(
+  images: FirecrawlImageResult[] | undefined,
+  searchQuery: string
+): SearchImageRow[] {
+  const rows: SearchImageRow[] = [];
+  for (const img of images ?? []) {
+    const url = typeof img.imageUrl === 'string' ? img.imageUrl.trim() : '';
+    if (!url || !isPublicHttpImageUrl(url)) continue;
+    const w = typeof img.imageWidth === 'number' ? img.imageWidth : null;
+    const h = typeof img.imageHeight === 'number' ? img.imageHeight : null;
+    if ((w !== null && w < FIRECRAWL_IMAGE_MIN_EDGE) || (h !== null && h < FIRECRAWL_IMAGE_MIN_EDGE)) {
+      continue;
+    }
+    // Listing titles help ranking, but the vision-spend gate needs name/brewery
+    // tokens that retailer titles often omit (e.g. "Kubota Senju - Amazon").
+    // Pre-#65 Google scrape always used the search query as `title`, so short
+    // names reliably cleared STRONG_UNTRUSTED_VISION_SCORE. Keep both.
+    const listingTitle = typeof img.title === 'string' && img.title.trim() ? img.title.trim() : '';
+    const title = listingTitle ? `${listingTitle} ${searchQuery}` : searchQuery;
+    rows.push({ url, source: 'Google Images', title });
+  }
+  return rows;
+}
+
+/**
+ * Image web search via Firecrawl `/v2/search` (sources: images). Scraping
+ * google.com/search?tbm=isch through /scrape returns CAPTCHA / 429 pages, which
+ * made every discover query fail with 0 candidates.
+ */
+async function firecrawlImageSearch(
+  apiKey: string,
+  searchQuery: string
+): Promise<{ rows: SearchImageRow[]; error?: string }> {
+  try {
+    const res = await fetch('https://api.firecrawl.dev/v2/search', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        // /v2/search accepts keyless low-rate calls; only send a token when we have one.
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      },
+      body: JSON.stringify({
+        query: searchQuery,
+        sources: ['images'],
+        limit: FIRECRAWL_IMAGE_SEARCH_LIMIT,
+      }),
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!res.ok) {
+      const errText = await res.text();
+      noteFirecrawlQuotaError(res.status, errText);
+      return { rows: [], error: `search HTTP ${res.status}: ${errText.slice(0, 180)}` };
+    }
+    const json = (await res.json()) as {
+      success?: boolean;
+      data?: { images?: FirecrawlImageResult[] };
+      error?: string;
+    };
+    if (json.success === false) {
+      // Official Firecrawl errors are non-2xx (handled above), but defend against
+      // proxies/gateways that surface {success:false} on HTTP 200 — including credit exhaustion.
+      const errMsg = json.error ?? 'unknown error';
+      noteFirecrawlQuotaError(res.status, errMsg);
+      return { rows: [], error: `search: ${errMsg.slice(0, 180)}` };
+    }
+    return { rows: firecrawlImageResultsToRows(json.data?.images, searchQuery) };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { rows: [], error: `search network: ${msg.slice(0, 180)}` };
+  }
+}
+
 async function scrapeGoogleImages(
   firecrawlApiKey: string,
   searchQuery: string
@@ -418,24 +530,9 @@ async function scrapeGoogleImages(
     return { rows: [], error: 'Firecrawl bypass active; direct Google returned no URLs' };
   }
 
-  const googleImagesUrl = `https://www.google.com/search?q=${encodeURIComponent(searchQuery)}&tbm=isch`;
-  const data = await firecrawlScrape(firecrawlApiKey, {
-    url: googleImagesUrl,
-    formats: ['html'],
-    onlyMainContent: false,
-    maxAge: 0,
-  });
-  if (data?.html) {
-    const urls = extractImageUrlsFromGoogleHtml(data.html);
-    if (urls.length > 0) {
-      return {
-        rows: urls.slice(0, 24).map((url) => ({
-          url,
-          source: 'Google Images',
-          title: searchQuery,
-        })),
-      };
-    }
+  const search = await firecrawlImageSearch(firecrawlApiKey, searchQuery);
+  if (search.rows.length > 0) {
+    return { rows: search.rows.slice(0, 24) };
   }
 
   const directRows = await scrapeGoogleImagesDirect(searchQuery);
@@ -443,7 +540,7 @@ async function scrapeGoogleImages(
     return { rows: directRows };
   }
 
-  return { rows: [], error: data?._error || 'No Google image URLs (Firecrawl + direct)' };
+  return { rows: [], error: search.error || 'No image search results (Firecrawl search + direct Google)' };
 }
 
 function decodeHtmlEntities(input: string): string {
@@ -614,6 +711,35 @@ export async function searchTrustedRetailerCandidatesDirect(
 /** Curated retailer sources — vision optional; download still validates the asset. */
 export function isTrustedRetailerSource(source: string): boolean {
   return TRUSTED_RETAILER_SOURCES.has(source);
+}
+
+/** Direct retailer hits must look like this sake before they can replace a web search. */
+export const TRUSTED_DIRECT_SKIP_WEB_SEARCH_MIN = 2;
+
+/**
+ * Decide whether direct retailer hits are good enough to skip the (paid) web search.
+ * Sakura's / Umami's search pages return the same generic site assets (banners,
+ * logos) for every keyword, so a raw hit count is meaningless: counting those as
+ * "results" skipped Google for every row and then the relevance prefilter dropped
+ * them all, leaving 0 candidates and parking rows as exhausted:no_candidates.
+ * Only hits that pass the same relevance gate discover applies may short-circuit.
+ */
+export function shouldSkipWebSearchAfterTrustedDirect(
+  mode: SakeImageSearchMode,
+  trustedImages: SearchImageRow[],
+  name: string,
+  nameJapanese?: string | null,
+  brewery?: string | null
+): boolean {
+  if (mode !== 'trusted-first') return false;
+  const relevant = prefilterDiscoverCandidates(
+    trustedImages,
+    name,
+    nameJapanese ?? undefined,
+    brewery ?? undefined,
+    { minRelevance: 2, maxCandidates: 20 }
+  );
+  return relevant.length >= TRUSTED_DIRECT_SKIP_WEB_SEARCH_MIN;
 }
 
 // Generic CDNs (website-files / shared Shopify product CDN) are intentionally
@@ -802,7 +928,13 @@ export async function searchSakeImageCandidates(
     }
   }
 
-  const skipWebSearch = mode === 'trusted-first' && results.length >= 2;
+  const skipWebSearch = shouldSkipWebSearchAfterTrustedDirect(
+    mode,
+    trustedDirect.images,
+    name,
+    nameJapanese,
+    brewery
+  );
   const skipBingInFast = fastMode;
 
   if (!skipWebSearch) {
