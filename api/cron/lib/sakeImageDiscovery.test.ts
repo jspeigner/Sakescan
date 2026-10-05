@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   filterAndRankImages,
   firecrawlImageResultsToRows,
+  isFirecrawlQuotaError,
   isTrustedImageUrl,
   isTrustedRetailerSource,
   prefilterDiscoverCandidates,
@@ -10,6 +11,24 @@ import {
   shouldSpendVisionOnUntrustedCandidate,
   urlLooksLikeNonSakeProduct,
 } from './sakeImageDiscovery';
+
+describe('isFirecrawlQuotaError', () => {
+  test('treats HTTP 429 rate limits as quota', () => {
+    expect(isFirecrawlQuotaError(429, 'Rate limit exceeded')).toBe(true);
+  });
+
+  test('treats HTTP 402 insufficient credits as quota (Firecrawl Payment Required)', () => {
+    // Regression: discover kept calling Firecrawl after credits ran out because
+    // only 429 / "quota" / "rate limit" flipped firecrawlBypassActive.
+    expect(isFirecrawlQuotaError(402, 'Payment Required: Insufficient credits')).toBe(true);
+    expect(isFirecrawlQuotaError(200, 'Payment Required: Insufficient credits')).toBe(true);
+  });
+
+  test('does not treat unrelated 4xx as quota', () => {
+    expect(isFirecrawlQuotaError(401, 'Unauthorized: Invalid token')).toBe(false);
+    expect(isFirecrawlQuotaError(400, 'Bad Request')).toBe(false);
+  });
+});
 
 describe('firecrawlImageResultsToRows', () => {
   // Real /v2/search (sources: images) payload for a row discover kept failing on.
