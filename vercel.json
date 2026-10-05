@@ -22,6 +22,10 @@
       "maxDuration": 300,
       "memory": 3008
     },
+    "api/cron/discover-images.ts": {
+      "maxDuration": 180,
+      "memory": 3008
+    },
     "api/cron/import-sakura-batch.ts": {
       "maxDuration": 120
     },
@@ -42,6 +46,10 @@
     {
       "path": "/api/cron/backfill-orchestrator",
       "schedule": "*/10 * * * *"
+    },
+    {
+      "path": "/api/cron/discover-images",
+      "schedule": "*/15 * * * *"
     },
     {
       "path": "/api/cron/process-brewery-images",

@@ -74,6 +74,7 @@ async function wineEngineMultipart<T>(
     method: 'POST',
     headers: { Authorization: basicAuthHeader(cfg.username, cfg.password) },
     body: form,
+    signal: AbortSignal.timeout(12_000),
   });
 
   const text = await res.text();
@@ -87,6 +88,7 @@ async function wineEngineMultipart<T>(
 async function wineEngineGet<T>(cfg: WineEngineConfig, path: string): Promise<WineEngineResponse<T>> {
   const res = await fetch(`${cfg.baseUrl}${path}`, {
     headers: { Authorization: basicAuthHeader(cfg.username, cfg.password) },
+    signal: AbortSignal.timeout(12_000),
   });
   const text = await res.text();
   try {
