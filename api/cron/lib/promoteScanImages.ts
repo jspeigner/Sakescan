@@ -6,12 +6,16 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { downloadAndStore, sleep } from './imageMirror.js';
 import {
+  placeCatalogImageIfStronger,
   provenanceForUserScan,
-  sakeImageUpdatePayload,
   shouldReplaceImage,
 } from './imageProvenance.js';
 import { isPublicHttpImageUrl } from './publicImageUrl.js';
 import { sakeVisionPasses, validateJapaneseSakeProductPhoto } from './sakeImageVision.js';
+import { getWineEngineConfig, wineEngineConfirmsSake } from './wineEngine.js';
+import { getWineEngineQuota, promoteSearchBudget } from './wineEngineQuota.js';
+import { searchWineEngineCached } from './wineEngineCachedSearch.js';
+import { embedSakeCatalogImage } from './sakeImageEmbed.js';
 
 export type PromoteScanResult = {
   candidates: number;
@@ -67,6 +71,21 @@ export function isEligibleCatalogShareCandidate(
 ): boolean {
   if (!requireOptIn) return true;
   return catalogShareOptIn === true;
+}
+
+/**
+ * How promote should treat a downloadAndStore result.
+ * Rate limits must abort the batch (same as process-images / brewery mirror);
+ * continuing hammers the host for every remaining candidate.
+ */
+export function promoteDownloadDisposition(stored: {
+  rateLimited?: boolean;
+  skippedPlaceholder?: boolean;
+  skippedDuplicate?: boolean;
+}): 'abort_rate_limit' | 'skip' | 'use' {
+  if (stored.rateLimited) return 'abort_rate_limit';
+  if (stored.skippedPlaceholder || stored.skippedDuplicate) return 'skip';
+  return 'use';
 }
 
 export async function promoteScanImagesBatch(
@@ -180,6 +199,15 @@ export async function promoteScanImagesBatch(
   const sakeMap = new Map((sakes || []).map((s) => [s.id, s as SakeImageRow]));
   const seenHashes = new Set<string>();
   const knownPlaceholderHashes = new Set<string>();
+  const wineEngineCfg = getWineEngineConfig();
+  let wineEngineSearchesLeft = 0;
+  if (wineEngineCfg) {
+    try {
+      wineEngineSearchesLeft = promoteSearchBudget(await getWineEngineQuota(supabase));
+    } catch {
+      wineEngineSearchesLeft = 0;
+    }
+  }
 
   for (const sakeId of sakeIds) {
     const scan = bySake.get(sakeId);
@@ -215,6 +243,32 @@ export async function promoteScanImagesBatch(
         continue;
       }
 
+      // Default promote search budget is 0 (searches are scarce on Starter).
+      // Set WINEENGINE_PROMOTE_SEARCH_MAX>0 to enable. Cache hits do not burn quota.
+      if (wineEngineCfg && wineEngineSearchesLeft > 0) {
+        try {
+          const cached = await searchWineEngineCached(supabase, scan.scanned_image_url, {
+            source: 'promote',
+            limit: 1,
+            cfg: wineEngineCfg,
+          });
+          if (!cached.cacheHit && !cached.quotaSkipped) {
+            wineEngineSearchesLeft = Math.max(0, wineEngineSearchesLeft - 1);
+          }
+          if (cached.quotaSkipped && cached.reason?.includes('quota')) {
+            wineEngineSearchesLeft = 0;
+          }
+          const we = cached.response;
+          const confirm = wineEngineConfirmsSake(we, sakeId, { minScoreText: 45, minScore: 15 });
+          if (we.status === 'ok' && we.result?.length && confirm.reason === 'matched_other_sake') {
+            skippedWineEngine++;
+            continue;
+          }
+        } catch {
+          /* WineEngine optional */
+        }
+      }
+
       const stored = await downloadAndStore(
         supabase,
         scan.scanned_image_url,
@@ -223,14 +277,35 @@ export async function promoteScanImagesBatch(
         seenHashes,
         knownPlaceholderHashes
       );
-      if (stored.rateLimited || stored.skippedPlaceholder || stored.skippedDuplicate) continue;
+      const disposition = promoteDownloadDisposition(stored);
+      if (disposition === 'abort_rate_limit') {
+        if (errors.length < 8) {
+          errors.push('Rate limited by image host — stopping promote batch');
+        }
+        break;
+      }
+      if (disposition === 'skip') continue;
 
-      const payload = sakeImageUpdatePayload(stored.url, provenanceForUserScan(scan.id));
-      const { error: upErr } = await supabase.from('sake').update(payload).eq('id', sakeId);
-      if (upErr) {
-        errors.push(`${sake.name}: ${upErr.message.slice(0, 100)}`);
-      } else {
+      const place = await placeCatalogImageIfStronger(
+        supabase,
+        sakeId,
+        stored.url,
+        provenanceForUserScan(scan.id)
+      );
+      if (place.error) {
+        errors.push(`${sake.name}: ${place.error.slice(0, 100)}`);
+      } else if (place.skippedWeaker) {
+        skippedExisting++;
+      } else if (place.placed) {
         promoted++;
+        if (openaiKey) {
+          embedSakeCatalogImage(supabase, openaiKey, {
+            id: sake.id,
+            name: sake.name,
+            brewery: sake.brewery,
+            image_url: stored.url,
+          }).catch(() => undefined);
+        }
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);

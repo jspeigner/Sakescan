@@ -163,7 +163,7 @@ export default function SakeDetail() {
                     </div>
                   </Card>
                 ) : null}
-                {sake.alcohol_percentage ? (
+                {sake.alcohol_percentage !== null && sake.alcohol_percentage !== undefined ? (
                   <Card className="p-3 flex items-center gap-3">
                     <Wine className="w-5 h-5 text-primary flex-shrink-0" />
                     <div>
@@ -181,7 +181,7 @@ export default function SakeDetail() {
                     </div>
                   </Card>
                 ) : null}
-                {sake.acidity ? (
+                {sake.acidity !== null && sake.acidity !== undefined ? (
                   <Card className="p-3 flex items-center gap-3">
                     <Droplets className="w-5 h-5 text-primary flex-shrink-0" />
                     <div>

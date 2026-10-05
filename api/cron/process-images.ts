@@ -9,16 +9,32 @@ import {
   supabaseProjectHost,
 } from './lib/imageMirror.js';
 import {
+  buildDiscoverCandidateQueue,
   isFirecrawlBypassActive,
   isTrustedImageUrl,
   isTrustedRetailerSource,
   prefilterDiscoverCandidates,
   resetFirecrawlBypassForInvocation,
   searchSakeImageCandidates,
+  shouldSpendVisionOnUntrustedCandidate,
   type SakeImageSearchMode,
   shouldClearCatalogUrlAsNonSakeProduct,
   urlLooksLikeNonSakeProduct,
 } from './lib/sakeImageDiscovery.js';
+import {
+  DISCOVER_POOL_PAGE_LIMIT,
+  DISCOVER_POOL_PAGE_SIZE,
+  computeDiscoverRetry,
+  discoverEligibleBufferTarget,
+  discoverRowCapForRun,
+  discoverSkipReason,
+  isMissingImageUrl,
+  prioritizeDiscoverRows,
+  resolveDiscoverAttemptFailure,
+  shouldScanNextDiscoverPoolPage,
+  shouldRunDiscoverFallback,
+} from './lib/discoverPolicy.js';
+import { getBackfillState, recordDiscoverYield, setBackfillState, type DiscoverHealthState } from './lib/backfillState.js';
 import {
   sakeVisionPasses,
   shouldClearHostedImageFromAudit,
@@ -28,11 +44,25 @@ import {
   resetOpenAIVisionQuotaForInvocation,
 } from './lib/sakeImageVision.js';
 import {
+  placeCatalogImageIfStronger,
   provenanceForTrustedRetailer,
   provenanceForWebDiscover,
-  sakeImageUpdatePayload,
   shouldReplaceImage,
 } from './lib/imageProvenance.js';
+import { clearSakeCatalogImage } from './lib/sakeImageClear.js';
+import {
+  getWineEngineConfig,
+  wineEngineAddByUrl,
+} from './lib/wineEngine.js';
+import {
+  getWineEngineQuota,
+  releaseWineEngineQuota,
+  reserveWineEngineQuota,
+  type WineEngineQuotaSnapshot,
+} from './lib/wineEngineQuota.js';
+import { markWineEngineIndexed } from './lib/wineEngineSearchCache.js';
+import { buildProcessImagesWineEngineSummary } from './lib/processImagesWineEngineSummary.js';
+import { embedSakeCatalogImage } from './lib/sakeImageEmbed.js';
 import { requireCronOrAdmin } from '../lib/requireCronOrAdmin.js';
 const MIRROR_OPS_BUDGET = 220;
 /** Attempt to fill missing image_url (Firecrawl + vision + upload). */
@@ -53,9 +83,8 @@ const CHUNK_WALL_MS = 7500;
 /** Discover mode is slower (Firecrawl + vision), so allow a longer chunk budget. */
 const DISCOVER_CHUNK_WALL_MS = 25000;
 const DISCOVER_CHUNK_WALL_MS_ACCELERATED = 55000;
-const DISCOVER_POOL_LIMIT = 2000;
-const DISCOVER_BACKOFF_BASE_MS = 15 * 60 * 1000; // 15 minutes
-const DISCOVER_BACKOFF_MAX_MS = 72 * 60 * 60 * 1000; // 72 hours
+const DISCOVER_POOL_LIMIT = DISCOVER_POOL_PAGE_SIZE;
+const DISCOVER_HEALTH_KEY = 'discover_health';
 
 type SakeRow = {
   id: string;
@@ -195,55 +224,6 @@ async function loadAttemptHistoryBySakeIds(
   return { map, readErrors, errorSamples, batches };
 }
 
-function isEnvironmentalDiscoverFailure(reason: string): boolean {
-  const lower = reason.toLowerCase();
-  return (
-    lower.includes('openai_quota') ||
-    lower.includes('openai vision http 429') ||
-    (lower.includes('openai') && lower.includes('quota')) ||
-    lower.includes('time_budget_reached') ||
-    // False WineEngine rejects (incomplete collection) should not multi-hour block rows.
-    lower.includes('wineengine_matched_other_sake')
-  );
-}
-
-function computeNextRetryAt(attemptCount: number, noCandidates: boolean, failureReason?: string): string {
-  if (failureReason && isEnvironmentalDiscoverFailure(failureReason)) {
-    // Quota/timeouts are environmental — retry soon instead of multi-hour backoff.
-    return new Date(Date.now() + 5 * 60 * 1000).toISOString();
-  }
-  const multiplier = noCandidates ? 2 : 1;
-  const backoffMs = Math.min(
-    DISCOVER_BACKOFF_MAX_MS,
-    DISCOVER_BACKOFF_BASE_MS * Math.pow(2, Math.max(0, attemptCount - 1)) * multiplier
-  );
-  return new Date(Date.now() + backoffMs).toISOString();
-}
-
-const ENVIRONMENTAL_BACKOFF_REASONS = [
-  'openai_quota',
-  'openai vision http 429',
-  'time_budget_reached',
-  'openai_quota_exceeded',
-  'wineengine_matched_other_sake',
-];
-
-/** One-time hygiene: unblock rows stuck on quota/timeout backoff when services recover. */
-async function resetEnvironmentalBackoff(supabase: ReturnType<typeof createClient>): Promise<number> {
-  const now = new Date().toISOString();
-  let cleared = 0;
-  for (const pattern of ENVIRONMENTAL_BACKOFF_REASONS) {
-    const { data, error } = await supabase
-      .from('sake_image_attempts')
-      .update({ next_retry_at: null, updated_at: now })
-      .ilike('last_failure_reason', `%${pattern}%`)
-      .gt('next_retry_at', now)
-      .select('sake_id');
-    if (!error && data) cleared += data.length;
-  }
-  return cleared;
-}
-
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     if (req.method !== 'GET' && req.method !== 'POST') {
@@ -348,7 +328,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         env: {
           discoverEnabled: Boolean(firecrawlKey && openaiKey),
           auditEnabled: Boolean(openaiKey),
-          wineEngineEnabled: false,
+          wineEngineEnabled: Boolean(getWineEngineConfig()),
         },
         timestamp: new Date().toISOString(),
       });
@@ -364,7 +344,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const rowCapOverride = parseInt(rowCapParam || '', 10);
     const hasRowCapOverride = Number.isFinite(rowCapOverride) && rowCapOverride > 0;
 
-    const discoverRowCapThisRun = discoverChunkMode
+    let discoverRowCapThisRun = discoverChunkMode
       ? hasRowCapOverride
         ? Math.min(DISCOVER_ROW_CAP, rowCapOverride)
         : acceleratedDiscover
@@ -392,10 +372,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         errorSamples: [] as string[],
       },
       discover: {
+        poolPagesScanned: 0,
         poolRows: 0,
         randomizedPoolRows: 0,
         eligibleRows: 0,
         skippedByBackoff: 0,
+        skippedExhausted: 0,
+        skippedAlreadyHasImage: 0,
+        skippedWeakUntrusted: 0,
+        exhaustedThisRun: 0,
         attemptedRows: 0,
         rowsWithNoCandidates: 0,
         candidateUrlsSeen: 0,
@@ -484,10 +469,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           // Only clear on high-confidence not-sake. Low/medium negatives and
           // unparseable model replies must not wipe hosted catalog images.
           if (shouldClearHostedImageFromAudit(v)) {
-            await supabase
-              .from('sake')
-              .update({ image_url: null, updated_at: new Date().toISOString() })
-              .eq('id', row.id);
+            await clearSakeCatalogImage(supabase, row.id);
             sakeAuditCleared++;
             diagnostics.audit.clearedRows++;
             console.log(`[process-images/audit] cleared ${row.name}: ${v.briefReason}`);
@@ -502,32 +484,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     // --- DISCOVER: null / empty image_url ---
-    // WineEngine disabled (subscription not renewed).
+    // WineEngine searches/adds are capped by Starter plan quotas (see wineEngineQuota.ts).
+    const wineEngineCfg = getWineEngineConfig();
+    let wineEngineQuota: WineEngineQuotaSnapshot | null = null;
+    if (wineEngineCfg) {
+      wineEngineQuota = await getWineEngineQuota(supabase).catch(() => null);
+    }
 
+    if (discoverRowCapThisRun > 0) {
+      try {
+        const priorHealth = await getBackfillState<DiscoverHealthState>(supabase, DISCOVER_HEALTH_KEY, {
+          yields: [],
+          lowYieldStreak: 0,
+        });
+        discoverRowCapThisRun = discoverRowCapForRun(discoverRowCapThisRun, priorHealth.yields);
+      } catch {
+        discoverRowCapThisRun = discoverRowCapForRun(discoverRowCapThisRun);
+      }
+    }
 
     if (firecrawlKey && openaiKey && !rateLimited && !hitTimeBudget) {
       resetFirecrawlBypassForInvocation();
       resetOpenAIVisionQuotaForInvocation();
-      if (discoverChunkMode) {
-        try {
-          const cleared = await resetEnvironmentalBackoff(supabase);
-          diagnostics.discover.environmentalBackoffCleared = cleared;
-          if (cleared > 0) {
-            console.log(`[process-images/discover] cleared environmental backoff for ${cleared} rows`);
-          }
-        } catch (e) {
-          const msg = e instanceof Error ? e.message : String(e);
-          pushSample(diagnostics.discover.rowErrorSamples, `backoff reset: ${msg.slice(0, 120)}`);
-        }
-      }
-      const { data: missingPool } = await supabase
-        .from('sake')
-        .select('id, name, name_japanese, brewery, image_url, image_quality')
-        .or('image_url.is.null,image_url.eq.,image_quality.eq.t2,image_quality.eq.t3')
-        .order('updated_at', { ascending: true })
-        .limit(DISCOVER_POOL_LIMIT);
-      diagnostics.discover.poolRows = (missingPool || []).length;
-
       // Prefer hot sakes (recently scanned) when filling gaps.
       let hotIds = new Set<string>();
       try {
@@ -545,48 +523,88 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         hotIds = new Set();
       }
 
-      const missingRows = (missingPool || []) as SakeRow[];
-      const hotBand: SakeRow[] = [];
-      const restBand: SakeRow[] = [];
-      for (const row of missingRows) {
-        if (hotIds.has(row.id)) hotBand.push(row);
-        else restBand.push(row);
-      }
-      const preferMissing = (a: SakeRow, b: SakeRow) => Number(!b.image_url) - Number(!a.image_url);
-      hotBand.sort(preferMissing);
-      restBand.sort(preferMissing);
-      shuffleInPlace(hotBand);
-      shuffleInPlace(restBand);
-      missingRows.length = 0;
-      missingRows.push(...hotBand, ...restBand);
-      diagnostics.discover.randomizedPoolRows = missingRows.length;
-      const attemptHistoryLoad = await loadAttemptHistoryBySakeIds(
-        supabase,
-        missingRows.map((r) => r.id)
-      );
-      const attemptBySakeId = attemptHistoryLoad.map;
-      diagnostics.discover.attemptHistoryBatches = attemptHistoryLoad.batches;
-      if (attemptHistoryLoad.readErrors > 0) {
-        diagnostics.discover.attemptHistoryReadErrors += attemptHistoryLoad.readErrors;
-        attemptHistoryLoad.errorSamples.forEach((m) =>
-          errors.push(`attempt-history read: ${m}`)
+      const nowMs = Date.now();
+      const dueRows: SakeRow[] = [];
+      const attemptBySakeId = new Map<string, SakeImageAttemptRow>();
+      const eligibleBufferTarget = discoverEligibleBufferTarget(discoverRowCapThisRun);
+
+      for (let pageIndex = 0; pageIndex < DISCOVER_POOL_PAGE_LIMIT; pageIndex++) {
+        if (shouldStopChunk()) {
+          hitTimeBudget = true;
+          stopReason = stopReason || 'time_budget_reached';
+          break;
+        }
+
+        const from = pageIndex * DISCOVER_POOL_LIMIT;
+        const to = from + DISCOVER_POOL_LIMIT - 1;
+        const { data: missingPool, error: missingPoolError } = await supabase
+          .from('sake')
+          .select('id, name, name_japanese, brewery, image_url, image_quality')
+          .or('image_url.is.null,image_url.eq.')
+          .order('updated_at', { ascending: true })
+          .range(from, to);
+
+        if (missingPoolError) {
+          errors.push(`discover pool read: ${missingPoolError.message.slice(0, 120)}`);
+          break;
+        }
+
+        const pageRows = (missingPool || []) as SakeRow[];
+        diagnostics.discover.poolPagesScanned++;
+        diagnostics.discover.poolRows += pageRows.length;
+
+        const missingRows = pageRows.filter((row) => {
+          if (isMissingImageUrl(row.image_url)) return true;
+          diagnostics.discover.skippedAlreadyHasImage++;
+          return false;
+        });
+        diagnostics.discover.randomizedPoolRows += missingRows.length;
+
+        const attemptHistoryLoad = await loadAttemptHistoryBySakeIds(
+          supabase,
+          missingRows.map((r) => r.id)
         );
+        attemptHistoryLoad.map.forEach((attempt, sakeId) => {
+          attemptBySakeId.set(sakeId, attempt);
+        });
+        diagnostics.discover.attemptHistoryBatches += attemptHistoryLoad.batches;
+        if (attemptHistoryLoad.readErrors > 0) {
+          diagnostics.discover.attemptHistoryReadErrors += attemptHistoryLoad.readErrors;
+          attemptHistoryLoad.errorSamples.forEach((m) =>
+            errors.push(`attempt-history read: ${m}`)
+          );
+        }
+
+        for (const row of missingRows) {
+          const skip = discoverSkipReason(attemptBySakeId.get(row.id), nowMs);
+          if (skip === 'exhausted') {
+            diagnostics.discover.skippedExhausted++;
+            continue;
+          }
+          if (skip === 'backoff') {
+            diagnostics.discover.skippedByBackoff++;
+            continue;
+          }
+          dueRows.push(row);
+        }
+
+        if (
+          !shouldScanNextDiscoverPoolPage({
+            pagesScanned: diagnostics.discover.poolPagesScanned,
+            maxPages: DISCOVER_POOL_PAGE_LIMIT,
+            eligibleRows: dueRows.length,
+            rowCap: discoverRowCapThisRun,
+            lastPageRows: pageRows.length,
+            pageSize: DISCOVER_POOL_LIMIT,
+          }) ||
+          dueRows.length >= eligibleBufferTarget
+        ) {
+          break;
+        }
       }
 
-      const nowMs = Date.now();
-      const eligibleRows = missingRows.filter((row) => {
-        const history = attemptBySakeId.get(row.id);
-        if (!history?.next_retry_at) return true;
-        // Rows blocked by quota/timeouts should not wait out long backoff windows.
-        if (history.last_failure_reason && isEnvironmentalDiscoverFailure(history.last_failure_reason)) {
-          return true;
-        }
-        const retryAtMs = Date.parse(history.next_retry_at);
-        if (Number.isNaN(retryAtMs)) return true;
-        return retryAtMs <= nowMs;
-      });
+      const eligibleRows = prioritizeDiscoverRows(dueRows, attemptBySakeId, hotIds);
       diagnostics.discover.eligibleRows = eligibleRows.length;
-      diagnostics.discover.skippedByBackoff = Math.max(0, missingRows.length - eligibleRows.length);
       let discoverAttempts = 0;
 
       for (const row of eligibleRows) {
@@ -605,6 +623,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         let failureReason = 'no_candidates';
         let sawCandidates = false;
         let timedOutDuringRow = false;
+        let firecrawlErrorsForRow: string[] = [];
 
         try {
           const discoverDelayMs = acceleratedDiscover ? DELAY_MS_DISCOVER_ACCELERATED : DELAY_MS_DISCOVER;
@@ -622,11 +641,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             },
             searchMode
           );
-          // Full fallback is slow (~30s/row). Only use when not accelerated and trusted-first found nothing.
+          // A second search doubles Firecrawl spend. Cron/trusted-first/accelerated skip it.
           if (
             rawImages.length === 0 &&
             searchMode !== 'full' &&
-            !acceleratedDiscover
+            shouldRunDiscoverFallback({
+              accelerated: acceleratedDiscover,
+              trustedFirst: searchMode === 'trusted-first',
+              chunked: discoverChunkMode,
+            })
           ) {
             const fallback = await searchSakeImageCandidates(
               firecrawlKey,
@@ -636,18 +659,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 brewery: row.brewery,
               },
               'full'
-            );
-            rawImages = fallback.images;
-            debug = fallback.debug;
-          } else if (rawImages.length === 0 && acceleratedDiscover && searchMode === 'trusted-first') {
-            const fallback = await searchSakeImageCandidates(
-              firecrawlKey,
-              {
-                name: row.name,
-                nameJapanese: row.name_japanese,
-                brewery: row.brewery,
-              },
-              'google-only-fast'
             );
             rawImages = fallback.images;
             debug = fallback.debug;
@@ -673,6 +684,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           diagnostics.discover.sourceCandidates.sakura += debug.sourceCounts.sakura;
           diagnostics.discover.sourceCandidates.umami += debug.sourceCounts.umami;
           diagnostics.discover.sourceCandidates.sakeTimes += debug.sourceCounts.sakeTimes;
+          firecrawlErrorsForRow = debug.firecrawlErrors;
           if (debug.firecrawlErrors.length > 0) {
             diagnostics.discover.firecrawlErrors += debug.firecrawlErrors.length;
             debug.firecrawlErrors.forEach((m) =>
@@ -683,14 +695,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             diagnostics.discover.rowsWithNoCandidates++;
           }
 
-          const trustedCandidates = images.filter((candidate) => isTrustedRetailerSource(candidate.source));
-          const otherCandidates = images.filter((candidate) => !isTrustedRetailerSource(candidate.source));
-          const candidateQueue = [
-            ...trustedCandidates.slice(0, DISCOVER_CANDIDATES_MAX_TRUSTED),
-            ...(isOpenAIVisionQuotaExceeded()
-              ? []
-              : otherCandidates.slice(0, discoverCandidatesMax)),
-          ];
+          const candidateQueue = buildDiscoverCandidateQueue(images, {
+            visionQuotaExceeded: isOpenAIVisionQuotaExceeded(),
+            trustedMax: DISCOVER_CANDIDATES_MAX_TRUSTED,
+            otherMax: discoverCandidatesMax,
+          });
           let visionChecksThisRow = 0;
 
           for (const img of candidateQueue) {
@@ -707,7 +716,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               continue;
             }
 
-            // Trusted retailer URLs skip vision; WineEngine disabled.
+            // Trusted retailer URLs skip WineEngine reject — incomplete collections
+            // false-match similar bottles and starve discover.
             const trustedEarly =
               isTrustedRetailerSource(img.source) || isTrustedImageUrl(img.url);
 
@@ -720,6 +730,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               }
 
               if (!trustedSource) {
+                if (
+                  !shouldSpendVisionOnUntrustedCandidate(
+                    img.url,
+                    img.title,
+                    row.name,
+                    row.name_japanese,
+                    row.brewery
+                  )
+                ) {
+                  diagnostics.discover.skippedWeakUntrusted++;
+                  failureReason = 'no_strong_candidates';
+                  continue;
+                }
                 if (isOpenAIVisionQuotaExceeded()) {
                   continue;
                 }
@@ -775,19 +798,63 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 continue;
               }
 
-              await supabase
-                .from('sake')
-                .update(
-                  sakeImageUpdatePayload(
-                    result.url,
-                    trustedSource ? provenanceForTrustedRetailer() : provenanceForWebDiscover()
-                  )
-                )
-                .eq('id', row.id);
+              const place = await placeCatalogImageIfStronger(
+                supabase,
+                row.id,
+                result.url,
+                trustedSource ? provenanceForTrustedRetailer() : provenanceForWebDiscover()
+              );
+              if (place.error) {
+                failureReason = 'place_failed';
+                pushSample(
+                  diagnostics.discover.downloadErrorSamples,
+                  `${row.name}: place ${place.error.slice(0, 100)}`
+                );
+                continue;
+              }
+              if (place.skippedWeaker) {
+                // Concurrent promote/admin filled a stronger (or equal) image while we searched.
+                failureReason = 'weaker_than_existing';
+                continue;
+              }
               sakeDiscovered++;
               diagnostics.discover.placedRows++;
               placed = true;
               failureReason = '';
+              if (wineEngineCfg) {
+                try {
+                  const reserved = await reserveWineEngineQuota(supabase, { images: 1 });
+                  if (reserved.ok) {
+                    wineEngineQuota = reserved.snapshot;
+                    try {
+                      const indexed = await wineEngineAddByUrl(wineEngineCfg, {
+                        sakeId: row.id,
+                        imageUrl: result.url,
+                      });
+                      if (indexed.status === 'ok') {
+                        diagnostics.discover.wineEngineIndexed++;
+                        await markWineEngineIndexed(supabase, row.id);
+                      } else {
+                        const released = await releaseWineEngineQuota(supabase, { images: 1 });
+                        if (released.ok) wineEngineQuota = released.snapshot;
+                      }
+                    } catch {
+                      const released = await releaseWineEngineQuota(supabase, { images: 1 });
+                      if (released.ok) wineEngineQuota = released.snapshot;
+                    }
+                  }
+                } catch {
+                  /* WineEngine index optional — catalog image already placed */
+                }
+              }
+              if (openaiKey) {
+                embedSakeCatalogImage(supabase, openaiKey, {
+                  id: row.id,
+                  name: row.name,
+                  brewery: row.brewery,
+                  image_url: result.url,
+                }).catch(() => undefined);
+              }
               break;
             } catch (inner) {
               if (isOpenAIQuotaError(inner)) {
@@ -843,12 +910,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
         try {
           const nextAttemptCount = priorAttemptCount + 1;
-          const resolvedFailureReason =
-            timedOutDuringRow || !sawCandidates
-              ? timedOutDuringRow
-                ? 'time_budget_reached'
-                : 'no_candidates'
-              : failureReason || 'discover_failed';
+          const resolvedFailureReason = resolveDiscoverAttemptFailure({
+            timedOutDuringRow,
+            sawCandidates,
+            failureReason,
+            firecrawlErrors: firecrawlErrorsForRow,
+            firecrawlBypassActive: isFirecrawlBypassActive(),
+            openaiVisionQuotaExceeded: isOpenAIVisionQuotaExceeded(),
+          });
+          const retry = computeDiscoverRetry({
+            prior: priorAttempt,
+            placed,
+            failureReason: resolvedFailureReason,
+          });
+          if (retry.exhausted) diagnostics.discover.exhaustedThisRun++;
           const attemptPayload = placed
             ? {
                 sake_id: row.id,
@@ -865,8 +940,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 attempt_count: nextAttemptCount,
                 success_count: priorSuccessCount,
                 last_attempt_at: new Date().toISOString(),
-                last_failure_reason: resolvedFailureReason,
-                next_retry_at: computeNextRetryAt(nextAttemptCount, !sawCandidates, resolvedFailureReason),
+                last_failure_reason: retry.reason,
+                next_retry_at: retry.nextRetryAt,
                 updated_at: new Date().toISOString(),
               };
           const { error: upsertAttemptError } = await supabase
@@ -883,10 +958,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               sake_id: row.id,
               attempt_count: nextAttemptCount,
               success_count: placed ? priorSuccessCount + 1 : priorSuccessCount,
-              next_retry_at: placed
-                ? null
-                : computeNextRetryAt(nextAttemptCount, !sawCandidates, resolvedFailureReason),
-              last_failure_reason: placed ? null : resolvedFailureReason,
+              next_retry_at: placed ? null : retry.nextRetryAt,
+              last_failure_reason: placed ? null : retry.reason,
             });
           }
         } catch (historyErr) {
@@ -947,10 +1020,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           if (urlLooksLikeNonSakeProduct(sake.image_url)) {
             diagnostics.mirror.urlFiltered++;
             if (shouldClearCatalogUrlAsNonSakeProduct(sake.image_url)) {
-              await supabase
-                .from('sake')
-                .update({ image_url: null, updated_at: new Date().toISOString() })
-                .eq('id', sake.id);
+              await clearSakeCatalogImage(supabase, sake.id);
               skippedPlaceholders++;
               diagnostics.mirror.placeholderClears++;
               console.log(`[process-images/mirror] cleared non-sake URL for ${sake.name}: ${sake.image_url}`);
@@ -988,10 +1058,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               break;
             }
             if (result.skippedPlaceholder) {
-              await supabase
-                .from('sake')
-                .update({ image_url: null, updated_at: new Date().toISOString() })
-                .eq('id', sake.id);
+              await clearSakeCatalogImage(supabase, sake.id);
               skippedPlaceholders++;
               diagnostics.mirror.placeholderClears++;
             } else if (result.skippedDuplicate) {
@@ -1013,10 +1080,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             pushSample(diagnostics.mirror.errorSamples, `${sake.name}: ${msg.slice(0, 140)}`);
             // Never erase a still-valid external URL on transient host/network failures.
             if (shouldClearExternalImageUrlOnError(msg)) {
-              await supabase
-                .from('sake')
-                .update({ image_url: null, updated_at: new Date().toISOString() })
-                .eq('id', sake.id);
+              await clearSakeCatalogImage(supabase, sake.id);
             }
             await sleep(DELAY_MS);
           }
@@ -1048,6 +1112,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       discoverAttempts > 0
         ? Number((discoverPlaced / discoverAttempts).toFixed(3))
         : 0;
+    if (discoverAttempts > 0) {
+      try {
+        const priorHealth = await getBackfillState<DiscoverHealthState>(supabase, DISCOVER_HEALTH_KEY, {
+          yields: [],
+          lowYieldStreak: 0,
+        });
+        await setBackfillState(
+          supabase,
+          DISCOVER_HEALTH_KEY,
+          recordDiscoverYield(priorHealth, discoverAttempts, discoverPlaced)
+        );
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        errors.push(`discover health: ${msg.slice(0, 120)}`);
+      }
+    }
     const discoverLowYieldAlert =
       discoverAttempts >= 4 &&
       discoverPlaced === 0 &&
@@ -1087,7 +1167,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       },
       diagnostics: {
         discoverPool: diagnostics.discover.poolRows,
+        discoverPoolPages: diagnostics.discover.poolPagesScanned,
         discoverRandomizedPool: diagnostics.discover.randomizedPoolRows,
+        discoverEligibleRows: diagnostics.discover.eligibleRows,
         discoverAttempts: diagnostics.discover.attemptedRows,
         discoverPlaced: diagnostics.discover.placedRows,
         mirrorFetched: diagnostics.mirror.fetchedRows,
@@ -1132,7 +1214,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         breweryMainImages: brewRem.breweryMainImages,
         breweryGalleryImages: brewRem.breweryGalleryImages,
       },
-      wineEngine: { disabled: true },
+      wineEngine: buildProcessImagesWineEngineSummary(wineEngineCfg, wineEngineQuota),
       sakeQueue: {
         externalRowsFetched: sakeExternalRowsFetched,
         note: 'Audit → discover (missing) → mirror external URLs. Discover needs FIRECRAWL + OPENAI.',
@@ -1145,6 +1227,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               yield: discoverYield,
               candidateUrlsSeen: diagnostics.discover.candidateUrlsSeen,
               visionChecks: diagnostics.discover.visionChecks,
+              poolPagesScanned: diagnostics.discover.poolPagesScanned,
+              poolRows: diagnostics.discover.poolRows,
+              eligibleRows: diagnostics.discover.eligibleRows,
+              skippedByBackoff: diagnostics.discover.skippedByBackoff,
+              skippedExhausted: diagnostics.discover.skippedExhausted,
+              exhaustedThisRun: diagnostics.discover.exhaustedThisRun,
               attemptHistoryReadErrors: diagnostics.discover.attemptHistoryReadErrors,
               firecrawlErrors: diagnostics.discover.firecrawlErrors,
               openaiVisionQuotaExceeded:
