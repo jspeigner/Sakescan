@@ -9,6 +9,7 @@ import {
   supabaseProjectHost,
 } from './lib/imageMirror.js';
 import {
+  buildDiscoverCandidateQueue,
   isFirecrawlBypassActive,
   isTrustedImageUrl,
   isTrustedRetailerSource,
@@ -29,6 +30,7 @@ import {
   discoverSkipReason,
   isMissingImageUrl,
   prioritizeDiscoverRows,
+  resolveDiscoverAttemptFailure,
   shouldScanNextDiscoverPoolPage,
   shouldRunDiscoverFallback,
 } from './lib/discoverPolicy.js';
@@ -623,6 +625,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         let failureReason = 'no_candidates';
         let sawCandidates = false;
         let timedOutDuringRow = false;
+        let firecrawlErrorsForRow: string[] = [];
 
         try {
           const discoverDelayMs = acceleratedDiscover ? DELAY_MS_DISCOVER_ACCELERATED : DELAY_MS_DISCOVER;
@@ -683,6 +686,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           diagnostics.discover.sourceCandidates.sakura += debug.sourceCounts.sakura;
           diagnostics.discover.sourceCandidates.umami += debug.sourceCounts.umami;
           diagnostics.discover.sourceCandidates.sakeTimes += debug.sourceCounts.sakeTimes;
+          firecrawlErrorsForRow = debug.firecrawlErrors;
           if (debug.firecrawlErrors.length > 0) {
             diagnostics.discover.firecrawlErrors += debug.firecrawlErrors.length;
             debug.firecrawlErrors.forEach((m) =>
@@ -693,14 +697,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             diagnostics.discover.rowsWithNoCandidates++;
           }
 
-          const trustedCandidates = images.filter((candidate) => isTrustedRetailerSource(candidate.source));
-          const otherCandidates = images.filter((candidate) => !isTrustedRetailerSource(candidate.source));
-          const candidateQueue = [
-            ...trustedCandidates.slice(0, DISCOVER_CANDIDATES_MAX_TRUSTED),
-            ...(isOpenAIVisionQuotaExceeded()
-              ? []
-              : otherCandidates.slice(0, discoverCandidatesMax)),
-          ];
+          const candidateQueue = buildDiscoverCandidateQueue(images, {
+            visionQuotaExceeded: isOpenAIVisionQuotaExceeded(),
+            trustedMax: DISCOVER_CANDIDATES_MAX_TRUSTED,
+            otherMax: discoverCandidatesMax,
+          });
           let visionChecksThisRow = 0;
 
           for (const img of candidateQueue) {
@@ -911,11 +912,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
         try {
           const nextAttemptCount = priorAttemptCount + 1;
-          const resolvedFailureReason = timedOutDuringRow
-            ? 'time_budget_reached'
-            : !sawCandidates
-              ? 'no_candidates'
-              : failureReason || 'discover_failed';
+          const resolvedFailureReason = resolveDiscoverAttemptFailure({
+            timedOutDuringRow,
+            sawCandidates,
+            failureReason,
+            firecrawlErrors: firecrawlErrorsForRow,
+            firecrawlBypassActive: isFirecrawlBypassActive(),
+            openaiVisionQuotaExceeded: isOpenAIVisionQuotaExceeded(),
+          });
           const retry = computeDiscoverRetry({
             prior: priorAttempt,
             placed,

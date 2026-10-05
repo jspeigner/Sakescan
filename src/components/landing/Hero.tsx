@@ -56,9 +56,11 @@ export function Hero() {
                   Download for iOS
                 </a>
               </Button>
-              <Button variant="outline" size="lg" className="gap-2 text-base px-8 py-6">
-                <Scan className="w-5 h-5" />
-                See How It Works
+              <Button variant="outline" size="lg" className="gap-2 text-base px-8 py-6" asChild>
+                <a href="#how-it-works">
+                  <Scan className="w-5 h-5" />
+                  See How It Works
+                </a>
               </Button>
             </div>
 

@@ -105,6 +105,18 @@ async function resetEnvironmentalBackoffOnStartup(
       .select('sake_id');
     if (!error && data) cleared += data.length;
   }
+
+  // Accelerated discover used to park rows as exhausted:vision_cap_reached.
+  // discoverSkipReason treats exhausted:* as permanent, so clear the reason
+  // (not just next_retry_at) to make those rows eligible again.
+  {
+    const { data, error } = await supabase
+      .from('sake_image_attempts')
+      .update({ next_retry_at: null, last_failure_reason: null, updated_at: now })
+      .ilike('last_failure_reason', '%vision_cap%')
+      .select('sake_id');
+    if (!error && data) cleared += data.length;
+  }
   return cleared;
 }
 
@@ -973,6 +985,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           candidates: emb.candidates,
           embedded: emb.embedded,
           failed: emb.failed,
+          skippedDuplicateHash: emb.skippedDuplicateHash,
           quotaExceeded: emb.quotaExceeded,
           coverage: emb.coverage,
         },
