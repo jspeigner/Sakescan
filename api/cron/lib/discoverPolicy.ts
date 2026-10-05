@@ -55,6 +55,7 @@ export function isQuotaOutageFailure(reason: string | null | undefined): boolean
     lower.includes('openai vision http 429') ||
     (lower.includes('openai') && lower.includes('quota')) ||
     lower.includes('firecrawl_quota') ||
+    lower.includes('firecrawl_error') ||
     lower.includes('rate_limited')
   );
 }
@@ -79,6 +80,85 @@ export function isTransientDiscoverFailure(reason: string | null | undefined): b
     isTimeBudgetFailure(reason) ||
     isVisionCapFailure(reason)
   );
+}
+
+/**
+ * Firecrawl messages that mean the search stack failed — not "this bottle has
+ * no images on the web". Empty-result strings like "No image search results"
+ * must NOT match, or true no_candidates would never park.
+ */
+export function looksLikeFirecrawlInfrastructureError(message: string): boolean {
+  const lower = message.toLowerCase();
+  if (lower.includes('no image search results')) return false;
+  return (
+    lower.includes('quota') ||
+    lower.includes('rate limit') ||
+    lower.includes('rate-limit') ||
+    lower.includes('limit exceeded') ||
+    lower.includes('bypass active') ||
+    lower.includes('insufficient credits') ||
+    lower.includes('payment required') ||
+    /(?:^|[^\d])(?:402|429|500|502|503|504)(?:[^\d]|$)/.test(lower) ||
+    lower.includes('network:') ||
+    lower.includes('timeout') ||
+    lower.includes('aborted') ||
+    lower.includes('econnreset') ||
+    lower.includes('fetch failed')
+  );
+}
+
+/**
+ * Classify a discover attempt for `sake_image_attempts`.
+ *
+ * Critical: empty results during Firecrawl/OpenAI outages must not be recorded
+ * as `no_candidates` — three of those park the row as exhausted for 90 days,
+ * and `resetEnvironmentalBackoffOnStartup` only clears `firecrawl_quota` /
+ * `openai_quota` patterns.
+ */
+export function resolveDiscoverAttemptFailure(params: {
+  timedOutDuringRow: boolean;
+  sawCandidates: boolean;
+  failureReason: string;
+  firecrawlErrors: string[];
+  firecrawlBypassActive: boolean;
+  openaiVisionQuotaExceeded: boolean;
+}): string {
+  if (params.timedOutDuringRow) return 'time_budget_reached';
+
+  if (!params.sawCandidates) {
+    if (params.firecrawlBypassActive) return 'firecrawl_quota';
+    if (params.firecrawlErrors.some(looksLikeFirecrawlInfrastructureError)) {
+      const joined = params.firecrawlErrors.join(' ').toLowerCase();
+      if (
+        joined.includes('quota') ||
+        joined.includes('429') ||
+        joined.includes('402') ||
+        joined.includes('bypass') ||
+        joined.includes('insufficient credits') ||
+        joined.includes('payment required') ||
+        joined.includes('rate limit')
+      ) {
+        return 'firecrawl_quota';
+      }
+      return 'firecrawl_error';
+    }
+    return 'no_candidates';
+  }
+
+  // Vision quota emptied the untrusted queue (TRUSTED_RETAILER_SOURCES is empty),
+  // so the candidate loop never runs and failureReason stays the initial
+  // 'no_candidates' — do not count that toward 90-day exhaust.
+  if (
+    params.openaiVisionQuotaExceeded &&
+    (params.failureReason === 'no_candidates' ||
+      params.failureReason === 'no_strong_candidates' ||
+      params.failureReason === 'openai_quota_exceeded' ||
+      !params.failureReason)
+  ) {
+    return 'openai_quota_exceeded';
+  }
+
+  return params.failureReason || 'discover_failed';
 }
 
 export function failedDiscoverCount(history: DiscoverAttemptHistory | undefined): number {

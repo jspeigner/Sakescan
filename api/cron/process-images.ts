@@ -29,6 +29,7 @@ import {
   discoverSkipReason,
   isMissingImageUrl,
   prioritizeDiscoverRows,
+  resolveDiscoverAttemptFailure,
   shouldScanNextDiscoverPoolPage,
   shouldRunDiscoverFallback,
 } from './lib/discoverPolicy.js';
@@ -623,6 +624,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         let failureReason = 'no_candidates';
         let sawCandidates = false;
         let timedOutDuringRow = false;
+        let firecrawlErrorsForRow: string[] = [];
 
         try {
           const discoverDelayMs = acceleratedDiscover ? DELAY_MS_DISCOVER_ACCELERATED : DELAY_MS_DISCOVER;
@@ -683,6 +685,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           diagnostics.discover.sourceCandidates.sakura += debug.sourceCounts.sakura;
           diagnostics.discover.sourceCandidates.umami += debug.sourceCounts.umami;
           diagnostics.discover.sourceCandidates.sakeTimes += debug.sourceCounts.sakeTimes;
+          firecrawlErrorsForRow = debug.firecrawlErrors;
           if (debug.firecrawlErrors.length > 0) {
             diagnostics.discover.firecrawlErrors += debug.firecrawlErrors.length;
             debug.firecrawlErrors.forEach((m) =>
@@ -901,11 +904,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
         try {
           const nextAttemptCount = priorAttemptCount + 1;
-          const resolvedFailureReason = timedOutDuringRow
-            ? 'time_budget_reached'
-            : !sawCandidates
-              ? 'no_candidates'
-              : failureReason || 'discover_failed';
+          const resolvedFailureReason = resolveDiscoverAttemptFailure({
+            timedOutDuringRow,
+            sawCandidates,
+            failureReason,
+            firecrawlErrors: firecrawlErrorsForRow,
+            firecrawlBypassActive: isFirecrawlBypassActive(),
+            openaiVisionQuotaExceeded: isOpenAIVisionQuotaExceeded(),
+          });
           const retry = computeDiscoverRetry({
             prior: priorAttempt,
             placed,
