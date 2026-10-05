@@ -73,6 +73,21 @@ export function isEligibleCatalogShareCandidate(
   return catalogShareOptIn === true;
 }
 
+/**
+ * How promote should treat a downloadAndStore result.
+ * Rate limits must abort the batch (same as process-images / brewery mirror);
+ * continuing hammers the host for every remaining candidate.
+ */
+export function promoteDownloadDisposition(stored: {
+  rateLimited?: boolean;
+  skippedPlaceholder?: boolean;
+  skippedDuplicate?: boolean;
+}): 'abort_rate_limit' | 'skip' | 'use' {
+  if (stored.rateLimited) return 'abort_rate_limit';
+  if (stored.skippedPlaceholder || stored.skippedDuplicate) return 'skip';
+  return 'use';
+}
+
 export async function promoteScanImagesBatch(
   supabase: SupabaseClient,
   options?: {
@@ -262,7 +277,14 @@ export async function promoteScanImagesBatch(
         seenHashes,
         knownPlaceholderHashes
       );
-      if (stored.rateLimited || stored.skippedPlaceholder || stored.skippedDuplicate) continue;
+      const disposition = promoteDownloadDisposition(stored);
+      if (disposition === 'abort_rate_limit') {
+        if (errors.length < 8) {
+          errors.push('Rate limited by image host — stopping promote batch');
+        }
+        break;
+      }
+      if (disposition === 'skip') continue;
 
       const payload = sakeImageUpdatePayload(stored.url, provenanceForUserScan(scan.id));
       const { error: upErr } = await supabase.from('sake').update(payload).eq('id', sakeId);

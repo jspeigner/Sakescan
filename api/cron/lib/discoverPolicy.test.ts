@@ -5,15 +5,20 @@ import {
   BACKOFF_QUOTA_MS,
   BACKOFF_SECOND_MS,
   BACKOFF_TIME_BUDGET_MS,
+  DISCOVER_POOL_PAGE_LIMIT,
+  DISCOVER_POOL_PAGE_SIZE,
   DISCOVER_ROW_CAP_DEFAULT,
   DISCOVER_ROW_CAP_LOW_YIELD,
   EXHAUSTED_HOLD_MS,
+  POSTGREST_MAX_ROWS,
   computeDiscoverRetry,
   discoverEligibleBufferTarget,
   discoverRowCapForRun,
   discoverSkipReason,
   isMissingImageUrl,
   prioritizeDiscoverRows,
+  resolveDiscoverAttemptFailure,
+  looksLikeFirecrawlInfrastructureError,
   shouldExhaustDiscoverRow,
   shouldScanNextDiscoverPoolPage,
   shouldRunDiscoverFallback,
@@ -35,11 +40,14 @@ describe('discover retry / exhaust', () => {
     expect(shouldExhaustDiscoverRow(3, 'no_strong_candidates')).toBe(true);
   });
 
-  test('parks after 5 mixed failures but not for quota or timeout', () => {
+  test('parks after 5 mixed failures but not for quota, timeout, or vision cap', () => {
     expect(shouldExhaustDiscoverRow(5, 'vision_rejected')).toBe(true);
     expect(shouldExhaustDiscoverRow(4, 'vision_rejected')).toBe(false);
     expect(shouldExhaustDiscoverRow(8, 'openai_quota_exceeded')).toBe(false);
+    expect(shouldExhaustDiscoverRow(8, 'firecrawl_quota')).toBe(false);
+    expect(shouldExhaustDiscoverRow(8, 'firecrawl_error')).toBe(false);
     expect(shouldExhaustDiscoverRow(8, 'time_budget_reached')).toBe(false);
+    expect(shouldExhaustDiscoverRow(8, 'vision_cap_reached')).toBe(false);
   });
 
   test('uses a long ladder, then a 90-day hold when exhausted', () => {
@@ -72,7 +80,7 @@ describe('discover retry / exhaust', () => {
     expect(Date.parse(third.nextRetryAt ?? '') - 0).toBeGreaterThan(BACKOFF_LATER_MS);
   });
 
-  test('quota and time-budget stay short and do not park the row', () => {
+  test('quota, time-budget, and vision-cap stay short and do not park the row', () => {
     const quota = computeDiscoverRetry({
       prior: { attempt_count: 4, success_count: 0, next_retry_at: null },
       placed: false,
@@ -82,6 +90,15 @@ describe('discover retry / exhaust', () => {
     expect(quota.exhausted).toBe(false);
     expect(Date.parse(quota.nextRetryAt ?? '') - 0).toBe(BACKOFF_QUOTA_MS);
 
+    const firecrawl = computeDiscoverRetry({
+      prior: { attempt_count: 4, success_count: 0, next_retry_at: null },
+      placed: false,
+      failureReason: 'firecrawl_error',
+      nowMs: 0,
+    });
+    expect(firecrawl.exhausted).toBe(false);
+    expect(Date.parse(firecrawl.nextRetryAt ?? '') - 0).toBe(BACKOFF_QUOTA_MS);
+
     const timeout = computeDiscoverRetry({
       prior: { attempt_count: 4, success_count: 0, next_retry_at: null },
       placed: false,
@@ -90,6 +107,18 @@ describe('discover retry / exhaust', () => {
     });
     expect(timeout.exhausted).toBe(false);
     expect(Date.parse(timeout.nextRetryAt ?? '') - 0).toBe(BACKOFF_TIME_BUDGET_MS);
+
+    // Accelerated discover always hits a 2-check vision cap; that must not
+    // become exhausted:vision_cap_reached + a 90-day hold.
+    const visionCap = computeDiscoverRetry({
+      prior: { attempt_count: 4, success_count: 0, next_retry_at: null },
+      placed: false,
+      failureReason: 'vision_cap_reached',
+      nowMs: 0,
+    });
+    expect(visionCap.exhausted).toBe(false);
+    expect(visionCap.reason).toBe('vision_cap_reached');
+    expect(Date.parse(visionCap.nextRetryAt ?? '') - 0).toBe(BACKOFF_TIME_BUDGET_MS);
   });
 
   test('skips exhausted and not-yet-due rows', () => {
@@ -117,6 +146,91 @@ describe('discover retry / exhaust', () => {
         last_failure_reason: 'no_candidates',
       })
     ).toBeNull();
+  });
+});
+
+describe('resolveDiscoverAttemptFailure', () => {
+  test('does not treat empty Firecrawl outages as no_candidates', () => {
+    expect(
+      resolveDiscoverAttemptFailure({
+        timedOutDuringRow: false,
+        sawCandidates: false,
+        failureReason: 'no_candidates',
+        firecrawlErrors: ['googleImages (Dassai 45): search HTTP 429: rate limit'],
+        firecrawlBypassActive: false,
+        openaiVisionQuotaExceeded: false,
+      })
+    ).toBe('firecrawl_quota');
+
+    expect(
+      resolveDiscoverAttemptFailure({
+        timedOutDuringRow: false,
+        sawCandidates: false,
+        failureReason: 'no_candidates',
+        firecrawlErrors: ['googleImages: search HTTP 503: upstream'],
+        firecrawlBypassActive: false,
+        openaiVisionQuotaExceeded: false,
+      })
+    ).toBe('firecrawl_error');
+
+    expect(
+      resolveDiscoverAttemptFailure({
+        timedOutDuringRow: false,
+        sawCandidates: false,
+        failureReason: 'no_candidates',
+        firecrawlErrors: ['Firecrawl bypass active; direct Google returned no URLs'],
+        firecrawlBypassActive: true,
+        openaiVisionQuotaExceeded: false,
+      })
+    ).toBe('firecrawl_quota');
+  });
+
+  test('keeps true empty searches as no_candidates', () => {
+    expect(
+      resolveDiscoverAttemptFailure({
+        timedOutDuringRow: false,
+        sawCandidates: false,
+        failureReason: 'no_candidates',
+        firecrawlErrors: [
+          'googleImages (Foo): No image search results (Firecrawl search + direct Google)',
+        ],
+        firecrawlBypassActive: false,
+        openaiVisionQuotaExceeded: false,
+      })
+    ).toBe('no_candidates');
+
+    expect(
+      resolveDiscoverAttemptFailure({
+        timedOutDuringRow: false,
+        sawCandidates: false,
+        failureReason: 'no_candidates',
+        firecrawlErrors: [],
+        firecrawlBypassActive: false,
+        openaiVisionQuotaExceeded: false,
+      })
+    ).toBe('no_candidates');
+  });
+
+  test('maps vision-quota emptied queues away from no_candidates', () => {
+    expect(
+      resolveDiscoverAttemptFailure({
+        timedOutDuringRow: false,
+        sawCandidates: true,
+        failureReason: 'no_candidates',
+        firecrawlErrors: [],
+        firecrawlBypassActive: false,
+        openaiVisionQuotaExceeded: true,
+      })
+    ).toBe('openai_quota_exceeded');
+  });
+
+  test('infra detector ignores benign empty-result strings', () => {
+    expect(
+      looksLikeFirecrawlInfrastructureError(
+        'No image search results (Firecrawl search + direct Google)'
+      )
+    ).toBe(false);
+    expect(looksLikeFirecrawlInfrastructureError('search HTTP 402: Payment Required')).toBe(true);
   });
 });
 
@@ -183,6 +297,27 @@ describe('discover pool paging', () => {
         pageSize: 2000,
       })
     ).toBe(false);
+  });
+
+  test('pool pages never exceed the PostgREST max-rows cap', () => {
+    // A page larger than max-rows is truncated by the server, so a full first
+    // page would look like the end of the pool and stop scanning early.
+    expect(DISCOVER_POOL_PAGE_SIZE).toBeLessThanOrEqual(POSTGREST_MAX_ROWS);
+    expect(POSTGREST_MAX_ROWS).toBe(1000);
+    expect(
+      shouldScanNextDiscoverPoolPage({
+        pagesScanned: 1,
+        maxPages: DISCOVER_POOL_PAGE_LIMIT,
+        eligibleRows: 0,
+        rowCap: 6,
+        lastPageRows: POSTGREST_MAX_ROWS,
+        pageSize: DISCOVER_POOL_PAGE_SIZE,
+      })
+    ).toBe(true);
+  });
+
+  test('page limit can cover the current missing-image pool', () => {
+    expect(DISCOVER_POOL_PAGE_LIMIT * DISCOVER_POOL_PAGE_SIZE).toBeGreaterThanOrEqual(11_500);
   });
 });
 
