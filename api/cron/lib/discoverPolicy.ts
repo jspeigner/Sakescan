@@ -69,6 +69,34 @@ export function exhaustedHoldReleasePayload(nowIso = new Date().toISOString()): 
   };
 }
 
+/**
+ * After an exhausted:* 90-day hold expires, discoverSkipReason returns null so
+ * the row is eligible again — but attempt_count is still ≥ the exhaust
+ * threshold. Without a reset, the very next no_candidates immediately
+ * re-writes exhausted:* + another 90-day park (one try per quarter).
+ *
+ * Mirror the operator release ladder: zero failed attempts, clear the
+ * exhausted reason. Legacy rows with exhausted + null next_retry_at stay
+ * unchanged (still permanently parked by discoverSkipReason).
+ */
+export function normalizeDiscoverHistoryAfterExhaustedHold(
+  history: DiscoverAttemptHistory | undefined,
+  nowMs = Date.now()
+): DiscoverAttemptHistory | undefined {
+  if (!history) return undefined;
+  if (!isExhaustedReason(history.last_failure_reason)) return history;
+  if (!history.next_retry_at) return history;
+  const retryAtMs = Date.parse(history.next_retry_at);
+  if (Number.isNaN(retryAtMs) || retryAtMs > nowMs) return history;
+  const successCount = history.success_count ?? 0;
+  return {
+    attempt_count: successCount,
+    success_count: successCount,
+    next_retry_at: null,
+    last_failure_reason: null,
+  };
+}
+
 export function isQuotaOutageFailure(reason: string | null | undefined): boolean {
   if (!reason) return false;
   const lower = reason.toLowerCase();
@@ -230,7 +258,8 @@ export function computeDiscoverRetry(params: {
     return { nextRetryAt: null, exhausted: false, reason: null, nextFailedCount: 0 };
   }
   const nowMs = params.nowMs ?? Date.now();
-  const nextFailedCount = failedDiscoverCount(params.prior) + 1;
+  const prior = normalizeDiscoverHistoryAfterExhaustedHold(params.prior, nowMs);
+  const nextFailedCount = failedDiscoverCount(prior) + 1;
   const exhausted = shouldExhaustDiscoverRow(nextFailedCount, params.failureReason);
   const reason = exhausted ? `${EXHAUSTED_REASON}:${params.failureReason}` : params.failureReason;
   const waitMs = backoffMsForDiscoverFailure(nextFailedCount, params.failureReason);

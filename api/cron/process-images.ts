@@ -27,6 +27,7 @@ import {
   discoverRowCapForRun,
   discoverSkipReason,
   isMissingImageUrl,
+  normalizeDiscoverHistoryAfterExhaustedHold,
   prioritizeDiscoverRows,
   resolveDiscoverAttemptFailure,
   shouldScanNextDiscoverPoolPage,
@@ -44,7 +45,7 @@ import {
   provenanceForTrustedRetailer,
   provenanceForWebDiscover,
   shouldReplaceImage} from './lib/imageProvenance.js';
-import { clearSakeCatalogImage } from './lib/sakeImageClear.js';
+import { clearSakeCatalogImage, syncEmbeddingCatalogUrl } from './lib/sakeImageClear.js';
 import {
   getWineEngineConfig,
   wineEngineIndexByUrl} from './lib/wineEngine.js';
@@ -595,7 +596,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         if (discoverAttempts >= discoverRowCapThisRun || rateLimited) break;
         discoverAttempts++;
         diagnostics.discover.attemptedRows++;
-        const priorAttempt = attemptBySakeId.get(row.id);
+        const priorAttempt = normalizeDiscoverHistoryAfterExhaustedHold(
+          attemptBySakeId.get(row.id),
+          nowMs
+        );
         const priorAttemptCount = priorAttempt?.attempt_count ?? 0;
         const priorSuccessCount = priorAttempt?.success_count ?? 0;
         let placed = false;
@@ -1035,6 +1039,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 .from('sake')
                 .update({ image_url: result.url, updated_at: new Date().toISOString() })
                 .eq('id', sake.id);
+              // Keep local-identify embeddings on the live catalog URL. match_* and
+              // keepIfLiveCatalogMatch require sake.image_url === embedding.image_url;
+              // leaving the pre-mirror external URL here makes hash/KNN miss until
+              // the next successful embed cron.
+              await syncEmbeddingCatalogUrl(supabase, sake.id, result.url).catch((syncErr) => {
+                const syncMsg = syncErr instanceof Error ? syncErr.message : String(syncErr);
+                pushSample(
+                  diagnostics.mirror.errorSamples,
+                  `${sake.name}: embed url sync ${syncMsg.slice(0, 100)}`
+                );
+              });
               sakeMirrored++;
               diagnostics.mirror.mirroredRows++;
             }

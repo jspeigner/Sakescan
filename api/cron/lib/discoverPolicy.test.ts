@@ -17,6 +17,7 @@ import {
   discoverSkipReason,
   exhaustedHoldReleasePayload,
   isMissingImageUrl,
+  normalizeDiscoverHistoryAfterExhaustedHold,
   prioritizeDiscoverRows,
   resolveDiscoverAttemptFailure,
   looksLikeFirecrawlInfrastructureError,
@@ -222,6 +223,54 @@ describe('discover retry / exhaust', () => {
         last_failure_reason: 'exhausted:no_candidates',
       })
     ).toBe('exhausted');
+  });
+
+  test('expired exhausted hold resets failure ladder (no instant re-park)', () => {
+    const expiredHold = {
+      attempt_count: 3,
+      success_count: 0,
+      next_retry_at: new Date(1_000).toISOString(),
+      last_failure_reason: 'exhausted:no_candidates',
+    };
+    // Eligible again after the hold.
+    expect(discoverSkipReason(expiredHold, 2_000)).toBeNull();
+
+    const normalized = normalizeDiscoverHistoryAfterExhaustedHold(expiredHold, 2_000);
+    expect(normalized).toEqual({
+      attempt_count: 0,
+      success_count: 0,
+      next_retry_at: null,
+      last_failure_reason: null,
+    });
+
+    // First post-expiry miss uses a short backoff — not another 90-day park.
+    const firstMiss = computeDiscoverRetry({
+      prior: expiredHold,
+      placed: false,
+      failureReason: 'no_candidates',
+      nowMs: 2_000,
+    });
+    expect(firstMiss.exhausted).toBe(false);
+    expect(firstMiss.nextFailedCount).toBe(1);
+    expect(Date.parse(firstMiss.nextRetryAt ?? '') - 2_000).toBe(BACKOFF_FIRST_MS);
+
+    // Still inside the hold: leave history alone so skip/exhaust logic stays parked.
+    expect(
+      normalizeDiscoverHistoryAfterExhaustedHold(
+        {
+          attempt_count: 3,
+          success_count: 0,
+          next_retry_at: new Date(5_000).toISOString(),
+          last_failure_reason: 'exhausted:no_candidates',
+        },
+        2_000
+      )
+    ).toEqual({
+      attempt_count: 3,
+      success_count: 0,
+      next_retry_at: new Date(5_000).toISOString(),
+      last_failure_reason: 'exhausted:no_candidates',
+    });
   });
 });
 

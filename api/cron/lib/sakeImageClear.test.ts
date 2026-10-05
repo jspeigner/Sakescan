@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   clearSakeCatalogImage,
   embeddingMatchesLiveCatalog,
+  syncEmbeddingCatalogUrl,
 } from './sakeImageClear.ts';
 
 describe('embeddingMatchesLiveCatalog', () => {
@@ -28,7 +29,7 @@ describe('embeddingMatchesLiveCatalog', () => {
 });
 
 describe('clearSakeCatalogImage', () => {
-  test('nulls image_url then deletes embedding for sake_id', async () => {
+  test('nulls image_url + wineengine_indexed_at then deletes embedding for sake_id', async () => {
     const calls: Array<{ table: string; op: string; payload?: unknown; filter?: unknown }> = [];
 
     const supabase = {
@@ -62,6 +63,7 @@ describe('clearSakeCatalogImage', () => {
         op: 'update',
         payload: {
           image_url: null,
+          wineengine_indexed_at: null,
           updated_at: (calls[0]?.payload as { updated_at: string }).updated_at,
         },
         filter: { column: 'id', value: 'sake-1' },
@@ -96,5 +98,42 @@ describe('clearSakeCatalogImage', () => {
     await expect(clearSakeCatalogImage(supabase as never, 'sake-1')).rejects.toThrow(
       /clear sake image: rlw/
     );
+  });
+});
+
+describe('syncEmbeddingCatalogUrl', () => {
+  test('rewrites embedding image_url for the sake after a host-only mirror', async () => {
+    const calls: Array<{ table: string; op: string; payload?: unknown; filter?: unknown }> = [];
+    const mirrored =
+      'https://abc.supabase.co/storage/v1/object/public/sake-images/mirror/x.jpg';
+
+    const supabase = {
+      from(table: string) {
+        return {
+          update(payload: Record<string, unknown>) {
+            return {
+              eq(column: string, value: string) {
+                calls.push({ table, op: 'update', payload, filter: { column, value } });
+                return Promise.resolve({ error: null });
+              },
+            };
+          },
+        };
+      },
+    };
+
+    await syncEmbeddingCatalogUrl(supabase as never, 'sake-1', mirrored);
+
+    expect(calls).toEqual([
+      {
+        table: 'sake_image_embeddings',
+        op: 'update',
+        payload: {
+          image_url: mirrored,
+          updated_at: (calls[0]?.payload as { updated_at: string }).updated_at,
+        },
+        filter: { column: 'sake_id', value: 'sake-1' },
+      },
+    ]);
   });
 });
