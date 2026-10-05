@@ -232,6 +232,9 @@ out = {
         "ageHours": round(promote_age_hours, 1) if promote_age_hours is not None else None,
     },
     "lastRunSummary": {k: v for k, v in last_summary.items() if k != "phases"},
+    "orchestratorInProgress": last_status == "running"
+    and running_age_hours is not None
+    and running_age_hours <= stale_running_hours,
     "phases": [
         {"phase": p.get("phase"), "status": p.get("status"), "durationMs": p.get("durationMs")}
         for p in phases

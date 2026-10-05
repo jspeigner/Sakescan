@@ -24,7 +24,12 @@ export const WINEENGINE_DAILY_SEARCH_CAP = 30;
 export const WINEENGINE_SYNC_BATCH_MAX = 8;
 export const WINEENGINE_DISCOVER_SEARCH_MAX = 2;
 export const WINEENGINE_PROMOTE_SEARCH_MAX = 0; // searches are scarce; promote uses vision
-export const WINEENGINE_IDENTIFY_SEARCH_RESERVE = 100;
+/**
+ * Monthly soft-cap reserve held back from identify for cron search consumers.
+ * After #44, discover no longer spends WineEngine searches (promote max is 0),
+ * so a non-zero reserve only causes false identify 429s while quota sits idle.
+ */
+export const WINEENGINE_IDENTIFY_SEARCH_RESERVE = 0;
 
 const QUOTA_STATE_KEY = 'wineengine_quota';
 const QUOTA_CAS_ATTEMPTS = 8;
@@ -242,8 +247,8 @@ export function discoverSearchBudget(snapshot: WineEngineQuotaSnapshot): number 
 }
 
 /**
- * Identify endpoint may use searches only while keeping a reserve for cron.
- * Returns 0 when at/under the reserve floor.
+ * Identify may use one live search when monthly + daily remaining allow it.
+ * Reserve stays zero until a cron path actually consumes search quota again.
  */
 export function identifySearchBudget(snapshot: WineEngineQuotaSnapshot): number {
   const aboveReserve = Math.max(0, snapshot.remainingSearches - WINEENGINE_IDENTIFY_SEARCH_RESERVE);

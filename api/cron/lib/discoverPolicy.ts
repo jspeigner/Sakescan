@@ -55,6 +55,7 @@ export function isQuotaOutageFailure(reason: string | null | undefined): boolean
     lower.includes('openai vision http 429') ||
     (lower.includes('openai') && lower.includes('quota')) ||
     lower.includes('firecrawl_quota') ||
+    lower.includes('firecrawl_error') ||
     lower.includes('rate_limited')
   );
 }
@@ -63,9 +64,101 @@ export function isTimeBudgetFailure(reason: string | null | undefined): boolean 
   return (reason ?? '').toLowerCase().includes('time_budget');
 }
 
+/**
+ * Accelerated discover stops after DISCOVER_VISION_MAX_PER_ROW_ACCELERATED
+ * vision checks. That is our spend cap, not evidence the bottle has no image —
+ * treat it like a time budget so we never 90-day park the row.
+ */
+export function isVisionCapFailure(reason: string | null | undefined): boolean {
+  return (reason ?? '').toLowerCase().includes('vision_cap');
+}
+
 /** Failures caused by us/the platform, not by a missing bottle image. */
 export function isTransientDiscoverFailure(reason: string | null | undefined): boolean {
-  return isQuotaOutageFailure(reason) || isTimeBudgetFailure(reason);
+  return (
+    isQuotaOutageFailure(reason) ||
+    isTimeBudgetFailure(reason) ||
+    isVisionCapFailure(reason)
+  );
+}
+
+/**
+ * Firecrawl messages that mean the search stack failed — not "this bottle has
+ * no images on the web". Empty-result strings like "No image search results"
+ * must NOT match, or true no_candidates would never park.
+ */
+export function looksLikeFirecrawlInfrastructureError(message: string): boolean {
+  const lower = message.toLowerCase();
+  if (lower.includes('no image search results')) return false;
+  return (
+    lower.includes('quota') ||
+    lower.includes('rate limit') ||
+    lower.includes('rate-limit') ||
+    lower.includes('limit exceeded') ||
+    lower.includes('bypass active') ||
+    lower.includes('insufficient credits') ||
+    lower.includes('payment required') ||
+    /(?:^|[^\d])(?:402|429|500|502|503|504)(?:[^\d]|$)/.test(lower) ||
+    lower.includes('network:') ||
+    lower.includes('timeout') ||
+    lower.includes('aborted') ||
+    lower.includes('econnreset') ||
+    lower.includes('fetch failed')
+  );
+}
+
+/**
+ * Classify a discover attempt for `sake_image_attempts`.
+ *
+ * Critical: empty results during Firecrawl/OpenAI outages must not be recorded
+ * as `no_candidates` — three of those park the row as exhausted for 90 days,
+ * and `resetEnvironmentalBackoffOnStartup` only clears `firecrawl_quota` /
+ * `openai_quota` patterns.
+ */
+export function resolveDiscoverAttemptFailure(params: {
+  timedOutDuringRow: boolean;
+  sawCandidates: boolean;
+  failureReason: string;
+  firecrawlErrors: string[];
+  firecrawlBypassActive: boolean;
+  openaiVisionQuotaExceeded: boolean;
+}): string {
+  if (params.timedOutDuringRow) return 'time_budget_reached';
+
+  if (!params.sawCandidates) {
+    if (params.firecrawlBypassActive) return 'firecrawl_quota';
+    if (params.firecrawlErrors.some(looksLikeFirecrawlInfrastructureError)) {
+      const joined = params.firecrawlErrors.join(' ').toLowerCase();
+      if (
+        joined.includes('quota') ||
+        joined.includes('429') ||
+        joined.includes('402') ||
+        joined.includes('bypass') ||
+        joined.includes('insufficient credits') ||
+        joined.includes('payment required') ||
+        joined.includes('rate limit')
+      ) {
+        return 'firecrawl_quota';
+      }
+      return 'firecrawl_error';
+    }
+    return 'no_candidates';
+  }
+
+  // Vision quota emptied the untrusted queue (TRUSTED_RETAILER_SOURCES is empty),
+  // so the candidate loop never runs and failureReason stays the initial
+  // 'no_candidates' — do not count that toward 90-day exhaust.
+  if (
+    params.openaiVisionQuotaExceeded &&
+    (params.failureReason === 'no_candidates' ||
+      params.failureReason === 'no_strong_candidates' ||
+      params.failureReason === 'openai_quota_exceeded' ||
+      !params.failureReason)
+  ) {
+    return 'openai_quota_exceeded';
+  }
+
+  return params.failureReason || 'discover_failed';
 }
 
 export function failedDiscoverCount(history: DiscoverAttemptHistory | undefined): number {
@@ -91,7 +184,9 @@ export function backoffMsForDiscoverFailure(
   failureReason: string
 ): number {
   if (isQuotaOutageFailure(failureReason)) return BACKOFF_QUOTA_MS;
-  if (isTimeBudgetFailure(failureReason)) return BACKOFF_TIME_BUDGET_MS;
+  if (isTimeBudgetFailure(failureReason) || isVisionCapFailure(failureReason)) {
+    return BACKOFF_TIME_BUDGET_MS;
+  }
   if (shouldExhaustDiscoverRow(nextFailedCount, failureReason)) return EXHAUSTED_HOLD_MS;
   if (nextFailedCount <= 1) return BACKOFF_FIRST_MS;
   if (nextFailedCount === 2) return BACKOFF_SECOND_MS;
@@ -130,16 +225,18 @@ export function discoverSkipReason(
   nowMs = Date.now()
 ): 'exhausted' | 'backoff' | null {
   if (!history) return null;
-  const retryAtMs = history.next_retry_at ? Date.parse(history.next_retry_at) : Number.NaN;
-  const holdElapsed = Number.isFinite(retryAtMs) && retryAtMs <= nowMs;
-  // Exhausted is the 90-day hold written to next_retry_at, not a permanent park.
-  // Once that timestamp has passed, the row is due again.
-  if (isExhaustedReason(history.last_failure_reason)) {
-    return holdElapsed ? null : 'exhausted';
+  if (history.next_retry_at) {
+    const retryAtMs = Date.parse(history.next_retry_at);
+    // Hold / backoff window still active.
+    if (!Number.isNaN(retryAtMs) && retryAtMs > nowMs) {
+      return isExhaustedReason(history.last_failure_reason) ? 'exhausted' : 'backoff';
+    }
+    // next_retry_at reached — eligible again (including after exhausted:* 90-day hold).
+    return null;
   }
-  if (!history.next_retry_at) return null;
-  if (!Number.isFinite(retryAtMs) || holdElapsed) return null;
-  return 'backoff';
+  // No retry timestamp: permanent park only when already marked exhausted.
+  if (isExhaustedReason(history.last_failure_reason)) return 'exhausted';
+  return null;
 }
 
 export function prioritizeDiscoverRows<T extends { id: string }>(
