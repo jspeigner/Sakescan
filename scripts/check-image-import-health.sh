@@ -68,9 +68,17 @@ for log in logs:
         break
 
 placed = discover.get("placed", 0)
+attempts = discover.get("attempts")
+candidate_urls_seen = discover.get("candidateUrlsSeen")
 vision = discover.get("visionChecks", 0)
 yield_rate = discover.get("yield")
 firecrawl_err = discover.get("firecrawlErrors", 0)
+pool_pages_scanned = discover.get("poolPagesScanned")
+pool_rows = discover.get("poolRows")
+eligible_rows = discover.get("eligibleRows")
+skipped_by_backoff = discover.get("skippedByBackoff")
+skipped_exhausted = discover.get("skippedExhausted")
+exhausted_this_run = discover.get("exhaustedThisRun")
 promote_count = promote.get("promoted", 0)
 skipped_unusable_url = promote.get("skippedUnusableUrl", promote.get("skippedInvalidUrl"))
 openai_rec = env.get("openaiQuotaRecommendation")
@@ -78,6 +86,12 @@ discover_rec = env.get("discoverQuotaRecommendation")
 last_summary = d.get("lastRunSummary") or {}
 last_status = last.get("status") or last_summary.get("status")
 errors = last.get("errors") or []
+phases = last.get("phases") or last_summary.get("phases") or []
+failed_phases = [
+    f"{p.get('phase')}={p.get('status')}"
+    for p in phases
+    if isinstance(p, dict) and p.get("status") in ("failed", "partial")
+]
 discover_stop_reason = discover.get("stopReason", discover.get("_stopReason"))
 discover_run_at = discover.get("runAt", discover.get("_timestamp"))
 promote_status = promote.get("status", promote.get("_status"))
@@ -136,8 +150,28 @@ if (missing or 0) > 0:
         alerts.append(
             f"Latest discover run is stale ({discover_age_hours:.1f}h old; threshold {stale_discover_hours:.0f}h)"
         )
-if last_status and last_status != "ok":
-    alerts.append(f"Last orchestrator status: {last_status}")
+    if placed == 0 and attempts == 0:
+        alerts.append("Latest discover placed 0 images and made 0 attempts while images are still missing")
+    elif placed == 0 and attempts is None and vision == 0 and yield_rate is None:
+        alerts.append("Latest discover placed 0 images and has no attempt diagnostics while images are still missing")
+try:
+    stale_running_hours = float(os.environ.get("SAKESCAN_STALE_RUNNING_HOURS", "2"))
+except ValueError:
+    stale_running_hours = 2.0
+run_started = last.get("startedAt") or last_summary.get("startedAt") or last.get("timestamp") or last_summary.get("timestamp")
+running_age_hours = age_hours(run_started, as_of) if last_status == "running" else None
+# A currently running orchestrator is expected when this weekly health check
+# overlaps the 13:00 UTC job. Only treat it as unhealthy if it looks stuck.
+if last_status == "running":
+    if running_age_hours is None:
+        alerts.append("Last orchestrator status: running (missing startedAt)")
+    elif running_age_hours > stale_running_hours:
+        alerts.append(
+            f"Last orchestrator status: running for {running_age_hours:.1f}h (possible stuck lock; threshold {stale_running_hours:.0f}h)"
+        )
+elif last_status and last_status != "ok":
+    suffix = f" ({', '.join(failed_phases)})" if failed_phases else ""
+    alerts.append(f"Last orchestrator status: {last_status}{suffix}")
 if errors:
     alerts.append(f"Last run errors: {errors}")
 
@@ -155,10 +189,18 @@ out = {
     "lowYieldStreak": streak,
     "recentYields": yields[-5:],
     "latestDiscover": {
+        "attempts": attempts,
         "placed": placed,
+        "candidateUrlsSeen": candidate_urls_seen,
         "visionChecks": vision,
         "yield": yield_rate,
         "firecrawlErrors": firecrawl_err,
+        "poolPagesScanned": pool_pages_scanned,
+        "poolRows": pool_rows,
+        "eligibleRows": eligible_rows,
+        "skippedByBackoff": skipped_by_backoff,
+        "skippedExhausted": skipped_exhausted,
+        "exhaustedThisRun": exhausted_this_run,
         "stopReason": discover_stop_reason,
         "runAt": discover_run_at,
         "ageHours": round(discover_age_hours, 1) if discover_age_hours is not None else None,
@@ -172,7 +214,15 @@ out = {
         "runAt": promote_run_at,
         "ageHours": round(promote_age_hours, 1) if promote_age_hours is not None else None,
     },
-    "lastRunSummary": last_summary,
+    "lastRunSummary": {k: v for k, v in last_summary.items() if k != "phases"},
+    "orchestratorInProgress": last_status == "running"
+    and running_age_hours is not None
+    and running_age_hours <= stale_running_hours,
+    "phases": [
+        {"phase": p.get("phase"), "status": p.get("status"), "durationMs": p.get("durationMs")}
+        for p in phases
+        if isinstance(p, dict)
+    ],
     "skipFlags": skip,
     "environmentalBackoffCleared": backoff_cleared,
     "openaiQuotaRecommendation": openai_rec,

@@ -10,6 +10,7 @@ export type EmbedBatchResult = {
   candidates: number;
   embedded: number;
   failed: number;
+  skippedDuplicateHash: number;
   quotaExceeded: boolean;
   coverage: { withImage: number; embedded: number; coverage: number };
   errors: string[];
@@ -52,20 +53,25 @@ export async function embedSakeImagesBatch(
 
   let embedded = 0;
   let failed = 0;
+  let skippedDuplicateHash = 0;
   const errors: string[] = [];
   let quotaExceeded = false;
 
   for (const row of todo) {
     if (!row.image_url) continue;
     try {
-      await embedSakeCatalogImage(supabase, openaiApiKey, {
+      const result = await embedSakeCatalogImage(supabase, openaiApiKey, {
         id: row.id,
         name: row.name,
         name_japanese: row.name_japanese,
         brewery: row.brewery,
         image_url: row.image_url,
       });
-      embedded++;
+      if (result.skippedDuplicateHash) {
+        skippedDuplicateHash++;
+      } else {
+        embedded++;
+      }
       await sleep(80);
     } catch (e) {
       if (isOpenAIQuotaError(e)) {
@@ -89,6 +95,7 @@ export async function embedSakeImagesBatch(
     candidates: todo.length,
     embedded,
     failed,
+    skippedDuplicateHash,
     quotaExceeded,
     coverage,
     errors,
