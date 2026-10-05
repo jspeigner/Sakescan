@@ -47,6 +47,28 @@ export function isExhaustedReason(reason: string | null | undefined): boolean {
   return reason === EXHAUSTED_REASON || reason.startsWith(`${EXHAUSTED_REASON}:`);
 }
 
+/**
+ * Payload used when operators force-release exhausted:* holds so discover can
+ * retry missing images. Leaves non-exhausted backoff rows untouched.
+ *
+ * Clears the hold timestamp + exhausted reason and resets attempt_count so the
+ * next failure starts a fresh backoff ladder (quota/time-budget backoff still
+ * applies when those limits are hit).
+ */
+export function exhaustedHoldReleasePayload(nowIso = new Date().toISOString()): {
+  next_retry_at: null;
+  last_failure_reason: null;
+  attempt_count: number;
+  updated_at: string;
+} {
+  return {
+    next_retry_at: null,
+    last_failure_reason: null,
+    attempt_count: 0,
+    updated_at: nowIso,
+  };
+}
+
 export function isQuotaOutageFailure(reason: string | null | undefined): boolean {
   if (!reason) return false;
   const lower = reason.toLowerCase();

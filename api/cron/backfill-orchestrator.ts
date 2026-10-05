@@ -22,7 +22,11 @@ import { isFirecrawlBypassActive } from './lib/sakeImageDiscovery.js';
 import { invokeProcessImages } from './lib/invokeProcessImages.js';
 import { requireCronOrAdmin } from '../lib/requireCronOrAdmin.js';
 import { cronBearerMatches } from '../lib/cronAuth.js';
-import { DISCOVER_ROW_CAP_DEFAULT, discoverRowCapForRun } from './lib/discoverPolicy.js';
+import {
+  DISCOVER_ROW_CAP_DEFAULT,
+  discoverRowCapForRun,
+  exhaustedHoldReleasePayload,
+} from './lib/discoverPolicy.js';
 
 const RUN_BUDGET_MS = 180_000;
 const DISCOVER_BUDGET_RESERVE_MS = 8_000;
@@ -118,6 +122,49 @@ async function resetEnvironmentalBackoffOnStartup(
     if (!error && data) cleared += data.length;
   }
   return cleared;
+}
+
+/**
+ * One-shot operator action: release exhausted:* discover holds so missing-image
+ * rows become eligible again. Does NOT clear ordinary backoff (quota / time
+ * budget / ladder waits) — those keep protecting rate limits.
+ */
+async function releaseExhaustedDiscoverHolds(
+  supabase: ReturnType<typeof createClient>,
+  options?: { pageSize?: number; maxPages?: number }
+): Promise<number> {
+  const pageSize = Math.min(Math.max(options?.pageSize ?? 500, 1), 1000);
+  const maxPages = Math.min(Math.max(options?.maxPages ?? 40, 1), 100);
+  const payload = exhaustedHoldReleasePayload();
+  let cleared = 0;
+
+  for (let page = 0; page < maxPages; page++) {
+    const { data, error } = await supabase
+      .from('sake_image_attempts')
+      .update(payload)
+      .or('last_failure_reason.eq.exhausted,last_failure_reason.like.exhausted:%')
+      .select('sake_id')
+      .limit(pageSize);
+    if (error) throw new Error(error.message);
+    const n = data?.length ?? 0;
+    cleared += n;
+    if (n < pageSize) break;
+  }
+
+  return cleared;
+}
+
+function wantsReleaseExhaustedHolds(req: VercelRequest): boolean {
+  const q = req.query as Record<string, string | string[] | undefined>;
+  const raw = q.releaseExhaustedHolds;
+  const fromQuery = Array.isArray(raw) ? raw[0] : raw;
+  if (fromQuery === '1' || fromQuery === 'true') return true;
+  const body = req.body as { releaseExhaustedHolds?: unknown } | undefined;
+  return (
+    body?.releaseExhaustedHolds === true ||
+    body?.releaseExhaustedHolds === 1 ||
+    body?.releaseExhaustedHolds === '1'
+  );
 }
 
 type PhaseResult = {
@@ -689,6 +736,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const phases: PhaseResult[] = [];
   const runErrors: string[] = [];
+
+  let exhaustedHoldsReleased = 0;
+  if (wantsReleaseExhaustedHolds(req)) {
+    try {
+      exhaustedHoldsReleased = await releaseExhaustedDiscoverHolds(supabase);
+      console.log(
+        `[backfill-orchestrator] released exhausted discover holds for ${exhaustedHoldsReleased} rows`
+      );
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn(`[backfill-orchestrator] exhausted hold release failed: ${msg}`);
+      runErrors.push(`exhaustedHoldRelease: ${msg.slice(0, 120)}`);
+    }
+  }
+
   let discoverHealth = await getBackfillState<DiscoverHealthState>(supabase, DISCOVER_HEALTH_KEY, {
     yields: [],
     lowYieldStreak: 0,
@@ -1101,6 +1163,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     adaptiveDiscover,
     prioritizeDiscover,
     environmentalBackoffCleared,
+    exhaustedHoldsReleased,
     discoverHealth,
     latestDiscover: latestDiscoverSnapshot,
     skipFlags,
@@ -1149,6 +1212,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     adaptiveDiscover,
     prioritizeDiscover,
     environmentalBackoffCleared,
+    exhaustedHoldsReleased,
     discoverHealth,
     skipFlags,
     firecrawlBypassActive: isFirecrawlBypassActive(),
