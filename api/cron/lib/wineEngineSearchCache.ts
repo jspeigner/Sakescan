@@ -42,14 +42,35 @@ function toResponse(cached: CachedWineEngineSearch): WineEngineResponse<WineEngi
 }
 
 /**
- * Latest *successful* live search for this image hash (unpaid cache).
- * Failures must not be cached — a transient TinEye/API outage would otherwise
- * permanently short-circuit identify/discover for that image.
+ * Pure helper: only successful live searches *with at least one match* are reusable.
+ * - `fail` / errors must not poison the cache (transient TinEye outages).
+ * - `ok` with zero matches must not poison either — the WineEngine collection grows
+ *   via sync, so an early empty search would otherwise permanently false-negative
+ *   identify for that image hash.
+ */
+export function isReusableWineEngineCacheRow(row: {
+  status?: string | null;
+  match_count?: number | null;
+  raw_result?: unknown;
+}): boolean {
+  if (row.status !== 'ok') return false;
+  const matches = Array.isArray(row.raw_result) ? row.raw_result : [];
+  const count =
+    typeof row.match_count === 'number' && Number.isFinite(row.match_count)
+      ? row.match_count
+      : matches.length;
+  return count > 0 || matches.length > 0;
+}
+
+/**
+ * Latest reusable live search for this image hash (unpaid cache).
+ * Skips failures and empty-ok rows so identify can retry as the collection grows.
  */
 export async function getCachedSearch(
   supabase: SupabaseClient,
   querySha256: string
 ): Promise<CachedWineEngineSearch | null> {
+  // Prefer a DB-side filter so empty-ok / fail rows do not hide older useful hits.
   const { data, error } = await supabase
     .from('wineengine_search_log')
     .select(
@@ -58,11 +79,13 @@ export async function getCachedSearch(
     .eq('query_sha256', querySha256)
     .eq('cache_hit', false)
     .eq('status', 'ok')
+    .gt('match_count', 0)
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle();
 
   if (error || !data) return null;
+  if (!isReusableWineEngineCacheRow(data)) return null;
 
   const matches = Array.isArray(data.raw_result) ? (data.raw_result as WineEngineMatch[]) : [];
   return {
@@ -75,11 +98,6 @@ export async function getCachedSearch(
     matches,
     cacheHit: true,
   };
-}
-
-/** Pure helper for tests: only ok live rows are reusable cache hits. */
-export function isReusableWineEngineCacheStatus(status: string | null | undefined): boolean {
-  return status === 'ok';
 }
 
 export function cachedSearchToWineEngineResponse(
