@@ -2,9 +2,12 @@ import { describe, expect, test } from 'bun:test';
 import {
   catalogImageReplaceFilter,
   placeCatalogImageIfStronger,
+  provenanceForAdmin,
   provenanceForTrustedRetailer,
   provenanceForUserScan,
   provenanceForWebDiscover,
+  sakeImageClearPayload,
+  sakeImageUpdatePayload,
   shouldReplaceImage,
 } from './imageProvenance.ts';
 
