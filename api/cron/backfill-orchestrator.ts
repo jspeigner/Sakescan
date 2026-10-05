@@ -3,7 +3,6 @@ import { createClient } from '@supabase/supabase-js';
 import {
   getBackfillState,
   logBackfillRun,
-  recordDiscoverYield,
   setBackfillState,
   shouldUseAdaptiveDiscover,
   type DiscoverHealthState,
@@ -13,9 +12,17 @@ import { enrichSakeMetadataBatch } from './lib/sakeMetadataEnrich.js';
 import { enrichSakeSpecsBatch } from './lib/sakeSpecEnrich.js';
 import { promoteScanImagesBatch } from './lib/promoteScanImages.js';
 import { discoverBreweryImagesBatch } from './lib/discoverBreweryImages.js';
+import { runWineEngineSyncBatch } from './lib/wineEngineSyncBatch.js';
+import { getWineEngineConfig } from './lib/wineEngine.js';
+import { getWineEngineQuota } from './lib/wineEngineQuota.js';
+import { getWineEngineCacheStats } from './lib/wineEngineSearchCache.js';
+import { getEmbeddingCoverage } from './lib/sakeImageEmbed.js';
+import { embedSakeImagesBatch } from './lib/embedSakeImagesBatch.js';
 import { isFirecrawlBypassActive } from './lib/sakeImageDiscovery.js';
-import processImagesHandler from './process-images.js';
+import { invokeProcessImages } from './lib/invokeProcessImages.js';
 import { requireCronOrAdmin } from '../lib/requireCronOrAdmin.js';
+import { cronBearerMatches } from '../lib/cronAuth.js';
+import { DISCOVER_ROW_CAP_DEFAULT, discoverRowCapForRun } from './lib/discoverPolicy.js';
 
 const RUN_BUDGET_MS = 180_000;
 const DISCOVER_BUDGET_RESERVE_MS = 8_000;
@@ -87,7 +94,7 @@ async function resetEnvironmentalBackoffOnStartup(
   supabase: ReturnType<typeof createClient>
 ): Promise<number> {
   const now = new Date().toISOString();
-  const patterns = ['openai', 'quota', 'time_budget'];
+  const patterns = ['openai_quota', 'openai vision http 429', 'firecrawl_quota'];
   let cleared = 0;
   for (const pattern of patterns) {
     const { data, error } = await supabase
@@ -98,14 +105,18 @@ async function resetEnvironmentalBackoffOnStartup(
       .select('sake_id');
     if (!error && data) cleared += data.length;
   }
-  // Also clear WineEngine false-reject backoffs that starved discover.
-  const { data: weData, error: weErr } = await supabase
-    .from('sake_image_attempts')
-    .update({ next_retry_at: null, updated_at: now })
-    .eq('last_failure_reason', 'wineengine_matched_other_sake')
-    .gt('next_retry_at', now)
-    .select('sake_id');
-  if (!weErr && weData) cleared += weData.length;
+
+  // Accelerated discover used to park rows as exhausted:vision_cap_reached.
+  // discoverSkipReason treats exhausted:* as permanent, so clear the reason
+  // (not just next_retry_at) to make those rows eligible again.
+  {
+    const { data, error } = await supabase
+      .from('sake_image_attempts')
+      .update({ next_retry_at: null, last_failure_reason: null, updated_at: now })
+      .ilike('last_failure_reason', '%vision_cap%')
+      .select('sake_id');
+    if (!error && data) cleared += data.length;
+  }
   return cleared;
 }
 
@@ -117,64 +128,128 @@ type PhaseResult = {
   errors?: string[];
 };
 
-/** Run process-images in-process (avoids Vercel Deployment Protection on self-fetch). */
-async function invokeProcessImages(
-  query: Record<string, string>,
-  parentReq: VercelRequest
-): Promise<{ ok: boolean; json?: Record<string, unknown>; error?: string }> {
-  let statusCode = 200;
-  let json: Record<string, unknown> = {};
-  let headersSent = false;
+type OrchestratorPhaseLog = {
+  phase?: string;
+  status?: string;
+  stats?: Record<string, unknown>;
+};
 
-  const chain = {
-    status(code: number) {
-      statusCode = code;
-      return chain;
-    },
-    json(data: unknown) {
-      json =
-        data && typeof data === 'object' && !Array.isArray(data)
-          ? (data as Record<string, unknown>)
-          : { data };
-      headersSent = true;
-      return chain;
-    },
-  };
+type OrchestratorRunLog = {
+  job?: string;
+  status?: string;
+  stats?: Record<string, unknown>;
+  created_at?: string;
+};
 
-  const req = {
-    method: 'GET',
-    query: { chunk: '1', ...query },
-    headers: {
-      authorization: parentReq.headers.authorization,
-    },
-  } as VercelRequest;
+type DiscoverSummary = {
+  attempts: number | null;
+  placed: number;
+  candidateUrlsSeen: number | null;
+  visionChecks: number;
+  yield: number | null;
+  firecrawlErrors: number;
+  poolPagesScanned?: number | null;
+  poolRows?: number | null;
+  eligibleRows?: number | null;
+  skippedByBackoff?: number | null;
+  skippedExhausted?: number | null;
+  exhaustedThisRun?: number | null;
+  stopReason: unknown;
+  runAt: string | null;
+};
 
-  const res = {
-    ...chain,
-    get headersSent() {
-      return headersSent;
-    },
-    set headersSent(value: boolean) {
-      headersSent = value;
-    },
-  } as VercelResponse;
+type PromoteSummary = {
+  promoted: number;
+  attempted: unknown;
+  skippedExisting: unknown;
+  skippedUnusableUrl: unknown;
+  status: string | null;
+  runAt: string | null;
+};
 
-  try {
-    await processImagesHandler(req, res);
-    if (statusCode >= 400) {
-      const errMsg =
-        typeof json.error === 'string'
-          ? json.error
-          : typeof json.details === 'string'
-            ? json.details
-            : `HTTP ${statusCode}`;
-      return { ok: false, json, error: errMsg };
-    }
-    return { ok: true, json };
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    return { ok: false, error: msg };
+function phasesFromLog(log: OrchestratorRunLog | null | undefined): OrchestratorPhaseLog[] {
+  const phases = log?.stats?.phases;
+  return Array.isArray(phases) ? (phases as OrchestratorPhaseLog[]) : [];
+}
+
+type PublicPhaseSummary = { phase: string; status: string; durationMs: number | null };
+
+/** Phase name/status/duration for the unauthenticated stats view (no error text). */
+export function publicPhaseSummaries(phases: unknown): PublicPhaseSummary[] {
+  if (!Array.isArray(phases)) return [];
+  const out: PublicPhaseSummary[] = [];
+  for (const p of phases) {
+    if (!p || typeof p !== 'object') continue;
+    const { phase, status, durationMs } = p as Record<string, unknown>;
+    if (typeof phase !== 'string' || typeof status !== 'string') continue;
+    out.push({ phase, status, durationMs: typeof durationMs === 'number' ? durationMs : null });
   }
+  return out;
+}
+
+function latestDiscoverSummary(logs: OrchestratorRunLog[]): DiscoverSummary {
+  for (const log of logs) {
+    if (log.job !== 'backfill-orchestrator' && log.job !== 'images-discover') continue;
+    const phase = phasesFromLog(log).find((p) => p.phase === 'images-discover');
+    if (!phase) continue;
+
+    const stats = phase.stats ?? {};
+    const health = (stats.discoverHealth as Record<string, unknown> | undefined) ?? {};
+    return {
+      attempts: typeof health.attempts === 'number' ? health.attempts : null,
+      placed: typeof health.placed === 'number' ? health.placed : 0,
+      candidateUrlsSeen: typeof health.candidateUrlsSeen === 'number' ? health.candidateUrlsSeen : null,
+      visionChecks: typeof health.visionChecks === 'number' ? health.visionChecks : 0,
+      yield: typeof health.yield === 'number' ? health.yield : null,
+      firecrawlErrors: typeof health.firecrawlErrors === 'number' ? health.firecrawlErrors : 0,
+      poolPagesScanned: typeof health.poolPagesScanned === 'number' ? health.poolPagesScanned : null,
+      poolRows: typeof health.poolRows === 'number' ? health.poolRows : null,
+      eligibleRows: typeof health.eligibleRows === 'number' ? health.eligibleRows : null,
+      skippedByBackoff: typeof health.skippedByBackoff === 'number' ? health.skippedByBackoff : null,
+      skippedExhausted: typeof health.skippedExhausted === 'number' ? health.skippedExhausted : null,
+      exhaustedThisRun: typeof health.exhaustedThisRun === 'number' ? health.exhaustedThisRun : null,
+      stopReason: stats.stopReason ?? null,
+      runAt: log.created_at ?? null,
+    };
+  }
+
+  return {
+    attempts: null,
+    placed: 0,
+    candidateUrlsSeen: null,
+    visionChecks: 0,
+    yield: null,
+    firecrawlErrors: 0,
+    stopReason: null,
+    runAt: null,
+  };
+}
+
+function latestPromoteSummary(logs: OrchestratorRunLog[]): PromoteSummary {
+  for (const log of logs) {
+    if (log.job !== 'backfill-orchestrator') continue;
+    const phase = phasesFromLog(log).find((p) => p.phase === 'promote-scan-images');
+    if (!phase) continue;
+
+    const stats = phase.stats ?? {};
+    return {
+      promoted: typeof stats.promoted === 'number' ? stats.promoted : 0,
+      attempted: stats.attempted ?? null,
+      skippedExisting: stats.skippedExisting ?? null,
+      skippedUnusableUrl: stats.skippedUnusableUrl ?? stats.skippedInvalidUrl ?? null,
+      status: phase.status ?? null,
+      runAt: log.created_at ?? null,
+    };
+  }
+
+  return {
+    promoted: 0,
+    attempted: null,
+    skippedExisting: null,
+    skippedUnusableUrl: null,
+    status: null,
+    runAt: null,
+  };
 }
 
 async function countBackfillGaps(supabase: ReturnType<typeof createClient>): Promise<{
@@ -235,15 +310,221 @@ async function countBackfillGaps(supabase: ReturnType<typeof createClient>): Pro
   };
 }
 
+async function runImagesDiscoverPhase(params: {
+  req: VercelRequest;
+  skipFlags: ReturnType<typeof readSkipFlags>;
+  shouldStop: () => boolean;
+  firecrawlKey?: string;
+  openaiKey?: string;
+  prevDiscoverOpenaiQuotaExceeded: boolean;
+  deadline: number;
+  prioritizeDiscover: boolean;
+  adaptiveDiscover: boolean;
+  discoverHealth: DiscoverHealthState;
+  supabase: ReturnType<typeof createClient>;
+  environmentalBackoffCleared: number;
+}): Promise<{
+  phase: PhaseResult;
+  discoverHealth: DiscoverHealthState;
+  openaiQuotaRecommendation?: string;
+  errors: string[];
+  latestDiscover: DiscoverSummary;
+}> {
+  const {
+    req,
+    skipFlags,
+    shouldStop,
+    firecrawlKey,
+    openaiKey,
+    prevDiscoverOpenaiQuotaExceeded,
+    deadline,
+    prioritizeDiscover,
+    adaptiveDiscover,
+    environmentalBackoffCleared,
+  } = params;
+  let discoverHealth = params.discoverHealth;
+  const emptyDiscover: DiscoverSummary = {
+    attempts: null,
+    placed: 0,
+    candidateUrlsSeen: null,
+    visionChecks: 0,
+    yield: null,
+    firecrawlErrors: 0,
+    stopReason: null,
+    runAt: new Date().toISOString(),
+  };
+
+  if (skipFlags.discover) {
+    const skipReason = skipFlags.firecrawlQuotaExceeded
+      ? 'FIRECRAWL_QUOTA_EXCEEDED=1'
+      : 'BACKFILL_SKIP_DISCOVER=1';
+    return {
+      phase: {
+        phase: 'images-discover',
+        status: 'skipped',
+        durationMs: 0,
+        errors: [skipReason],
+      },
+      discoverHealth,
+      errors: [],
+      latestDiscover: { ...emptyDiscover, stopReason: skipReason },
+    };
+  }
+
+  if (!firecrawlKey || !openaiKey) {
+    return {
+      phase: {
+        phase: 'images-discover',
+        status: 'skipped',
+        durationMs: 0,
+        errors: ['FIRECRAWL_API_KEY and OPENAI_API_KEY required'],
+      },
+      discoverHealth,
+      errors: [],
+      latestDiscover: { ...emptyDiscover, stopReason: 'missing_api_keys' },
+    };
+  }
+
+  if (shouldStop()) {
+    return {
+      phase: {
+        phase: 'images-discover',
+        status: 'skipped',
+        durationMs: 0,
+        errors: ['time_budget_reached before discover'],
+      },
+      discoverHealth,
+      errors: [],
+      latestDiscover: { ...emptyDiscover, stopReason: 'time_budget_reached' },
+    };
+  }
+
+  const t0 = Date.now();
+  const openaiRecovered = !prevDiscoverOpenaiQuotaExceeded;
+  const remainingForDiscover = Math.max(0, deadline - Date.now() - DISCOVER_BUDGET_RESERVE_MS);
+  const discoverBudgetMs = Math.min(
+    110_000,
+    Math.max(prioritizeDiscover ? 70_000 : 45_000, remainingForDiscover)
+  );
+  const inv = await invokeProcessImages(
+    {
+      mode: 'discover',
+      search: 'trusted-first',
+      speed: openaiRecovered ? 'accelerated' : 'normal',
+      budgetMs: String(discoverBudgetMs),
+      rowCap: String(
+        discoverRowCapForRun(
+          prioritizeDiscover ? DISCOVER_ROW_CAP_DEFAULT : 10,
+          params.discoverHealth.yields
+        )
+      ),
+    },
+    req
+  );
+  const discoverJson = inv.json;
+  const health = discoverJson?.discoverHealth as
+    | {
+        attempts?: number;
+        placed?: number;
+        yield?: number;
+        firecrawlErrors?: number;
+        visionChecks?: number;
+        candidateUrlsSeen?: number;
+        poolPagesScanned?: number;
+        poolRows?: number;
+        eligibleRows?: number;
+        skippedByBackoff?: number;
+        skippedExhausted?: number;
+        exhaustedThisRun?: number;
+        openaiVisionQuotaExceeded?: boolean;
+      }
+    | undefined;
+  const attempts =
+    health?.attempts ??
+    (discoverJson?.diagnostics as { discover?: { attemptedRows?: number } })?.discover?.attemptedRows ??
+    0;
+  const placed =
+    health?.placed ??
+    (discoverJson?.sakeDiscovered as number | undefined) ??
+    (discoverJson?.diagnostics as { discover?: { placedRows?: number } })?.discover?.placedRows ??
+    0;
+  const errors: string[] = [];
+  try {
+    discoverHealth = await getBackfillState<DiscoverHealthState>(
+      params.supabase,
+      DISCOVER_HEALTH_KEY,
+      discoverHealth
+    );
+  } catch {
+    /* process-images already persisted yield when possible */
+  }
+
+  const discoverErrors = [
+    ...(inv.error ? [inv.error] : []),
+    ...(((discoverJson?.errors as string[] | undefined) ?? []).slice(0, 4)),
+  ];
+  if (inv.error) errors.push(`discover: ${inv.error}`);
+
+  const openaiQuotaRecommendation =
+    discoverJson?.openaiVisionQuotaExceeded === true || health?.openaiVisionQuotaExceeded === true
+      ? 'OpenAI vision quota exceeded during discover. Restore OpenAI billing/credits; trusted retailer images can still be placed without vision.'
+      : undefined;
+
+  return {
+    phase: {
+      phase: 'images-discover',
+      status: inv.ok ? 'ok' : 'failed',
+      durationMs: Date.now() - t0,
+      stats: {
+        adaptiveDiscover,
+        lowYieldStreak: discoverHealth.lowYieldStreak,
+        sakeDiscovered: discoverJson?.sakeDiscovered,
+        discoverHealth: health,
+        environmentalBackoffCleared,
+        openaiVisionQuotaExceeded:
+          discoverJson?.openaiVisionQuotaExceeded === true || health?.openaiVisionQuotaExceeded === true,
+        firecrawlBypassActive: discoverJson?.firecrawlBypassActive,
+        stopReason: discoverJson?.stopReason,
+        discoverBudgetMs,
+        chunkBudgetMs: discoverJson?.chunkBudgetMs,
+        attemptHistoryReadErrors: (
+          discoverJson?.diagnostics as { discover?: { attemptHistoryReadErrors?: number } } | undefined
+        )?.discover?.attemptHistoryReadErrors,
+      },
+      errors: discoverErrors.length ? discoverErrors : undefined,
+    },
+    discoverHealth,
+    openaiQuotaRecommendation,
+    errors,
+    latestDiscover: {
+      attempts: typeof attempts === 'number' ? attempts : null,
+      placed: typeof placed === 'number' ? placed : 0,
+      candidateUrlsSeen: typeof health?.candidateUrlsSeen === 'number' ? health.candidateUrlsSeen : null,
+      visionChecks: typeof health?.visionChecks === 'number' ? health.visionChecks : 0,
+      yield: typeof health?.yield === 'number' ? health.yield : null,
+      firecrawlErrors: typeof health?.firecrawlErrors === 'number' ? health.firecrawlErrors : 0,
+      poolPagesScanned: typeof health?.poolPagesScanned === 'number' ? health.poolPagesScanned : null,
+      poolRows: typeof health?.poolRows === 'number' ? health.poolRows : null,
+      eligibleRows: typeof health?.eligibleRows === 'number' ? health.eligibleRows : null,
+      skippedByBackoff: typeof health?.skippedByBackoff === 'number' ? health.skippedByBackoff : null,
+      skippedExhausted: typeof health?.skippedExhausted === 'number' ? health.skippedExhausted : null,
+      exhaustedThisRun: typeof health?.exhaustedThisRun === 'number' ? health.exhaustedThisRun : null,
+      stopReason: discoverJson?.stopReason ?? null,
+      runAt: new Date().toISOString(),
+    },
+  };
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'GET' && req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  if (!(await requireCronOrAdmin(req, res))) return;
-
   const q = req.query as Record<string, string | string[] | undefined>;
   const statsOnly = req.method === 'GET' && q.stats === '1';
+  const hasCronAuth = cronBearerMatches(req.headers, process.env.CRON_SECRET);
+
+  if (!statsOnly && !(await requireCronOrAdmin(req, res))) return;
 
   const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
   const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -271,10 +552,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const { data: recentLogs } = await supabase
       .from('backfill_run_log')
       .select('job, status, stats, created_at')
+      .in('job', ['backfill-orchestrator', 'images-discover'])
       .order('created_at', { ascending: false })
-      .limit(8);
+      .limit(16);
+    const orchestratorLogs = (recentLogs ?? []) as OrchestratorRunLog[];
+    const lastRunDiscover =
+      lastRun.latestDiscover && typeof lastRun.latestDiscover === 'object'
+        ? (lastRun.latestDiscover as DiscoverSummary)
+        : null;
 
-    const lastOrchestratorLog = (recentLogs ?? []).find((l) => l.job === 'backfill-orchestrator');
+    const lastOrchestratorLog = orchestratorLogs.find((l) => l.job === 'backfill-orchestrator');
     const lastDiscoverFirecrawlErrors =
       firecrawlErrorsFromOrchestratorLog(lastOrchestratorLog) || firecrawlErrorsFromLastRun(lastRun);
     const lastDiscoverOpenaiQuotaExceeded =
@@ -287,17 +574,30 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       ? 'OpenAI vision quota exceeded on the last discover run. Restore OpenAI billing/credits; trusted retailer images (Sakura/Umami/Sake Times) can still be placed without vision.'
       : undefined;
 
-    return res.status(200).json({
+    const latestDiscoverFromLogs = latestDiscoverSummary(orchestratorLogs);
+    const latestDiscover =
+      lastRunDiscover?.runAt &&
+      (!latestDiscoverFromLogs.runAt || lastRunDiscover.runAt > latestDiscoverFromLogs.runAt)
+        ? lastRunDiscover
+        : latestDiscoverFromLogs;
+
+    const publicStats = {
       success: true,
       statsOnly: true,
       gaps,
       discoverHealth,
-      lastRun,
-      recentLogs: recentLogs ?? [],
+      latestDiscover,
+      latestPromote: latestPromoteSummary(orchestratorLogs),
+      lastRunSummary: {
+        status: typeof lastRun.status === 'string' ? lastRun.status : null,
+        startedAt: typeof lastRun.startedAt === 'string' ? lastRun.startedAt : null,
+        timestamp: typeof lastRun.timestamp === 'string' ? lastRun.timestamp : null,
+        durationMs: typeof lastRun.durationMs === 'number' ? lastRun.durationMs : null,
+        prioritizeDiscover: lastRun.prioritizeDiscover === true,
+        // Phase names + statuses only; error strings stay behind cron auth.
+        phases: publicPhaseSummaries(lastRun.phases),
+      },
       env: {
-        firecrawl: Boolean(firecrawlKey),
-        openai: Boolean(openaiKey),
-        wineEngine: false,
         skipFlags,
         firecrawlBypassActive: isFirecrawlBypassActive(),
         lastDiscoverFirecrawlErrors,
@@ -306,6 +606,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         openaiQuotaRecommendation,
       },
       timestamp: new Date().toISOString(),
+    };
+
+    return res.status(200).json({
+      ...publicStats,
+      ...(hasCronAuth
+        ? {
+            lastRun,
+            recentLogs: recentLogs ?? [],
+            env: {
+              ...publicStats.env,
+              firecrawl: Boolean(firecrawlKey),
+              openai: Boolean(openaiKey),
+              wineEngine: Boolean(getWineEngineConfig()),
+              wineEngineQuota: getWineEngineConfig()
+                ? await getWineEngineQuota(supabase).catch(() => null)
+                : null,
+              wineEngineCache: await getWineEngineCacheStats(supabase, 24).catch(() => null),
+              embeddingCoverage: await getEmbeddingCoverage(supabase).catch(() => null),
+            },
+          }
+        : {}),
     });
   }
 
@@ -355,6 +676,69 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     openaiQuotaRecommendation =
       'Previous discover run hit OpenAI vision quota. Restore OpenAI billing/credits; trusted retailer images can still be placed without vision.';
     console.warn(`[backfill-orchestrator] ${openaiQuotaRecommendation}`);
+  }
+
+  let latestDiscoverSnapshot: DiscoverSummary | null = null;
+  const applyDiscover = async () => {
+    if (phases.some((p) => p.phase === 'images-discover')) return;
+    const result = await runImagesDiscoverPhase({
+      req,
+      skipFlags,
+      shouldStop,
+      firecrawlKey,
+      openaiKey,
+      prevDiscoverOpenaiQuotaExceeded,
+      deadline,
+      prioritizeDiscover,
+      adaptiveDiscover,
+      discoverHealth,
+      supabase,
+      environmentalBackoffCleared,
+    });
+    phases.push(result.phase);
+    discoverHealth = result.discoverHealth;
+    runErrors.push(...result.errors);
+    latestDiscoverSnapshot = result.latestDiscover;
+    if (result.openaiQuotaRecommendation) {
+      openaiQuotaRecommendation = result.openaiQuotaRecommendation;
+    }
+    try {
+      await setBackfillState(supabase, LAST_RUN_KEY, {
+        job: 'backfill-orchestrator',
+        status: 'running',
+        startedAt: new Date(runStarted).toISOString(),
+        timestamp: new Date().toISOString(),
+        prioritizeDiscover,
+        adaptiveDiscover,
+        latestDiscover: result.latestDiscover,
+        skipFlags,
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn(`[backfill-orchestrator] mid-run discover state write failed: ${msg}`);
+    }
+  };
+
+  try {
+    await setBackfillState(supabase, LAST_RUN_KEY, {
+      job: 'backfill-orchestrator',
+      status: 'running',
+      startedAt: new Date(runStarted).toISOString(),
+      timestamp: new Date().toISOString(),
+      prioritizeDiscover,
+      adaptiveDiscover,
+      skipFlags,
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.warn(`[backfill-orchestrator] start heartbeat write failed: ${msg}`);
+  }
+
+  try {
+  // When thousands of images are missing, discover first so catalog fill is not
+  // starved by metadata / WineEngine / embed work (or lost if those phases hang).
+  if (prioritizeDiscover) {
+    await applyDiscover();
   }
 
   // Phase 0: promote matched user scans → catalog (T2) — highest leverage gap fill
@@ -508,98 +892,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
   }
 
-  // Phase 3: image discover (delegated)
-  if (skipFlags.discover) {
-    const skipReason = skipFlags.firecrawlQuotaExceeded
-      ? 'FIRECRAWL_QUOTA_EXCEEDED=1'
-      : 'BACKFILL_SKIP_DISCOVER=1';
-    phases.push({
-      phase: 'images-discover',
-      status: 'skipped',
-      durationMs: 0,
-      errors: [skipReason],
-    });
-  } else if (!shouldStop() && firecrawlKey && openaiKey) {
-    const t0 = Date.now();
-    const openaiRecovered = !prevDiscoverOpenaiQuotaExceeded;
-    const remainingForDiscover = Math.max(0, deadline - Date.now() - DISCOVER_BUDGET_RESERVE_MS);
-    const discoverBudgetMs = Math.min(
-      110_000,
-      Math.max(prioritizeDiscover ? 70_000 : 45_000, remainingForDiscover)
-    );
-    const discoverQuery: Record<string, string> = {
-      mode: 'discover',
-      search: 'trusted-first',
-      speed: openaiRecovered ? 'accelerated' : 'normal',
-      budgetMs: String(discoverBudgetMs),
-      rowCap: prioritizeDiscover ? '28' : openaiRecovered ? '20' : '12',
-    };
-
-    const inv = await invokeProcessImages(discoverQuery, req);
-    const discoverJson = inv.json;
-    const health = discoverJson?.discoverHealth as
-      | { attempts?: number; placed?: number; yield?: number; firecrawlErrors?: number }
-      | undefined;
-    const attempts = health?.attempts ?? (discoverJson?.diagnostics as { discover?: { attemptedRows?: number } })?.discover?.attemptedRows ?? 0;
-    const placed =
-      health?.placed ??
-      (discoverJson?.sakeDiscovered as number | undefined) ??
-      (discoverJson?.diagnostics as { discover?: { placedRows?: number } })?.discover?.placedRows ??
-      0;
-
-    if (typeof attempts === 'number' && attempts > 0) {
-      discoverHealth = recordDiscoverYield(discoverHealth, attempts, placed as number);
-      try {
-        await setBackfillState(supabase, DISCOVER_HEALTH_KEY, discoverHealth);
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        runErrors.push(`discover health: ${msg.slice(0, 120)}`);
-      }
-    }
-
-    const discoverErrors = [
-      ...(inv.error ? [inv.error] : []),
-      ...(((discoverJson?.errors as string[] | undefined) ?? []).slice(0, 4)),
-    ];
-    phases.push({
-      phase: 'images-discover',
-      status: inv.ok ? 'ok' : 'failed',
-      durationMs: Date.now() - t0,
-      stats: {
-        adaptiveDiscover,
-        lowYieldStreak: discoverHealth.lowYieldStreak,
-        sakeDiscovered: discoverJson?.sakeDiscovered,
-        discoverHealth: health,
-        environmentalBackoffCleared,
-        openaiVisionQuotaExceeded:
-          discoverJson?.openaiVisionQuotaExceeded === true ||
-          (health as { openaiVisionQuotaExceeded?: boolean } | undefined)?.openaiVisionQuotaExceeded === true,
-        firecrawlBypassActive: discoverJson?.firecrawlBypassActive,
-        stopReason: discoverJson?.stopReason,
-        discoverBudgetMs,
-        chunkBudgetMs: discoverJson?.chunkBudgetMs,
-        attemptHistoryReadErrors: (
-          discoverJson?.diagnostics as { discover?: { attemptHistoryReadErrors?: number } } | undefined
-        )?.discover?.attemptHistoryReadErrors,
-      },
-      errors: discoverErrors.length ? discoverErrors : undefined,
-    });
-    if (inv.error) runErrors.push(`discover: ${inv.error}`);
-    if (
-      discoverJson?.openaiVisionQuotaExceeded === true ||
-      (health as { openaiVisionQuotaExceeded?: boolean } | undefined)?.openaiVisionQuotaExceeded === true
-    ) {
-      openaiQuotaRecommendation =
-        'OpenAI vision quota exceeded during discover. Restore OpenAI billing/credits; trusted retailer images can still be placed without vision.';
-    }
-  } else if (!firecrawlKey || !openaiKey) {
-    phases.push({
-      phase: 'images-discover',
-      status: 'skipped',
-      durationMs: 0,
-      errors: ['FIRECRAWL_API_KEY and OPENAI_API_KEY required'],
-    });
-  }
+  // Phase 3: image discover (delegated). Runs earlier when the missing-image
+  // backlog is large so later phases cannot starve or hide it.
+  await applyDiscover();
 
   // Phase 4: mirror external URLs
   if (!shouldStop()) {
@@ -619,13 +914,96 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (inv.error) runErrors.push(`mirror: ${inv.error}`);
   }
 
-  // Phase 5: WineEngine sync — disabled (subscription not renewed)
-  phases.push({
-    phase: 'wineengine-sync',
-    status: 'skipped',
-    durationMs: 0,
-    errors: ['WineEngine disabled — subscription not active'],
-  });
+  // Phase 5: WineEngine sync (Starter plan: max 8 image adds/run, monthly soft caps)
+  if (!shouldStop() && getWineEngineConfig() && !envFlag('BACKFILL_SKIP_WINEENGINE')) {
+    const t0 = Date.now();
+    try {
+      const we = await runWineEngineSyncBatch(supabase, supabaseUrl, {
+        batchSize: 8,
+      });
+      phases.push({
+        phase: 'wineengine-sync',
+        status:
+          we.errors.length > 0 && we.processed > 0
+            ? 'partial'
+            : we.errors.length && we.processed === 0
+              ? 'skipped'
+              : we.errors.length
+                ? 'failed'
+                : 'ok',
+        durationMs: Date.now() - t0,
+        stats: {
+          offset: we.offset,
+          processed: we.processed,
+          added: we.added,
+          failed: we.failed,
+          skippedQuota: we.skippedQuota,
+          collectionCount: we.collectionCount,
+          hasMore: we.hasMore,
+          quota: we.quota
+            ? {
+                images: we.quota.state.images,
+                searches: we.quota.state.searches,
+                remainingImagesToday: we.quota.remainingImagesToday,
+                remainingSearchesToday: we.quota.remainingSearchesToday,
+              }
+            : null,
+        },
+        errors: we.errors.length ? we.errors.slice(0, 6) : undefined,
+      });
+      if (we.errors.length && we.added === 0 && we.skippedQuota === 0) {
+        runErrors.push(...we.errors.slice(0, 3));
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      phases.push({ phase: 'wineengine-sync', status: 'failed', durationMs: Date.now() - t0, errors: [msg] });
+      runErrors.push(`wineengine: ${msg.slice(0, 120)}`);
+    }
+  } else {
+    phases.push({
+      phase: 'wineengine-sync',
+      status: 'skipped',
+      durationMs: 0,
+      errors: [
+        envFlag('BACKFILL_SKIP_WINEENGINE')
+          ? 'BACKFILL_SKIP_WINEENGINE is set'
+          : 'WineEngine disabled or credentials missing (set WINEENGINE_USERNAME/PASSWORD; use WINEENGINE_ENABLED=false to pause)',
+      ],
+    });
+  }
+
+  // Phase 5b: local identify embedding backfill (OpenAI vision extract + embeddings)
+  if (!shouldStop() && openaiKey && !envFlag('BACKFILL_SKIP_EMBED')) {
+    const t0 = Date.now();
+    try {
+      const emb = await embedSakeImagesBatch(supabase, openaiKey, { batchSize: 20 });
+      phases.push({
+        phase: 'embed-sake-images',
+        status: emb.quotaExceeded ? 'partial' : emb.errors.length && emb.embedded === 0 ? 'failed' : 'ok',
+        durationMs: Date.now() - t0,
+        stats: {
+          candidates: emb.candidates,
+          embedded: emb.embedded,
+          failed: emb.failed,
+          skippedDuplicateHash: emb.skippedDuplicateHash,
+          quotaExceeded: emb.quotaExceeded,
+          coverage: emb.coverage,
+        },
+        errors: emb.errors.length ? emb.errors.slice(0, 6) : undefined,
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      phases.push({ phase: 'embed-sake-images', status: 'failed', durationMs: Date.now() - t0, errors: [msg] });
+      runErrors.push(`embed: ${msg.slice(0, 120)}`);
+    }
+  } else if (!openaiKey) {
+    phases.push({
+      phase: 'embed-sake-images',
+      status: 'skipped',
+      durationMs: 0,
+      errors: ['OPENAI_API_KEY missing'],
+    });
+  }
 
   // Phase 6: brewery image discover (gallery promote + website og:image)
   if (!shouldStop() && !envFlag('BACKFILL_SKIP_BREWERY_DISCOVER')) {
@@ -650,8 +1028,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       runErrors.push(`brewery-discover: ${msg.slice(0, 120)}`);
     }
   }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    runErrors.push(`orchestrator: ${msg.slice(0, 160)}`);
+    phases.push({
+      phase: 'orchestrator',
+      status: 'failed',
+      durationMs: Date.now() - runStarted,
+      errors: [msg],
+    });
+  }
 
-  const gaps = await countBackfillGaps(supabase);
+  let gaps = initialGaps;
+  try {
+    gaps = await countBackfillGaps(supabase);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    runErrors.push(`gap count: ${msg.slice(0, 120)}`);
+  }
   const durationMs = Date.now() - runStarted;
   const anyFailed = phases.some((p) => p.status === 'failed');
   const anyPartial = phases.some((p) => p.status === 'partial');
@@ -661,10 +1055,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     job: 'backfill-orchestrator',
     status: runStatus,
     durationMs,
+    startedAt: new Date(runStarted).toISOString(),
     adaptiveDiscover,
     prioritizeDiscover,
     environmentalBackoffCleared,
     discoverHealth,
+    latestDiscover: latestDiscoverSnapshot,
     skipFlags,
     firecrawlBypassActive: isFirecrawlBypassActive(),
     discoverQuotaRecommendation,
@@ -722,7 +1118,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       missingImage: gaps.missingImage > 0 ? 'continue discover cron' : 'images caught up',
       missingDescription: gaps.missingDescription > 0 ? 'metadata enrich continues' : 'descriptions caught up',
       externalImages: gaps.externalImages > 0 ? 'mirror continues' : 'mirror caught up',
-      wineEngine: 'disabled — subscription not active',
+      wineEngine: getWineEngineConfig()
+        ? 'Starter plan caps: 5k images / 1k searches per month (soft 4800/900); sync ≤8 adds/run; SHA-256 search cache'
+        : 'disabled — credentials missing or WINEENGINE_ENABLED=false',
+      localIdentify: 'POST /api/identify-sake (hash + embeddings, WineEngine fallback)',
+      embedImages: 'orchestrator phase embed-sake-images (≤20/run)',
       promoteScans: 'runs every orchestrator tick',
       breweryImages: 'discover + daily mirror cron',
     },

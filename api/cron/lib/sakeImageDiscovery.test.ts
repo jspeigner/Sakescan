@@ -1,10 +1,209 @@
 import { describe, expect, test } from 'bun:test';
 import {
+  buildDiscoverCandidateQueue,
+  filterAndRankImages,
+  firecrawlImageResultsToRows,
+  isFirecrawlQuotaError,
   isTrustedImageUrl,
   isTrustedRetailerSource,
+  prefilterDiscoverCandidates,
   shouldClearCatalogUrlAsNonSakeProduct,
+  shouldSkipWebSearchAfterTrustedDirect,
+  shouldSpendVisionOnUntrustedCandidate,
   urlLooksLikeNonSakeProduct,
 } from './sakeImageDiscovery';
+
+describe('isFirecrawlQuotaError', () => {
+  test('treats HTTP 429 rate limits as quota', () => {
+    expect(isFirecrawlQuotaError(429, 'Rate limit exceeded')).toBe(true);
+  });
+
+  test('treats HTTP 402 insufficient credits as quota (Firecrawl Payment Required)', () => {
+    // Regression: discover kept calling Firecrawl after credits ran out because
+    // only 429 / "quota" / "rate limit" flipped firecrawlBypassActive.
+    expect(isFirecrawlQuotaError(402, 'Payment Required: Insufficient credits')).toBe(true);
+    expect(isFirecrawlQuotaError(200, 'Payment Required: Insufficient credits')).toBe(true);
+  });
+
+  test('does not treat unrelated 4xx as quota', () => {
+    expect(isFirecrawlQuotaError(401, 'Unauthorized: Invalid token')).toBe(false);
+    expect(isFirecrawlQuotaError(400, 'Bad Request')).toBe(false);
+  });
+});
+
+describe('firecrawlImageResultsToRows', () => {
+  // Real /v2/search (sources: images) payload for a row discover kept failing on.
+  const payload = [
+    {
+      title: 'Amazon.co.jp: 花の舞 純米酒超辛口 (1800ml) : 食品・飲料・お酒',
+      imageUrl: 'https://m.media-amazon.com/images/I/51BrBi9lPxL.jpg',
+      imageWidth: 1000,
+      imageHeight: 1000,
+      url: 'https://www.amazon.co.jp/dp/B000000',
+      position: 1,
+    },
+    {
+      title: '楽天市場】日本酒 花の舞 超辛口 720ml｜辛口 日本酒 純米酒 : 静岡の地酒 花の舞酒造',
+      imageUrl:
+        'https://tshop.r10s.jp/hananomai/cabinet/junmaishu/chokara/13781503/imgrc0122292984.jpg?fitin=720%3A720',
+      imageWidth: 720,
+      imageHeight: 720,
+      url: 'https://item.rakuten.co.jp/hananomai/x',
+      position: 2,
+    },
+    { title: 'tiny icon', imageUrl: 'https://cdn.example.com/icon.png', imageWidth: 64, imageHeight: 64 },
+    { title: 'private', imageUrl: 'http://10.0.0.5/leak.jpg', imageWidth: 800, imageHeight: 800 },
+    { title: 'no url' },
+  ];
+
+  test('keeps public, non-thumbnail images and carries the listing title', () => {
+    const rows = firecrawlImageResultsToRows(payload, '花の舞 純米酒超辛口 花の舞酒造 nihonshu sake bottle');
+    expect(rows.map((r) => r.url)).toEqual([
+      'https://m.media-amazon.com/images/I/51BrBi9lPxL.jpg',
+      'https://tshop.r10s.jp/hananomai/cabinet/junmaishu/chokara/13781503/imgrc0122292984.jpg?fitin=720%3A720',
+    ]);
+    expect(rows[0]?.title).toContain('花の舞 純米酒超辛口');
+    expect(rows.every((r) => r.source === 'Google Images')).toBe(true);
+  });
+
+  test('results survive the discover relevance gates for the matching sake', () => {
+    const name = '花の舞 純米酒超辛口';
+    const brewery = '花の舞酒造';
+    const rows = firecrawlImageResultsToRows(payload, `${name} ${brewery} nihonshu sake bottle`);
+    const ranked = filterAndRankImages(rows, name, undefined, brewery);
+    const candidates = prefilterDiscoverCandidates(ranked, name, undefined, brewery, { minRelevance: 2 });
+    expect(candidates.length).toBe(2);
+  });
+
+  test('short English names still clear the vision-spend gate with listing-only titles', () => {
+    // #65 regression: retailer titles often omit the brewery, so score stayed at 3–4
+    // and discover parked the row as exhausted:no_strong_candidates.
+    const name = 'Kubota';
+    const brewery = 'Asahi Shuzo';
+    const query = `${name} ${brewery} nihonshu sake bottle`;
+    const rows = firecrawlImageResultsToRows(
+      [
+        {
+          title: 'Kubota Senju Ginjo Sake 720ml - Amazon',
+          imageUrl: 'https://m.media-amazon.com/images/I/51kubota.jpg',
+          imageWidth: 900,
+          imageHeight: 900,
+        },
+      ],
+      query
+    );
+    expect(rows).toHaveLength(1);
+    expect(
+      shouldSpendVisionOnUntrustedCandidate(rows[0]!.url, rows[0]!.title, name, null, brewery)
+    ).toBe(true);
+  });
+
+  test('does not drop sake shop listings whose page title mentions wine', () => {
+    const name = 'Kubota';
+    const brewery = 'Asahi Shuzo';
+    const query = `${name} ${brewery} nihonshu sake bottle`;
+    const rows = firecrawlImageResultsToRows(
+      [
+        {
+          title: 'Kubota Manju | Tippsy Sake - Japanese Wine & Sake',
+          imageUrl: 'https://cdn.shopify.com/s/files/1/products/kubota-manju.jpg',
+          imageWidth: 800,
+          imageHeight: 800,
+        },
+      ],
+      query
+    );
+    const ranked = filterAndRankImages(rows, name, undefined, brewery);
+    expect(ranked).toHaveLength(1);
+  });
+
+  test('handles a missing images array', () => {
+    expect(firecrawlImageResultsToRows(undefined, 'q')).toEqual([]);
+  });
+});
+
+describe('buildDiscoverCandidateQueue', () => {
+  const images = [
+    {
+      url: 'https://images.umamimart.com/products/kubota.jpg',
+      source: 'Google Images',
+      title: 'Kubota',
+    },
+    {
+      url: 'https://cdn.shopify.com/s/files/1/x/random.jpg',
+      source: 'Google Images',
+      title: 'Kubota',
+    },
+    {
+      url: 'https://tippsy-sake.com/cdn/bottle.jpg',
+      source: 'Sakura Search',
+      title: 'Kubota',
+    },
+  ];
+
+  test('keeps host-trusted URLs when OpenAI vision quota is exhausted', () => {
+    const queue = buildDiscoverCandidateQueue(images, {
+      visionQuotaExceeded: true,
+      trustedMax: 3,
+      otherMax: 4,
+    });
+    expect(queue.map((c) => c.url)).toEqual([
+      'https://images.umamimart.com/products/kubota.jpg',
+      'https://tippsy-sake.com/cdn/bottle.jpg',
+    ]);
+  });
+
+  test('keeps untrusted candidates when vision quota remains', () => {
+    const queue = buildDiscoverCandidateQueue(images, {
+      visionQuotaExceeded: false,
+      trustedMax: 3,
+      otherMax: 4,
+    });
+    expect(queue).toHaveLength(3);
+  });
+});
+
+describe('shouldSkipWebSearchAfterTrustedDirect', () => {
+  // Exactly what export.sakurasaketen.com returns for *every* keyword (observed 2026-09-09).
+  const sakuraGenericAssets = [
+    'https://cdn.prod.website-files.com/6335b41be5d1086e0d313d2d/650d3fd28e53468a7ecdf0f2_web.png',
+    'https://cdn.prod.website-files.com/6335b41be5d1086933313d52/6a16dcbf9ee68bd1541f47ef_Zaku%20for%202126%20(2).png',
+    'https://cdn.prod.website-files.com/6335b41be5d1086933313d52/6a16dcbf9ee68bd1541f47ef_Zaku%20for%202126%20(2)-p-500.png',
+    'https://cdn.prod.website-files.com/6335b41be5d1086933313d52/6a16dcbf9ee68bd1541f47ef_Zaku%20for%202126%20(2)-p-800.png',
+    'https://cdn.prod.website-files.com/6335b41be5d1086933313d52/6a16dcbf9ee68bd1541f47ef_Zaku%20for%202126%20(2)-p-1080.png',
+  ].map((url) => ({ url, source: 'Sakura Search' }));
+
+  test('generic retailer site assets do not short-circuit the web search', () => {
+    expect(
+      shouldSkipWebSearchAfterTrustedDirect(
+        'trusted-first',
+        sakuraGenericAssets,
+        '花の舞 純米酒超辛口',
+        null,
+        '花の舞酒造'
+      )
+    ).toBe(false);
+  });
+
+  test('relevant retailer hits still skip the paid web search', () => {
+    const relevant = [
+      { url: 'https://cdn.prod.website-files.com/abc/dassai-23-junmai-daiginjo-bottle.jpg', source: 'Sakura Search' },
+      { url: 'https://umamimart.com/cdn/shop/products/dassai-23-sake_800x.jpg', source: 'Umami Search' },
+    ];
+    expect(
+      shouldSkipWebSearchAfterTrustedDirect('trusted-first', relevant, 'Dassai 23', '獺祭', 'Asahi Shuzo')
+    ).toBe(true);
+  });
+
+  test('only applies to trusted-first mode', () => {
+    const relevant = [
+      { url: 'https://cdn.prod.website-files.com/abc/dassai-23-bottle.jpg', source: 'Sakura Search' },
+      { url: 'https://umamimart.com/cdn/shop/products/dassai-23_800x.jpg', source: 'Umami Search' },
+    ];
+    expect(shouldSkipWebSearchAfterTrustedDirect('full', relevant, 'Dassai 23')).toBe(false);
+    expect(shouldSkipWebSearchAfterTrustedDirect('google-only', relevant, 'Dassai 23')).toBe(false);
+  });
+});
 
 describe('urlLooksLikeNonSakeProduct', () => {
   test('flags known spirit brand URLs', () => {
@@ -63,6 +262,27 @@ describe('trusted image vision exemptions', () => {
   test('still trusts first-party retailer hosts', () => {
     expect(isTrustedImageUrl('https://export.sakurasaketen.com/images/dassai.jpg')).toBe(true);
     expect(isTrustedImageUrl('https://images.umamimart.com/products/dassai.jpg')).toBe(true);
+  });
+
+  test('skips vision on weak untrusted URLs and allows strong name matches', () => {
+    expect(
+      shouldSpendVisionOnUntrustedCandidate(
+        'https://cdn.example.com/random-bottle.jpg',
+        'Bottle',
+        'Dassai 45',
+        '獺祭',
+        'Asahi Shuzo'
+      )
+    ).toBe(false);
+    expect(
+      shouldSpendVisionOnUntrustedCandidate(
+        'https://cdn.example.com/products/dassai-45-asahi-shuzo-sake.jpg',
+        'Dassai 45 Asahi Shuzo sake',
+        'Dassai 45',
+        null,
+        'Asahi Shuzo'
+      )
+    ).toBe(true);
   });
 
   test('search-page source labels are not vision-exempt', () => {
