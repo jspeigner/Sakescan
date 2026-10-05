@@ -38,11 +38,12 @@ describe('discover retry / exhaust', () => {
     expect(shouldExhaustDiscoverRow(3, 'no_strong_candidates')).toBe(true);
   });
 
-  test('parks after 5 mixed failures but not for quota or timeout', () => {
+  test('parks after 5 mixed failures but not for quota, timeout, or vision cap', () => {
     expect(shouldExhaustDiscoverRow(5, 'vision_rejected')).toBe(true);
     expect(shouldExhaustDiscoverRow(4, 'vision_rejected')).toBe(false);
     expect(shouldExhaustDiscoverRow(8, 'openai_quota_exceeded')).toBe(false);
     expect(shouldExhaustDiscoverRow(8, 'time_budget_reached')).toBe(false);
+    expect(shouldExhaustDiscoverRow(8, 'vision_cap_reached')).toBe(false);
   });
 
   test('uses a long ladder, then a 90-day hold when exhausted', () => {
@@ -75,7 +76,7 @@ describe('discover retry / exhaust', () => {
     expect(Date.parse(third.nextRetryAt ?? '') - 0).toBeGreaterThan(BACKOFF_LATER_MS);
   });
 
-  test('quota and time-budget stay short and do not park the row', () => {
+  test('quota, time-budget, and vision-cap stay short and do not park the row', () => {
     const quota = computeDiscoverRetry({
       prior: { attempt_count: 4, success_count: 0, next_retry_at: null },
       placed: false,
@@ -93,6 +94,18 @@ describe('discover retry / exhaust', () => {
     });
     expect(timeout.exhausted).toBe(false);
     expect(Date.parse(timeout.nextRetryAt ?? '') - 0).toBe(BACKOFF_TIME_BUDGET_MS);
+
+    // Accelerated discover always hits a 2-check vision cap; that must not
+    // become exhausted:vision_cap_reached + a 90-day hold.
+    const visionCap = computeDiscoverRetry({
+      prior: { attempt_count: 4, success_count: 0, next_retry_at: null },
+      placed: false,
+      failureReason: 'vision_cap_reached',
+      nowMs: 0,
+    });
+    expect(visionCap.exhausted).toBe(false);
+    expect(visionCap.reason).toBe('vision_cap_reached');
+    expect(Date.parse(visionCap.nextRetryAt ?? '') - 0).toBe(BACKOFF_TIME_BUDGET_MS);
   });
 
   test('skips exhausted and not-yet-due rows', () => {

@@ -63,9 +63,22 @@ export function isTimeBudgetFailure(reason: string | null | undefined): boolean 
   return (reason ?? '').toLowerCase().includes('time_budget');
 }
 
+/**
+ * Accelerated discover stops after DISCOVER_VISION_MAX_PER_ROW_ACCELERATED
+ * vision checks. That is our spend cap, not evidence the bottle has no image —
+ * treat it like a time budget so we never 90-day park the row.
+ */
+export function isVisionCapFailure(reason: string | null | undefined): boolean {
+  return (reason ?? '').toLowerCase().includes('vision_cap');
+}
+
 /** Failures caused by us/the platform, not by a missing bottle image. */
 export function isTransientDiscoverFailure(reason: string | null | undefined): boolean {
-  return isQuotaOutageFailure(reason) || isTimeBudgetFailure(reason);
+  return (
+    isQuotaOutageFailure(reason) ||
+    isTimeBudgetFailure(reason) ||
+    isVisionCapFailure(reason)
+  );
 }
 
 export function failedDiscoverCount(history: DiscoverAttemptHistory | undefined): number {
@@ -91,7 +104,9 @@ export function backoffMsForDiscoverFailure(
   failureReason: string
 ): number {
   if (isQuotaOutageFailure(failureReason)) return BACKOFF_QUOTA_MS;
-  if (isTimeBudgetFailure(failureReason)) return BACKOFF_TIME_BUDGET_MS;
+  if (isTimeBudgetFailure(failureReason) || isVisionCapFailure(failureReason)) {
+    return BACKOFF_TIME_BUDGET_MS;
+  }
   if (shouldExhaustDiscoverRow(nextFailedCount, failureReason)) return EXHAUSTED_HOLD_MS;
   if (nextFailedCount <= 1) return BACKOFF_FIRST_MS;
   if (nextFailedCount === 2) return BACKOFF_SECOND_MS;
