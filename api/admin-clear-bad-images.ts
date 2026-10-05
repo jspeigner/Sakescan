@@ -9,7 +9,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
 import { looksLikeNonSakeUrl } from './lib/nonSakeUrl.js';
-import { sakeImageClearPayload } from './cron/lib/imageProvenance.js';
+import { clearSakeCatalogImage } from './cron/lib/sakeImageClear.js';
 import {
   shouldClearHostedImageFromAudit,
   validateJapaneseSakeProductPhoto,
@@ -96,10 +96,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (looksLikeNonSakeUrl(row.image_url)) {
       urlBadRows.push(row.id);
       if (!dryRun) {
-        await supabase
-          .from('sake')
-          .update(sakeImageClearPayload())
-          .eq('id', row.id);
+        await clearSakeCatalogImage(supabase, row.id);
         urlCleared++;
         console.log(`[clear-bad-images/url] cleared "${row.name}": ${row.image_url}`);
       }
@@ -116,10 +113,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         if (shouldClearHostedImageFromAudit(vision)) {
           visionBadRows.push(row.id);
           if (!dryRun) {
-            await supabase
-              .from('sake')
-              .update(sakeImageClearPayload())
-              .eq('id', row.id);
+            await clearSakeCatalogImage(supabase, row.id);
             visionCleared++;
             console.log(
               `[clear-bad-images/vision] cleared "${row.name}": ${vision.briefReason || row.image_url}`
