@@ -49,6 +49,7 @@ import {
   sakeImageUpdatePayload,
   shouldReplaceImage,
 } from './lib/imageProvenance.js';
+import { clearSakeCatalogImage } from './lib/sakeImageClear.js';
 import {
   getWineEngineConfig,
   wineEngineAddByUrl,
@@ -468,10 +469,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           // Only clear on high-confidence not-sake. Low/medium negatives and
           // unparseable model replies must not wipe hosted catalog images.
           if (shouldClearHostedImageFromAudit(v)) {
-            await supabase
-              .from('sake')
-              .update({ image_url: null, updated_at: new Date().toISOString() })
-              .eq('id', row.id);
+            await clearSakeCatalogImage(supabase, row.id);
             sakeAuditCleared++;
             diagnostics.audit.clearedRows++;
             console.log(`[process-images/audit] cleared ${row.name}: ${v.briefReason}`);
@@ -1012,10 +1010,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           if (urlLooksLikeNonSakeProduct(sake.image_url)) {
             diagnostics.mirror.urlFiltered++;
             if (shouldClearCatalogUrlAsNonSakeProduct(sake.image_url)) {
-              await supabase
-                .from('sake')
-                .update({ image_url: null, updated_at: new Date().toISOString() })
-                .eq('id', sake.id);
+              await clearSakeCatalogImage(supabase, sake.id);
               skippedPlaceholders++;
               diagnostics.mirror.placeholderClears++;
               console.log(`[process-images/mirror] cleared non-sake URL for ${sake.name}: ${sake.image_url}`);
@@ -1053,10 +1048,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               break;
             }
             if (result.skippedPlaceholder) {
-              await supabase
-                .from('sake')
-                .update({ image_url: null, updated_at: new Date().toISOString() })
-                .eq('id', sake.id);
+              await clearSakeCatalogImage(supabase, sake.id);
               skippedPlaceholders++;
               diagnostics.mirror.placeholderClears++;
             } else if (result.skippedDuplicate) {
@@ -1078,10 +1070,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             pushSample(diagnostics.mirror.errorSamples, `${sake.name}: ${msg.slice(0, 140)}`);
             // Never erase a still-valid external URL on transient host/network failures.
             if (shouldClearExternalImageUrlOnError(msg)) {
-              await supabase
-                .from('sake')
-                .update({ image_url: null, updated_at: new Date().toISOString() })
-                .eq('id', sake.id);
+              await clearSakeCatalogImage(supabase, sake.id);
             }
             await sleep(DELAY_MS);
           }
