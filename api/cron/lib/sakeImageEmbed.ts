@@ -4,6 +4,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { hashImageUrl } from './imageHash.js';
+import { fetchPublicHttpUrl } from './publicImageUrl.js';
 import { embeddingMatchesLiveCatalog } from './sakeImageClear.js';
 import { isOpenAIQuotaError, OpenAIVisionQuotaError } from './sakeImageVision.js';
 
@@ -28,13 +29,12 @@ export type SakeEmbedRow = {
 
 async function imageUrlToDataUrl(imageUrl: string): Promise<string | null> {
   try {
-    const res = await fetch(imageUrl, {
+    const res = await fetchPublicHttpUrl(imageUrl, {
       headers: {
         'User-Agent':
           'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         Accept: 'image/*,*/*;q=0.8',
       },
-      redirect: 'follow',
     });
     if (!res.ok) return null;
     const ct = res.headers.get('content-type') || 'image/jpeg';

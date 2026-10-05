@@ -40,9 +40,9 @@ import {
   isOpenAIVisionQuotaExceeded,
   resetOpenAIVisionQuotaForInvocation} from './lib/sakeImageVision.js';
 import {
+  placeCatalogImageIfStronger,
   provenanceForTrustedRetailer,
   provenanceForWebDiscover,
-  sakeImageUpdatePayload,
   shouldReplaceImage} from './lib/imageProvenance.js';
 import { clearSakeCatalogImage } from './lib/sakeImageClear.js';
 import {
@@ -771,15 +771,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 continue;
               }
 
-              await supabase
-                .from('sake')
-                .update(
-                  sakeImageUpdatePayload(
-                    result.url,
-                    trustedSource ? provenanceForTrustedRetailer() : provenanceForWebDiscover()
-                  )
-                )
-                .eq('id', row.id);
+              const place = await placeCatalogImageIfStronger(
+                supabase,
+                row.id,
+                result.url,
+                trustedSource ? provenanceForTrustedRetailer() : provenanceForWebDiscover()
+              );
+              if (place.error) {
+                failureReason = 'place_failed';
+                pushSample(
+                  diagnostics.discover.downloadErrorSamples,
+                  `${row.name}: place ${place.error.slice(0, 100)}`
+                );
+                continue;
+              }
+              if (place.skippedWeaker) {
+                // Concurrent promote/admin filled a stronger (or equal) image while we searched.
+                failureReason = 'weaker_than_existing';
+                continue;
+              }
               sakeDiscovered++;
               diagnostics.discover.placedRows++;
               placed = true;
