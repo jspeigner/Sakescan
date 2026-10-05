@@ -186,7 +186,22 @@ if (missing or 0) > 0:
             alerts.append("Latest discover placed 0 images and made 0 attempts while images are still missing")
     elif placed == 0 and attempts is None and vision == 0 and yield_rate is None:
         alerts.append("Latest discover placed 0 images and has no attempt diagnostics while images are still missing")
-if last_status and last_status not in ("ok", None) and image_failed_phases:
+try:
+    stale_running_hours = float(os.environ.get("SAKESCAN_STALE_RUNNING_HOURS", "2"))
+except ValueError:
+    stale_running_hours = 2.0
+run_started = last.get("startedAt") or last_summary.get("startedAt") or last.get("timestamp") or last_summary.get("timestamp")
+running_age_hours = age_hours(run_started, as_of) if last_status == "running" else None
+# A currently running orchestrator is expected when this weekly health check
+# overlaps the 13:00 UTC job. Only treat it as unhealthy if it looks stuck.
+if last_status == "running":
+    if running_age_hours is None:
+        alerts.append("Last orchestrator status: running (missing startedAt)")
+    elif running_age_hours > stale_running_hours:
+        alerts.append(
+            f"Last orchestrator status: running for {running_age_hours:.1f}h (possible stuck lock; threshold {stale_running_hours:.0f}h)"
+        )
+elif last_status and last_status not in ("ok", None) and image_failed_phases:
     suffix = f" ({', '.join(image_failed_phases)})"
     alerts.append(f"Last orchestrator status: {last_status}{suffix}")
 if errors:
