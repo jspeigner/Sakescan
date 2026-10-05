@@ -4,6 +4,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { hashImageUrl } from './imageHash.js';
+import { embeddingMatchesLiveCatalog } from './sakeImageClear.js';
 import { isOpenAIQuotaError, OpenAIVisionQuotaError } from './sakeImageVision.js';
 
 export const EMBEDDING_MODEL = 'text-embedding-3-small';
@@ -272,6 +273,24 @@ export type LocalMatch = {
   similarity: number;
 };
 
+async function liveCatalogImageUrl(
+  supabase: SupabaseClient,
+  sakeId: string
+): Promise<string | null> {
+  const { data } = await supabase.from('sake').select('image_url').eq('id', sakeId).maybeSingle();
+  return typeof data?.image_url === 'string' ? data.image_url : null;
+}
+
+/** Drop sticky embedding hits after catalog clear/replace (pre-migration defense). */
+async function keepIfLiveCatalogMatch(
+  supabase: SupabaseClient,
+  match: LocalMatch
+): Promise<LocalMatch | null> {
+  const liveUrl = await liveCatalogImageUrl(supabase, match.sakeId);
+  if (!embeddingMatchesLiveCatalog(match.imageUrl, liveUrl)) return null;
+  return match;
+}
+
 export async function matchByImageSha256(
   supabase: SupabaseClient,
   sha256: string
@@ -279,6 +298,7 @@ export async function matchByImageSha256(
   const { data, error } = await supabase.rpc('match_sake_by_image_sha256', {
     p_sha256: sha256,
   });
+  let candidate: LocalMatch | null = null;
   if (error) {
     // Fallback if RPC missing during rollout.
     const { data: row } = await supabase
@@ -287,21 +307,23 @@ export async function matchByImageSha256(
       .eq('image_sha256', sha256)
       .maybeSingle();
     if (!row) return null;
-    return {
+    candidate = {
       sakeId: row.sake_id,
       imageUrl: row.image_url,
       labelText: row.label_text,
       similarity: 1,
     };
+  } else {
+    const row = Array.isArray(data) ? data[0] : null;
+    if (!row) return null;
+    candidate = {
+      sakeId: row.sake_id,
+      imageUrl: row.image_url ?? null,
+      labelText: row.label_text ?? null,
+      similarity: Number(row.similarity ?? 1),
+    };
   }
-  const row = Array.isArray(data) ? data[0] : null;
-  if (!row) return null;
-  return {
-    sakeId: row.sake_id,
-    imageUrl: row.image_url ?? null,
-    labelText: row.label_text ?? null,
-    similarity: Number(row.similarity ?? 1),
-  };
+  return keepIfLiveCatalogMatch(supabase, candidate);
 }
 
 export async function matchByEmbedding(
@@ -317,7 +339,7 @@ export async function matchByEmbedding(
     match_threshold: matchThreshold,
   });
   if (error) throw new Error(`match_sake_embeddings: ${error.message}`);
-  return (data || []).map(
+  const mapped = (data || []).map(
     (row: { sake_id: string; image_url?: string; label_text?: string; similarity?: number }) => ({
       sakeId: row.sake_id,
       imageUrl: row.image_url ?? null,
@@ -325,6 +347,12 @@ export async function matchByEmbedding(
       similarity: Number(row.similarity ?? 0),
     })
   );
+  const live: LocalMatch[] = [];
+  for (const match of mapped) {
+    const kept = await keepIfLiveCatalogMatch(supabase, match);
+    if (kept) live.push(kept);
+  }
+  return live;
 }
 
 export async function getEmbeddingCoverage(
