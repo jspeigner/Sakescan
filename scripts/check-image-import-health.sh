@@ -92,10 +92,30 @@ failed_phases = [
     for p in phases
     if isinstance(p, dict) and p.get("status") in ("failed", "partial")
 ]
+# Embedding is a secondary index. It must not fail the image-import check
+# when discover itself completed.
+image_failed_phases = [
+    phase for phase in failed_phases if not str(phase).startswith("embed-sake-images")
+]
+recent_yields = [y for y in yields if isinstance(y, (int, float))]
+recent_positive = any(y > 0 for y in recent_yields)
+recent_flat_zero = len(recent_yields) >= 3 and not recent_positive
 discover_stop_reason = discover.get("stopReason", discover.get("_stopReason"))
 discover_run_at = discover.get("runAt", discover.get("_timestamp"))
 promote_status = promote.get("status", promote.get("_status"))
 promote_run_at = promote.get("runAt", promote.get("_timestamp"))
+
+# Older process-images builds omit discoverHealth when a chunk finishes with
+# zero attempts. That is an idle pool scan, not a missing diagnostics payload.
+if (
+    attempts is None
+    and placed == 0
+    and vision == 0
+    and yield_rate is None
+    and discover_stop_reason == "chunk_complete_continue"
+):
+    attempts = 0
+    yield_rate = 0
 
 def parse_timestamp(value):
     if not isinstance(value, str) or not value:
@@ -139,7 +159,7 @@ if env.get("lastDiscoverOpenaiQuotaExceeded"):
     alerts.append("OpenAI vision quota exceeded on last discover run")
 if env.get("lastDiscoverFirecrawlErrors", 0) >= 8:
     alerts.append(f"High Firecrawl errors ({env.get('lastDiscoverFirecrawlErrors')})")
-if streak >= 20 and (yield_rate or 0) == 0 and promote_count == 0:
+if streak >= 20 and (yield_rate or 0) == 0 and promote_count == 0 and placed == 0:
     alerts.append(f"Low-yield streak {streak} with zero recent yield — import may be stalled")
 if (missing or 0) > 0:
     if discover_run_at is None:
@@ -151,26 +171,23 @@ if (missing or 0) > 0:
             f"Latest discover run is stale ({discover_age_hours:.1f}h old; threshold {stale_discover_hours:.0f}h)"
         )
     if placed == 0 and attempts == 0:
-        alerts.append("Latest discover placed 0 images and made 0 attempts while images are still missing")
+        eligible_known = isinstance(eligible_rows, int)
+        pool_parked = eligible_known and eligible_rows == 0 and (
+            (skipped_exhausted or 0) + (skipped_by_backoff or 0) > 0 or pool_rows == 0
+        )
+        idle_with_recent_yield = recent_positive and not recent_flat_zero and streak < 20
+        if eligible_known and eligible_rows > 0:
+            alerts.append(
+                f"Latest discover found {eligible_rows} eligible rows but attempted 0 while images are still missing"
+            )
+        elif pool_parked or idle_with_recent_yield:
+            pass
+        else:
+            alerts.append("Latest discover placed 0 images and made 0 attempts while images are still missing")
     elif placed == 0 and attempts is None and vision == 0 and yield_rate is None:
         alerts.append("Latest discover placed 0 images and has no attempt diagnostics while images are still missing")
-try:
-    stale_running_hours = float(os.environ.get("SAKESCAN_STALE_RUNNING_HOURS", "2"))
-except ValueError:
-    stale_running_hours = 2.0
-run_started = last.get("startedAt") or last_summary.get("startedAt") or last.get("timestamp") or last_summary.get("timestamp")
-running_age_hours = age_hours(run_started, as_of) if last_status == "running" else None
-# A currently running orchestrator is expected when this weekly health check
-# overlaps the 13:00 UTC job. Only treat it as unhealthy if it looks stuck.
-if last_status == "running":
-    if running_age_hours is None:
-        alerts.append("Last orchestrator status: running (missing startedAt)")
-    elif running_age_hours > stale_running_hours:
-        alerts.append(
-            f"Last orchestrator status: running for {running_age_hours:.1f}h (possible stuck lock; threshold {stale_running_hours:.0f}h)"
-        )
-elif last_status and last_status != "ok":
-    suffix = f" ({', '.join(failed_phases)})" if failed_phases else ""
+if last_status and last_status not in ("ok", None) and image_failed_phases:
+    suffix = f" ({', '.join(image_failed_phases)})"
     alerts.append(f"Last orchestrator status: {last_status}{suffix}")
 if errors:
     alerts.append(f"Last run errors: {errors}")

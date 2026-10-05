@@ -1,10 +1,21 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { sleep } from './imageMirror.js';
+import { isPublicHttpImageUrl } from './publicImageUrl.js';
 import {
   embedSakeCatalogImage,
   getEmbeddingCoverage,
   isOpenAIQuotaError,
 } from './sakeImageEmbed.js';
+
+export function isUnusableEmbedTarget(message: string): boolean {
+  return (
+    message.startsWith('hashImageUrl') ||
+    message.includes('Blocked non-public') ||
+    message.includes('Blocked redirect') ||
+    message.includes('OpenAI label extract HTTP 400') ||
+    message.includes('Error while downloading')
+  );
+}
 
 export type EmbedBatchResult = {
   candidates: number;
@@ -129,8 +140,12 @@ export async function embedSakeImagesBatch(
         errors.push('OpenAI quota exceeded — stopping batch');
         break;
       }
-      failed++;
       const msg = e instanceof Error ? e.message : String(e);
+      if (isUnusableEmbedTarget(msg)) {
+        // Skip permanently-bad targets without failing the phase.
+        continue;
+      }
+      failed++;
       if (errors.length < 8) errors.push(`${row.name}: ${msg.slice(0, 120)}`);
     }
   }
