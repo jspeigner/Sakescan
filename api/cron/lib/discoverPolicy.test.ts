@@ -15,6 +15,7 @@ import {
   discoverEligibleBufferTarget,
   discoverRowCapForRun,
   discoverSkipReason,
+  exhaustedHoldReleasePayload,
   isMissingImageUrl,
   prioritizeDiscoverRows,
   resolveDiscoverAttemptFailure,
@@ -162,6 +163,34 @@ describe('discover retry / exhaust', () => {
         last_failure_reason: 'exhausted:no_candidates',
       })
     ).toBe('exhausted');
+  });
+
+  test('exhausted hold release payload clears park without touching backoff policy', () => {
+    const payload = exhaustedHoldReleasePayload('2026-10-05T12:00:00.000Z');
+    expect(payload).toEqual({
+      next_retry_at: null,
+      last_failure_reason: null,
+      attempt_count: 0,
+      updated_at: '2026-10-05T12:00:00.000Z',
+    });
+    // After release, a row is eligible even if it previously had a future hold.
+    expect(
+      discoverSkipReason({
+        attempt_count: payload.attempt_count,
+        success_count: 0,
+        next_retry_at: payload.next_retry_at,
+        last_failure_reason: payload.last_failure_reason,
+      })
+    ).toBeNull();
+    // Ordinary backoff (non-exhausted) still skips until next_retry_at.
+    expect(
+      discoverSkipReason({
+        attempt_count: 1,
+        success_count: 0,
+        next_retry_at: new Date(Date.now() + 60_000).toISOString(),
+        last_failure_reason: 'openai_quota_exceeded',
+      })
+    ).toBe('backoff');
   });
 
   test('allows retry after exhausted 90-day hold expires', () => {
