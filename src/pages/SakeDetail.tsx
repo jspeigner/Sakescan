@@ -13,6 +13,7 @@ import { fetchSakeBySlug } from "@/lib/sake-slug";
 import {
   brewerySlugFromSakeBreweryField,
   fetchSakesForBreweryName,
+  isPlaceholderBreweryName,
   stripBreweryCorporateSuffix,
 } from "@/lib/brewery-slug";
 import { sakeSlug } from "@/lib/slugify";
@@ -32,16 +33,19 @@ export default function SakeDetail() {
     enabled: !!idFragment && !!slug,
   });
 
+  const hasRealBrewery = !!sake && !isPlaceholderBreweryName(sake.brewery);
+
   const { data: relatedSakes } = useQuery({
     queryKey: ["related-sake", sake?.brewery],
     queryFn: async () => {
-      if (!sake?.brewery) return [];
+      if (!sake || isPlaceholderBreweryName(sake.brewery)) return [];
       // Exact .eq("brewery") misses Co.,Ltd variants (Kizakura vs Kizakura Co.,Ltd).
       const breweryKey = stripBreweryCorporateSuffix(sake.brewery);
       const rows = await fetchSakesForBreweryName(breweryKey, 8);
       return rows.filter((row) => row.id !== sake.id).slice(0, 4);
     },
-    enabled: !!sake?.brewery,
+    enabled: hasRealBrewery,
+
   });
 
   if (isLoading) {

@@ -1,12 +1,13 @@
 import { QueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import type { Brewery, Sake } from "@/lib/supabase-types";
-import { fetchBreweryBySlug, fetchSakesForBreweryName } from "@/lib/brewery-slug";
+import { fetchBreweryBySlug, fetchSakesForBreweryName, isPlaceholderBreweryName } from "@/lib/brewery-slug";
 import { fetchSakeBySlug } from "@/lib/sake-slug";
 
 const EXPLORE_PAGE_SIZE = 24;
 
 async function fetchRelatedSakes(sake: Sake) {
+  if (isPlaceholderBreweryName(sake.brewery)) return [];
   const { data } = await supabase
     .from("sake")
     .select("id, name, type, average_rating, image_url")
