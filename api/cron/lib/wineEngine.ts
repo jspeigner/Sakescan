@@ -125,6 +125,52 @@ export async function wineEngineAddByUrl(
   });
 }
 
+/**
+ * Add or replace collection image at the sticky sake filepath.
+ * Prefer this after `wineengine_indexed_at` was cleared — `/rest/add/` fails when
+ * the filepath already exists from a prior bottle photo.
+ * Counts against monthly image quota — callers must reserve first.
+ */
+export async function wineEngineUpdateByUrl(
+  cfg: WineEngineConfig,
+  params: { sakeId: string; imageUrl: string }
+): Promise<WineEngineResponse<unknown[]>> {
+  return wineEngineMultipart(cfg, '/rest/update/', {
+    url: params.imageUrl,
+    filepath: sakeWineEngineFilepath(params.sakeId),
+    image_id: params.sakeId,
+  });
+}
+
+/** True when add failed because the sticky filepath is already in the collection. */
+export function wineEngineFilepathAlreadyExists(
+  response: WineEngineResponse<unknown>
+): boolean {
+  if (response.status === 'ok') return false;
+  const joined = (response.error || []).join(' ').toLowerCase();
+  return (
+    joined.includes('already exists') ||
+    joined.includes('already in') ||
+    (joined.includes('filepath') && joined.includes('exist'))
+  );
+}
+
+/**
+ * Index a sake image, falling back to update when add hits a sticky filepath.
+ * Counts against monthly image quota once per successful attempt path — callers
+ * reserve a single image slot; a failed add + successful update still uses one
+ * TinEye image op from our quota accounting perspective (reserve once).
+ */
+export async function wineEngineIndexByUrl(
+  cfg: WineEngineConfig,
+  params: { sakeId: string; imageUrl: string }
+): Promise<WineEngineResponse<unknown[]>> {
+  const added = await wineEngineAddByUrl(cfg, params);
+  if (added.status === 'ok') return added;
+  if (!wineEngineFilepathAlreadyExists(added)) return added;
+  return wineEngineUpdateByUrl(cfg, params);
+}
+
 /** Counts against monthly search quota — callers must reserve first. */
 export async function wineEngineSearchByUrl(
   cfg: WineEngineConfig,
