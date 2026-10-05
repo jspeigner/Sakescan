@@ -4,6 +4,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { hashImageUrl } from './imageHash.js';
+import { embeddingMatchesLiveCatalog } from './sakeImageClear.js';
 import { isOpenAIQuotaError, OpenAIVisionQuotaError } from './sakeImageVision.js';
 
 export const EMBEDDING_MODEL = 'text-embedding-3-small';
@@ -72,9 +73,8 @@ Return JSON:
 }
 If the image is not a sake label, still return best-effort empty-ish fields.`;
 
-  let imagePart: { type: 'image_url'; image_url: { url: string; detail: 'low' } };
   const dataUrl = await imageUrlToDataUrl(imageUrl);
-  imagePart = {
+  const imagePart: { type: 'image_url'; image_url: { url: string; detail: 'low' } } = {
     type: 'image_url',
     image_url: { url: dataUrl || imageUrl, detail: 'low' },
   };
@@ -173,10 +173,28 @@ export async function embedText(openaiApiKey: string, input: string): Promise<nu
   return embedding;
 }
 
+/** True when another sake already owns this content hash (UNIQUE image_sha256). */
+export function shouldSkipEmbedForExistingSha256(
+  existingSakeId: string | null | undefined,
+  targetSakeId: string
+): boolean {
+  return Boolean(existingSakeId && existingSakeId !== targetSakeId);
+}
+
+/** Postgres unique_violation / PostgREST duplicate on image_sha256. */
+export function isDuplicateSha256EmbedError(error: { code?: string; message?: string }): boolean {
+  if (error.code === '23505') return true;
+  const msg = (error.message || '').toLowerCase();
+  return (
+    msg.includes('sake_image_embeddings_sha256') ||
+    (msg.includes('duplicate') && msg.includes('image_sha256'))
+  );
+}
+
 export async function upsertSakeEmbedding(
   supabase: SupabaseClient,
   row: SakeEmbedRow
-): Promise<void> {
+): Promise<'ok' | 'duplicate_sha256'> {
   const { error } = await supabase.from('sake_image_embeddings').upsert(
     {
       sake_id: row.sake_id,
@@ -189,7 +207,13 @@ export async function upsertSakeEmbedding(
     },
     { onConflict: 'sake_id' }
   );
-  if (error) throw new Error(`sake_image_embeddings upsert: ${error.message}`);
+  if (error) {
+    // UNIQUE(image_sha256) is separate from onConflict sake_id — sibling product
+    // shots collide here after vision/embed spend unless we catch it.
+    if (isDuplicateSha256EmbedError(error)) return 'duplicate_sha256';
+    throw new Error(`sake_image_embeddings upsert: ${error.message}`);
+  }
+  return 'ok';
 }
 
 /** Full pipeline for one catalog row. */
@@ -203,8 +227,20 @@ export async function embedSakeCatalogImage(
     brewery?: string | null;
     image_url: string;
   }
-): Promise<{ sha256: string; labelText: string }> {
+): Promise<{ sha256: string; labelText: string; skippedDuplicateHash?: boolean }> {
   const { sha256 } = await hashImageUrl(sake.image_url);
+
+  // UNIQUE(image_sha256) + upsert onConflict sake_id: if another row already
+  // owns these bytes, skip vision/embed spend (hash identify hits that row).
+  const { data: existingHash } = await supabase
+    .from('sake_image_embeddings')
+    .select('sake_id')
+    .eq('image_sha256', sha256)
+    .maybeSingle();
+  if (shouldSkipEmbedForExistingSha256(existingHash?.sake_id, sake.id)) {
+    return { sha256, labelText: '', skippedDuplicateHash: true };
+  }
+
   const extracted = await extractLabelTextFromImage(openaiApiKey, sake.image_url, {
     sakeName: sake.name,
     brewery: sake.brewery,
@@ -216,7 +252,7 @@ export async function embedSakeCatalogImage(
     nameJapanese: sake.name_japanese,
   });
   const embedding = await embedText(openaiApiKey, input);
-  await upsertSakeEmbedding(supabase, {
+  const upserted = await upsertSakeEmbedding(supabase, {
     sake_id: sake.id,
     image_url: sake.image_url,
     image_sha256: sha256,
@@ -224,6 +260,9 @@ export async function embedSakeCatalogImage(
     embedding,
     model: EMBEDDING_MODEL,
   });
+  if (upserted === 'duplicate_sha256') {
+    return { sha256, labelText: extracted.labelText || input, skippedDuplicateHash: true };
+  }
   return { sha256, labelText: extracted.labelText || input };
 }
 
@@ -234,6 +273,24 @@ export type LocalMatch = {
   similarity: number;
 };
 
+async function liveCatalogImageUrl(
+  supabase: SupabaseClient,
+  sakeId: string
+): Promise<string | null> {
+  const { data } = await supabase.from('sake').select('image_url').eq('id', sakeId).maybeSingle();
+  return typeof data?.image_url === 'string' ? data.image_url : null;
+}
+
+/** Drop sticky embedding hits after catalog clear/replace (pre-migration defense). */
+async function keepIfLiveCatalogMatch(
+  supabase: SupabaseClient,
+  match: LocalMatch
+): Promise<LocalMatch | null> {
+  const liveUrl = await liveCatalogImageUrl(supabase, match.sakeId);
+  if (!embeddingMatchesLiveCatalog(match.imageUrl, liveUrl)) return null;
+  return match;
+}
+
 export async function matchByImageSha256(
   supabase: SupabaseClient,
   sha256: string
@@ -241,6 +298,7 @@ export async function matchByImageSha256(
   const { data, error } = await supabase.rpc('match_sake_by_image_sha256', {
     p_sha256: sha256,
   });
+  let candidate: LocalMatch | null = null;
   if (error) {
     // Fallback if RPC missing during rollout.
     const { data: row } = await supabase
@@ -249,21 +307,23 @@ export async function matchByImageSha256(
       .eq('image_sha256', sha256)
       .maybeSingle();
     if (!row) return null;
-    return {
+    candidate = {
       sakeId: row.sake_id,
       imageUrl: row.image_url,
       labelText: row.label_text,
       similarity: 1,
     };
+  } else {
+    const row = Array.isArray(data) ? data[0] : null;
+    if (!row) return null;
+    candidate = {
+      sakeId: row.sake_id,
+      imageUrl: row.image_url ?? null,
+      labelText: row.label_text ?? null,
+      similarity: Number(row.similarity ?? 1),
+    };
   }
-  const row = Array.isArray(data) ? data[0] : null;
-  if (!row) return null;
-  return {
-    sakeId: row.sake_id,
-    imageUrl: row.image_url ?? null,
-    labelText: row.label_text ?? null,
-    similarity: Number(row.similarity ?? 1),
-  };
+  return keepIfLiveCatalogMatch(supabase, candidate);
 }
 
 export async function matchByEmbedding(
@@ -279,7 +339,7 @@ export async function matchByEmbedding(
     match_threshold: matchThreshold,
   });
   if (error) throw new Error(`match_sake_embeddings: ${error.message}`);
-  return (data || []).map(
+  const mapped = (data || []).map(
     (row: { sake_id: string; image_url?: string; label_text?: string; similarity?: number }) => ({
       sakeId: row.sake_id,
       imageUrl: row.image_url ?? null,
@@ -287,6 +347,12 @@ export async function matchByEmbedding(
       similarity: Number(row.similarity ?? 0),
     })
   );
+  const live: LocalMatch[] = [];
+  for (const match of mapped) {
+    const kept = await keepIfLiveCatalogMatch(supabase, match);
+    if (kept) live.push(kept);
+  }
+  return live;
 }
 
 export async function getEmbeddingCoverage(

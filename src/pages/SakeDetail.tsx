@@ -9,10 +9,13 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Star, Droplets, Thermometer, Wine, Wheat, MapPin, Loader2 } from "lucide-react";
-import { supabase } from "@/lib/supabase";
-import type { Sake } from "@/lib/supabase-types";
 import { fetchSakeBySlug } from "@/lib/sake-slug";
-import { brewerySlugFromSakeBreweryField, isPlaceholderBreweryName } from "@/lib/brewery-slug";
+import {
+  brewerySlugFromSakeBreweryField,
+  fetchSakesForBreweryName,
+  isPlaceholderBreweryName,
+  stripBreweryCorporateSuffix,
+} from "@/lib/brewery-slug";
 import { sakeSlug } from "@/lib/slugify";
 import NotFound from "./NotFound";
 import { withImageCacheBust } from "@/lib/image-url";
@@ -33,18 +36,16 @@ export default function SakeDetail() {
   const hasRealBrewery = !!sake && !isPlaceholderBreweryName(sake.brewery);
 
   const { data: relatedSakes } = useQuery({
-    queryKey: ["related-sake", sake?.brewery, sake?.type],
+    queryKey: ["related-sake", sake?.brewery],
     queryFn: async () => {
       if (!sake || isPlaceholderBreweryName(sake.brewery)) return [];
-      const { data } = await supabase
-        .from("sake")
-        .select("id, name, type, average_rating, image_url")
-        .eq("brewery", sake.brewery)
-        .neq("id", sake.id)
-        .limit(4);
-      return data ?? [];
+      // Exact .eq("brewery") misses Co.,Ltd variants (Kizakura vs Kizakura Co.,Ltd).
+      const breweryKey = stripBreweryCorporateSuffix(sake.brewery);
+      const rows = await fetchSakesForBreweryName(breweryKey, 8);
+      return rows.filter((row) => row.id !== sake.id).slice(0, 4);
     },
     enabled: hasRealBrewery,
+
   });
 
   if (isLoading) {
@@ -166,7 +167,7 @@ export default function SakeDetail() {
                     </div>
                   </Card>
                 ) : null}
-                {sake.alcohol_percentage ? (
+                {sake.alcohol_percentage !== null && sake.alcohol_percentage !== undefined ? (
                   <Card className="p-3 flex items-center gap-3">
                     <Wine className="w-5 h-5 text-primary flex-shrink-0" />
                     <div>
@@ -184,7 +185,7 @@ export default function SakeDetail() {
                     </div>
                   </Card>
                 ) : null}
-                {sake.acidity ? (
+                {sake.acidity !== null && sake.acidity !== undefined ? (
                   <Card className="p-3 flex items-center gap-3">
                     <Droplets className="w-5 h-5 text-primary flex-shrink-0" />
                     <div>

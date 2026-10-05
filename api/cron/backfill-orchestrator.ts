@@ -105,6 +105,18 @@ async function resetEnvironmentalBackoffOnStartup(
       .select('sake_id');
     if (!error && data) cleared += data.length;
   }
+
+  // Accelerated discover used to park rows as exhausted:vision_cap_reached.
+  // discoverSkipReason treats exhausted:* as permanent, so clear the reason
+  // (not just next_retry_at) to make those rows eligible again.
+  {
+    const { data, error } = await supabase
+      .from('sake_image_attempts')
+      .update({ next_retry_at: null, last_failure_reason: null, updated_at: now })
+      .ilike('last_failure_reason', '%vision_cap%')
+      .select('sake_id');
+    if (!error && data) cleared += data.length;
+  }
   return cleared;
 }
 
@@ -130,10 +142,18 @@ type OrchestratorRunLog = {
 };
 
 type DiscoverSummary = {
+  attempts: number | null;
   placed: number;
+  candidateUrlsSeen: number | null;
   visionChecks: number;
   yield: number | null;
   firecrawlErrors: number;
+  poolPagesScanned?: number | null;
+  poolRows?: number | null;
+  eligibleRows?: number | null;
+  skippedByBackoff?: number | null;
+  skippedExhausted?: number | null;
+  exhaustedThisRun?: number | null;
   stopReason: unknown;
   runAt: string | null;
 };
@@ -152,6 +172,21 @@ function phasesFromLog(log: OrchestratorRunLog | null | undefined): Orchestrator
   return Array.isArray(phases) ? (phases as OrchestratorPhaseLog[]) : [];
 }
 
+type PublicPhaseSummary = { phase: string; status: string; durationMs: number | null };
+
+/** Phase name/status/duration for the unauthenticated stats view (no error text). */
+export function publicPhaseSummaries(phases: unknown): PublicPhaseSummary[] {
+  if (!Array.isArray(phases)) return [];
+  const out: PublicPhaseSummary[] = [];
+  for (const p of phases) {
+    if (!p || typeof p !== 'object') continue;
+    const { phase, status, durationMs } = p as Record<string, unknown>;
+    if (typeof phase !== 'string' || typeof status !== 'string') continue;
+    out.push({ phase, status, durationMs: typeof durationMs === 'number' ? durationMs : null });
+  }
+  return out;
+}
+
 function latestDiscoverSummary(logs: OrchestratorRunLog[]): DiscoverSummary {
   for (const log of logs) {
     if (log.job !== 'backfill-orchestrator' && log.job !== 'images-discover') continue;
@@ -161,17 +196,27 @@ function latestDiscoverSummary(logs: OrchestratorRunLog[]): DiscoverSummary {
     const stats = phase.stats ?? {};
     const health = (stats.discoverHealth as Record<string, unknown> | undefined) ?? {};
     return {
+      attempts: typeof health.attempts === 'number' ? health.attempts : null,
       placed: typeof health.placed === 'number' ? health.placed : 0,
+      candidateUrlsSeen: typeof health.candidateUrlsSeen === 'number' ? health.candidateUrlsSeen : null,
       visionChecks: typeof health.visionChecks === 'number' ? health.visionChecks : 0,
       yield: typeof health.yield === 'number' ? health.yield : null,
       firecrawlErrors: typeof health.firecrawlErrors === 'number' ? health.firecrawlErrors : 0,
+      poolPagesScanned: typeof health.poolPagesScanned === 'number' ? health.poolPagesScanned : null,
+      poolRows: typeof health.poolRows === 'number' ? health.poolRows : null,
+      eligibleRows: typeof health.eligibleRows === 'number' ? health.eligibleRows : null,
+      skippedByBackoff: typeof health.skippedByBackoff === 'number' ? health.skippedByBackoff : null,
+      skippedExhausted: typeof health.skippedExhausted === 'number' ? health.skippedExhausted : null,
+      exhaustedThisRun: typeof health.exhaustedThisRun === 'number' ? health.exhaustedThisRun : null,
       stopReason: stats.stopReason ?? null,
       runAt: log.created_at ?? null,
     };
   }
 
   return {
+    attempts: null,
     placed: 0,
+    candidateUrlsSeen: null,
     visionChecks: 0,
     yield: null,
     firecrawlErrors: 0,
@@ -299,7 +344,9 @@ async function runImagesDiscoverPhase(params: {
   } = params;
   let discoverHealth = params.discoverHealth;
   const emptyDiscover: DiscoverSummary = {
+    attempts: null,
     placed: 0,
+    candidateUrlsSeen: null,
     visionChecks: 0,
     yield: null,
     firecrawlErrors: 0,
@@ -382,6 +429,13 @@ async function runImagesDiscoverPhase(params: {
         yield?: number;
         firecrawlErrors?: number;
         visionChecks?: number;
+        candidateUrlsSeen?: number;
+        poolPagesScanned?: number;
+        poolRows?: number;
+        eligibleRows?: number;
+        skippedByBackoff?: number;
+        skippedExhausted?: number;
+        exhaustedThisRun?: number;
         openaiVisionQuotaExceeded?: boolean;
       }
     | undefined;
@@ -443,10 +497,18 @@ async function runImagesDiscoverPhase(params: {
     openaiQuotaRecommendation,
     errors,
     latestDiscover: {
+      attempts: typeof attempts === 'number' ? attempts : null,
       placed: typeof placed === 'number' ? placed : 0,
+      candidateUrlsSeen: typeof health?.candidateUrlsSeen === 'number' ? health.candidateUrlsSeen : null,
       visionChecks: typeof health?.visionChecks === 'number' ? health.visionChecks : 0,
       yield: typeof health?.yield === 'number' ? health.yield : null,
       firecrawlErrors: typeof health?.firecrawlErrors === 'number' ? health.firecrawlErrors : 0,
+      poolPagesScanned: typeof health?.poolPagesScanned === 'number' ? health.poolPagesScanned : null,
+      poolRows: typeof health?.poolRows === 'number' ? health.poolRows : null,
+      eligibleRows: typeof health?.eligibleRows === 'number' ? health.eligibleRows : null,
+      skippedByBackoff: typeof health?.skippedByBackoff === 'number' ? health.skippedByBackoff : null,
+      skippedExhausted: typeof health?.skippedExhausted === 'number' ? health.skippedExhausted : null,
+      exhaustedThisRun: typeof health?.exhaustedThisRun === 'number' ? health.exhaustedThisRun : null,
       stopReason: discoverJson?.stopReason ?? null,
       runAt: new Date().toISOString(),
     },
@@ -532,6 +594,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         timestamp: typeof lastRun.timestamp === 'string' ? lastRun.timestamp : null,
         durationMs: typeof lastRun.durationMs === 'number' ? lastRun.durationMs : null,
         prioritizeDiscover: lastRun.prioritizeDiscover === true,
+        // Phase names + statuses only; error strings stay behind cron auth.
+        phases: publicPhaseSummaries(lastRun.phases),
       },
       env: {
         skipFlags,
@@ -921,6 +985,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           candidates: emb.candidates,
           embedded: emb.embedded,
           failed: emb.failed,
+          skippedDuplicateHash: emb.skippedDuplicateHash,
           quotaExceeded: emb.quotaExceeded,
           coverage: emb.coverage,
         },
