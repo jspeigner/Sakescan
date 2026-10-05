@@ -124,15 +124,23 @@ export async function embedSakeImagesBatch(
 
   for (const row of todo) {
     if (!row.image_url) continue;
+    if (!isPublicHttpImageUrl(row.image_url)) {
+      // Private / undownloadable catalog URLs must not fail the whole batch.
+      continue;
+    }
     try {
-      await embedSakeCatalogImage(supabase, openaiApiKey, {
+      const result = await embedSakeCatalogImage(supabase, openaiApiKey, {
         id: row.id,
         name: row.name,
         name_japanese: row.name_japanese,
         brewery: row.brewery,
         image_url: row.image_url,
       });
-      embedded++;
+      if (result.skippedDuplicateHash) {
+        skippedDuplicateHash++;
+      } else {
+        embedded++;
+      }
       await sleep(80);
     } catch (e) {
       if (isOpenAIQuotaError(e)) {
