@@ -1027,6 +1027,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           embedded: emb.embedded,
           failed: emb.failed,
           skippedDuplicateHash: emb.skippedDuplicateHash,
+          skippedUnusableUrl: emb.skippedUnusableUrl,
           quotaExceeded: emb.quotaExceeded,
           coverage: emb.coverage,
         },
