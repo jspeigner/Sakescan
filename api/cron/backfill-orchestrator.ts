@@ -105,6 +105,18 @@ async function resetEnvironmentalBackoffOnStartup(
       .select('sake_id');
     if (!error && data) cleared += data.length;
   }
+
+  // Accelerated discover used to park rows as exhausted:vision_cap_reached.
+  // discoverSkipReason treats exhausted:* as permanent, so clear the reason
+  // (not just next_retry_at) to make those rows eligible again.
+  {
+    const { data, error } = await supabase
+      .from('sake_image_attempts')
+      .update({ next_retry_at: null, last_failure_reason: null, updated_at: now })
+      .ilike('last_failure_reason', '%vision_cap%')
+      .select('sake_id');
+    if (!error && data) cleared += data.length;
+  }
   return cleared;
 }
 
@@ -158,6 +170,21 @@ type PromoteSummary = {
 function phasesFromLog(log: OrchestratorRunLog | null | undefined): OrchestratorPhaseLog[] {
   const phases = log?.stats?.phases;
   return Array.isArray(phases) ? (phases as OrchestratorPhaseLog[]) : [];
+}
+
+type PublicPhaseSummary = { phase: string; status: string; durationMs: number | null };
+
+/** Phase name/status/duration for the unauthenticated stats view (no error text). */
+export function publicPhaseSummaries(phases: unknown): PublicPhaseSummary[] {
+  if (!Array.isArray(phases)) return [];
+  const out: PublicPhaseSummary[] = [];
+  for (const p of phases) {
+    if (!p || typeof p !== 'object') continue;
+    const { phase, status, durationMs } = p as Record<string, unknown>;
+    if (typeof phase !== 'string' || typeof status !== 'string') continue;
+    out.push({ phase, status, durationMs: typeof durationMs === 'number' ? durationMs : null });
+  }
+  return out;
 }
 
 function latestDiscoverSummary(logs: OrchestratorRunLog[]): DiscoverSummary {
@@ -567,6 +594,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         timestamp: typeof lastRun.timestamp === 'string' ? lastRun.timestamp : null,
         durationMs: typeof lastRun.durationMs === 'number' ? lastRun.durationMs : null,
         prioritizeDiscover: lastRun.prioritizeDiscover === true,
+        // Phase names + statuses only; error strings stay behind cron auth.
+        phases: publicPhaseSummaries(lastRun.phases),
       },
       env: {
         skipFlags,
@@ -956,6 +985,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           candidates: emb.candidates,
           embedded: emb.embedded,
           failed: emb.failed,
+          skippedDuplicateHash: emb.skippedDuplicateHash,
           quotaExceeded: emb.quotaExceeded,
           coverage: emb.coverage,
         },
