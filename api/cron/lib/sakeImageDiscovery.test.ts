@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import {
+  buildDiscoverCandidateQueue,
   filterAndRankImages,
   firecrawlImageResultsToRows,
   isFirecrawlQuotaError,
@@ -74,8 +75,91 @@ describe('firecrawlImageResultsToRows', () => {
     expect(candidates.length).toBe(2);
   });
 
+  test('short English names still clear the vision-spend gate with listing-only titles', () => {
+    // #65 regression: retailer titles often omit the brewery, so score stayed at 3–4
+    // and discover parked the row as exhausted:no_strong_candidates.
+    const name = 'Kubota';
+    const brewery = 'Asahi Shuzo';
+    const query = `${name} ${brewery} nihonshu sake bottle`;
+    const rows = firecrawlImageResultsToRows(
+      [
+        {
+          title: 'Kubota Senju Ginjo Sake 720ml - Amazon',
+          imageUrl: 'https://m.media-amazon.com/images/I/51kubota.jpg',
+          imageWidth: 900,
+          imageHeight: 900,
+        },
+      ],
+      query
+    );
+    expect(rows).toHaveLength(1);
+    expect(
+      shouldSpendVisionOnUntrustedCandidate(rows[0]!.url, rows[0]!.title, name, null, brewery)
+    ).toBe(true);
+  });
+
+  test('does not drop sake shop listings whose page title mentions wine', () => {
+    const name = 'Kubota';
+    const brewery = 'Asahi Shuzo';
+    const query = `${name} ${brewery} nihonshu sake bottle`;
+    const rows = firecrawlImageResultsToRows(
+      [
+        {
+          title: 'Kubota Manju | Tippsy Sake - Japanese Wine & Sake',
+          imageUrl: 'https://cdn.shopify.com/s/files/1/products/kubota-manju.jpg',
+          imageWidth: 800,
+          imageHeight: 800,
+        },
+      ],
+      query
+    );
+    const ranked = filterAndRankImages(rows, name, undefined, brewery);
+    expect(ranked).toHaveLength(1);
+  });
+
   test('handles a missing images array', () => {
     expect(firecrawlImageResultsToRows(undefined, 'q')).toEqual([]);
+  });
+});
+
+describe('buildDiscoverCandidateQueue', () => {
+  const images = [
+    {
+      url: 'https://images.umamimart.com/products/kubota.jpg',
+      source: 'Google Images',
+      title: 'Kubota',
+    },
+    {
+      url: 'https://cdn.shopify.com/s/files/1/x/random.jpg',
+      source: 'Google Images',
+      title: 'Kubota',
+    },
+    {
+      url: 'https://tippsy-sake.com/cdn/bottle.jpg',
+      source: 'Sakura Search',
+      title: 'Kubota',
+    },
+  ];
+
+  test('keeps host-trusted URLs when OpenAI vision quota is exhausted', () => {
+    const queue = buildDiscoverCandidateQueue(images, {
+      visionQuotaExceeded: true,
+      trustedMax: 3,
+      otherMax: 4,
+    });
+    expect(queue.map((c) => c.url)).toEqual([
+      'https://images.umamimart.com/products/kubota.jpg',
+      'https://tippsy-sake.com/cdn/bottle.jpg',
+    ]);
+  });
+
+  test('keeps untrusted candidates when vision quota remains', () => {
+    const queue = buildDiscoverCandidateQueue(images, {
+      visionQuotaExceeded: false,
+      trustedMax: 3,
+      otherMax: 4,
+    });
+    expect(queue).toHaveLength(3);
   });
 });
 

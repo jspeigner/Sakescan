@@ -9,6 +9,7 @@ import {
   supabaseProjectHost,
 } from './lib/imageMirror.js';
 import {
+  buildDiscoverCandidateQueue,
   isFirecrawlBypassActive,
   isTrustedImageUrl,
   isTrustedRetailerSource,
@@ -696,14 +697,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             diagnostics.discover.rowsWithNoCandidates++;
           }
 
-          const trustedCandidates = images.filter((candidate) => isTrustedRetailerSource(candidate.source));
-          const otherCandidates = images.filter((candidate) => !isTrustedRetailerSource(candidate.source));
-          const candidateQueue = [
-            ...trustedCandidates.slice(0, DISCOVER_CANDIDATES_MAX_TRUSTED),
-            ...(isOpenAIVisionQuotaExceeded()
-              ? []
-              : otherCandidates.slice(0, discoverCandidatesMax)),
-          ];
+          const candidateQueue = buildDiscoverCandidateQueue(images, {
+            visionQuotaExceeded: isOpenAIVisionQuotaExceeded(),
+            trustedMax: DISCOVER_CANDIDATES_MAX_TRUSTED,
+            otherMax: discoverCandidatesMax,
+          });
           let visionChecksThisRow = 0;
 
           for (const img of candidateQueue) {
